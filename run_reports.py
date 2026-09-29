@@ -135,6 +135,8 @@ def main():
             state = "写入失败"
         elif r["ok"]:
             state = "成功"
+        elif r.get("formula_errors"):
+            state = "公式错误"
         elif r.get("checks_failed"):
             state = "有校验未过"      # 文件已写出，但有 error 级校验没通过
         else:
@@ -142,6 +144,14 @@ def main():
         print("  %-22s %-10s %6ds  %s"
               % (r["label"], state, r["seconds"],
                  os.path.basename(r["out"]) if r.get("wrote") else "—"))
+        if not r["ok"]:
+            print("    退出码：%s；本次写出：%s" % (r.get("returncode"), r.get("wrote", False)))
+            for c in r.get("checks", []):
+                if not c["ok"]:
+                    print("    [%s][%s] %s %s：%s" % (
+                        c["severity"], c["key"], c["store"], c["name"], c["detail"]))
+        if r.get("diagnostic_log"):
+            print("    完整诊断日志：%s" % r["diagnostic_log"])
     if unusable:
         print("\n  未参与（没有可用下载目录）：")
         for n, why in unusable:

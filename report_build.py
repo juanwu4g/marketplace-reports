@@ -4771,6 +4771,32 @@ def main(argv=None):
         mark = "跳过" if c["skipped"] else ("  ✓" if c["ok"] else "  ✗")
         print("  %s  %-12s %-22s %s" % (mark, c["store"][:12], c["name"], c["detail"]))
     failed = [c for c in checks if not c["ok"] and c["severity"] == "error"]
+    # 稳定的机器可读记录供调用方汇总；不能只靠退出码 1 判断是哪一项失败。
+    print("[REPORT_CHECKS_JSON] " + json.dumps(checks, ensure_ascii=False))
+    print("\n[诊断] error 级未通过 %d 项；warn 级未通过 %d 项" % (
+        len(failed), sum(not c["ok"] and c["severity"] == "warn" for c in checks)))
+    for S in stores:
+        issues = [c for c in checks if c["store"] == S["store"] and not c["ok"]]
+        if not issues:
+            continue
+        print("  店铺 %s，输入目录：%s" % (S["store"], os.path.abspath(S["folder"])))
+        for c in issues:
+            print("  [%s][%s] %s：%s" % (c["severity"], c["key"], c["name"], c["detail"]))
+            if c["key"] == "bridge_b":
+                P = S["pagos"]
+                types = sorted(set(P["Tipo de pago"].dropna().astype(str))) if "Tipo de pago" in P else []
+                print("    支付源文件：%s；行数 %d；支付类型：%s" % (
+                    S["files"].get("pagos"), len(P), "、".join(types) or "（无可识别支付类型）"))
+                print("    排查提示：当前实扣只识别类型含 Cobro 的行。Pago con débito automático 等标签可能被漏算；"
+                      "只有贷记单不代表已证实实扣为零。检查付款状态、跨月分配列和下载截止日。")
+            elif c["key"] == "mp_settlement":
+                print("    结算源文件：%s" % S["files"].get("settlement"))
+                print("    排查提示：流水按 TRANSACTION_DATE（UTC）筛选，销售按下单日筛选；"
+                      "跨月结算/退款、时区或流水窗口不完整都可能造成差异。应逐单核对，不能仅据此认定平台少付。")
+            elif c["key"] in ("billing_present", "sales_window", "tax_rate"):
+                print("    排查提示：先核对本期账单及销售窗口是否完整；税率异常可能由缺账单、关联失败或税务状态变化引起。")
+            elif c["key"].startswith("cn_"):
+                print("    排查提示：见报表⑩逐单异常清单；核对订单/包裹关联、冲销及现金凭证，推定调整不等于现金已证实。")
 
     print("\n[结果]")
     for S in stores:

@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(ROOT, "report_build.py")
@@ -261,19 +262,46 @@ def build(pairs, month, out, metrics_out=None, strict=False,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            encoding="utf-8", errors="replace")
         output, rc = p.stdout or "", p.returncode
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "skipped": None, "returncode": None,
-                "seconds": int(time.time() - began), "out": out,
-                "output": "超时（%d 秒）" % timeout}
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        output, rc = partial + "\n[错误] 超时（%d 秒）" % timeout, None
     except Exception as e:
-        return {"ok": False, "skipped": None, "returncode": None,
-                "seconds": int(time.time() - began), "out": out,
-                "output": "%s: %s" % (e.__class__.__name__, e)}
+        output, rc = "%s: %s" % (e.__class__.__name__, e), None
 
     secs = int(time.time() - began)
+    checks = []
+    for line in output.splitlines():
+        if line.startswith("[REPORT_CHECKS_JSON] "):
+            try:
+                checks = json.loads(line.split(" ", 1)[1])
+            except (ValueError, TypeError):
+                pass
+    diagnostic_log = None
+    log_error = None
+    try:
+        log_dir = os.path.join(d, "diagnostics")
+        os.makedirs(log_dir, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                dir=log_dir, prefix=os.path.basename(out) + "." +
+                datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".", suffix=".log") as fh:
+            diagnostic_log = fh.name
+            fh.write("会计月：%s\n输出：%s\nPython：%s\n退出码：%s\n用时：%ds\n" % (
+                month, os.path.abspath(out), sys.executable, rc, secs))
+            for name, folder in pairs:
+                fh.write("输入：%s = %s\n" % (name, os.path.abspath(folder)))
+            fh.write("\n" + output)
+    except OSError as e:
+        log_error = str(e)
     if echo and output.strip():
         for line in output.rstrip().splitlines():
-            print("    %s" % line)
+            if not line.startswith("[REPORT_CHECKS_JSON] "):
+                print("    %s" % line)
+    if diagnostic_log:
+        print("    [诊断日志] %s" % diagnostic_log)
+    if log_error:
+        print("    [日志写入失败] %s" % log_error)
 
     # report_build 的退出码：0 = 全通过；1 = 有 error 级校验未通过（文件通常仍已
     # 写出，除非 --strict）。所以"文件在不在"和"校验过没过"是两件事，分别报。
@@ -290,4 +318,7 @@ def build(pairs, month, out, metrics_out=None, strict=False,
 
     return {"ok": rc == 0 and wrote, "skipped": None, "returncode": rc,
             "seconds": secs, "out": out, "wrote": wrote, "stale": stale,
-            "checks_failed": rc == 1 and wrote, "output": output[-6000:]}
+            "checks_failed": any(not c["ok"] and c["severity"] == "error" for c in checks),
+            "checks": checks, "diagnostic_log": diagnostic_log,
+            "formula_errors": "[警告] 文件里存在公式错误" in output,
+            "output": output[-6000:]}
