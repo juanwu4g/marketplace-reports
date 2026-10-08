@@ -539,12 +539,8 @@ def sales_window_start(meta):
     return d - pd.DateOffset(months=int(n))
 
 
-class VentasIncomplete(Exception):
-    """平台自己声明这份销售导出不完整。不能用来做账。"""
-
-
 # 导出顶部那条横幅：「No pudimos mostrar algunos datos. Intenta generando el
-# Excel de ventas nuevamente.」它一出现就说明**平台承认这份导出缺数据**。
+# Excel de ventas nuevamente.」保留已有数据，同时把平台的警告传到报表。
 VENTAS_INCOMPLETE_RE = re.compile(r"no pudimos mostrar algunos datos", re.I)
 
 
@@ -556,9 +552,7 @@ def _ventas_header_row(path, limit=16):
     读到的"表头"是分组行「Ventas」——Fecha de venta 整列不存在，日期全成
     NaT，整家店被剔除，而报错只会说"没有日期"，看不出真正原因。
 
-    横幅要单独检出并**拒绝**，不能只把表头修对：修对之后管线会顺利吃下一份
-    平台承认残缺的导出，出一份偏低却看起来完全正常的报表 —— 比直接拒绝危险
-    得多。那份文件里 4599 行日期其实都解析得出来，正是这种"看着没毛病"。
+    横幅要单独检出并传给校验、首页和汇总表，避免残缺数据看起来完全正常。
     """
     top = pd.read_excel(path, sheet_name=VENTAS_SHEET, header=None, nrows=limit)
     hdr, notice = None, ""
@@ -578,10 +572,8 @@ def load_ventas(folder):
         raise IOError("找不到 Ventas 报表：%s" % folder)
     hdr, notice = _ventas_header_row(path)
     if notice:
-        raise VentasIncomplete(
-            "平台在这份 Ventas 导出里写着：「%s」—— 它自己承认数据不全，"
-            "不能用来做账。请重新下载这家店的 Ventas 再出报表。文件：%s"
-            % (notice, os.path.basename(path)))
+        print("    [警告] Ventas 导出可能缺数据：%s；文件：%s"
+              % (notice, os.path.basename(path)))
     if hdr is None:
         hdr = VENTAS_HEADER_ROW
         print("    [警告] 没在前 16 行里找到表头（认的是「%s」+「%s」），"
@@ -591,6 +583,7 @@ def load_ventas(folder):
         print("    [提示] 表头在第 %d 行（通常是第 %d 行），平台在顶部多插了行，"
               "已按实际行读。" % (hdr + 1, VENTAS_HEADER_ROW + 1))
     df = pd.read_excel(path, sheet_name=VENTAS_SHEET, header=hdr)
+    df.attrs["incomplete_notice"] = notice
     df["fecha"] = df[V_DATE].map(parse_spanish_date) if V_DATE in df.columns else pd.NaT
     # pandas 2 的 astype(str) 把 NaT 变成字面量 "NaT"，pandas 3 让它保持 NaN。
     # 本文件有 5 处 `ym != "NaT"` 的过滤依赖那个字面量（3613/3669/4492 等），
@@ -1152,6 +1145,7 @@ def derive(store, folder, p0, p1):
 
     vpath, V = load_ventas(folder)
     S["files"]["ventas"] = vpath
+    S["ventas_warning"] = V.attrs.get("incomplete_notice", "")
     S["ventas_all"] = V
     A = V[(V["fecha"] >= p0) & (V["fecha"] <= p1 + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))].copy()
     S["ventas"] = A
@@ -1366,6 +1360,12 @@ def validate(stores, tol=0.05):
     out = []
     for S in stores:
         m, name = S["m"], S["store"]
+        if S.get("ventas_warning"):
+            out.append(_chk("ventas_incomplete", name, "Ventas 导出数据不完整", False,
+                            "平台提示「%s」；已用现有数据生成报表，收入和利润可能偏低。"
+                            "请重新下载核对。源文件：%s"
+                            % (S["ventas_warning"], os.path.basename(S["files"]["ventas"])),
+                            severity="warn"))
 
         out.append(_chk("bridge_a", name, "桥A 逐笔订单勾稽",
                         abs(m["resid"]) <= tol,
@@ -1612,6 +1612,18 @@ def sheet_readme(wb, stores, ctx):
     ws["A2"] = ("会计期间：%s　|　币种：MXN 墨西哥比索　|　编制日期：%s　|　数据截取时点：%s"
                 % (ctx["period_cn"], ctx["build_date"], ctx["cutoff"]))
     ws["A2"].font = F(9, False, C_GREY)
+    incomplete = [S["store"] for S in stores if S.get("ventas_warning")]
+    if incomplete:
+        warning = ("⚠ Ventas 数据不完整：%s。报表使用已导出的数据；本店及合计金额"
+                   "可能偏低。请重新下载并核对原始数据，详见【%s】。"
+                   % ("、".join(incomplete), SHEET_NAMES[9]))
+        ws.merge_cells("A3:C3")
+        c = ws["A3"]
+        c.value = warning
+        c.font = F(10, True, C_RED)
+        c.fill = fill(C_WARN)
+        c.alignment = wrap("top")
+        ws.row_dimensions[3].height = est_height(warning, 100)
 
     M = main_store(stores)
     mm = M["m"]
@@ -1885,6 +1897,12 @@ def sheet_pl(wb, stores, ctx):
     sh.title("合并损益表（%s）" % ctx["period_cn"],
              "口径：按【订单日】归集收入与订单级费用；月度账单费用按【计费日】归集。单位：MXN。"
              "灰底=公式行，浅蓝=小计，黄底=需你录入。行位置每期固定，可直接跨月对比。")
+    incomplete = [S["store"] for S in stores if S.get("ventas_warning")]
+    if incomplete:
+        ws["A3"] = "⚠ %s 的 Ventas 数据不完整；本店及合计金额可能偏低。" % "、".join(incomplete)
+        ws["A3"].font = F(10, True, C_RED)
+        ws["A3"].fill = fill(C_WARN)
+        ws.row_dimensions[3].height = 26
     pcol = get_column_letter(sh.tcol_idx + 1)      # 占GMV%
     ncol_idx = sh.tcol_idx + 2                      # 说明
     cols = ["项目", "西班牙语原始科目"] + store_cols(stores) + ["合计", "占GMV%", "说明"]
@@ -4315,6 +4333,13 @@ def sheet_gaps(wb, stores, ctx):
     r += 1
 
     items = []
+    for S in stores:
+        if S.get("ventas_warning"):
+            items.append(("高", "%s 的 Ventas 导出不完整 ⚠" % S["store"],
+                          "平台提示「%s」；源文件：%s。报表已使用文件内现有销售数据。"
+                          % (S["ventas_warning"], os.path.basename(S["files"]["ventas"])),
+                          "重新生成并下载 Ventas，核对订单数和金额后重新出报表。",
+                          "本店及包含本店的合计金额可能偏低，当前数字不可视为完整结果。"))
     nsku = sum(S["ventas"][V_SKU].nunique() for S in stores)
     items.append(("高", "补齐商品采购成本",
                   "平台所有报表都不含进货成本，因此本报表只能算到“经营贡献毛利”（本期合计 %s）。"
@@ -4676,6 +4701,8 @@ def metrics_record(S, ctx):
     """一行月度指标，用于累积到指标库（趋势的真正来源）。"""
     m = S["m"]
     rec = {"period": ctx["period"], "store": S["store"], "built_at": ctx["build_date"]}
+    rec["ventas_incomplete"] = bool(S.get("ventas_warning"))
+    rec["ventas_warning"] = S.get("ventas_warning", "")
     for k in ("rows", "orders_unique", "units", "ing", "env_ing", "coupon", "coupon_n",
               "refund", "com_imp", "com_gross", "env_cost", "env_gross", "dev_net",
               "tax_ret", "tax_rate_gross", "total", "resid", "bill_total", "payable",
@@ -4721,12 +4748,7 @@ def main(argv=None):
     stores, unusable = [], []
     for name, path in a.store:
         print("[读取] %s ← %s" % (name, path))
-        try:
-            S = derive(name, path, p0, p1)
-        except VentasIncomplete as e:
-            # 和下面"没有日期"走同一条路：剔除这家店、其余照出、⑩ 页记一笔。
-            unusable.append((name, str(e)))
-            continue
+        S = derive(name, path, p0, p1)
         V = S["ventas_all"]
         # Ventas 导出偶尔整列缺销售日期（平台换了导出模板，或者文件本身是坏的）。
         # 没有日期就没有会计期间，这家店的所有口径都无从谈起。以前这种数据要一路

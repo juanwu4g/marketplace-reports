@@ -133,17 +133,23 @@ def main():
             state = "跳过"
         elif r.get("stale"):
             state = "写入失败"
-        elif r["ok"]:
-            state = "成功"
         elif r.get("formula_errors"):
             state = "公式错误"
         elif r.get("checks_failed"):
             state = "有校验未过"      # 文件已写出，但有 error 级校验没通过
+        elif r.get("data_incomplete") and r.get("wrote"):
+            state = "数据不全⚠"
+        elif r["ok"]:
+            state = "成功"
         else:
             state = "失败"
         print("  %-22s %-10s %6ds  %s"
               % (r["label"], state, r["seconds"],
                  os.path.basename(r["out"]) if r.get("wrote") else "—"))
+        if r.get("data_incomplete") and r.get("wrote"):
+            for c in r.get("checks", []):
+                if c["key"] == "ventas_incomplete" and not c["ok"]:
+                    print("    [警告] %s：%s" % (c["store"], c["detail"]))
         if not r["ok"]:
             print("    退出码：%s；本次写出：%s" % (r.get("returncode"), r.get("wrote", False)))
             for c in r.get("checks", []):
@@ -161,6 +167,11 @@ def main():
     bad = [r for r in results if not r["ok"]]
     if bad:
         print("  %d/%d 份报表需要关注" % (len(bad), len(results)))
+        return 1
+    incomplete = [r for r in results if r.get("data_incomplete")]
+    if incomplete:
+        print("  %d/%d 份报表已生成，但 Ventas 源数据不完整，需重新下载核对"
+              % (len(incomplete), len(results)))
         return 1
     print("  全部 %d 份报表生成成功" % len(results))
     return 0

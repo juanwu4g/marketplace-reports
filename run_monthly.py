@@ -338,9 +338,9 @@ def main():
             steps.append({"step": "report", "code": code, "seconds": secs})
             worst = max(worst, code)
             if code == 1:
-                # 常态，不告警。理由见 alert()。
-                bad.append("有报表校验未过，文件已写出。桥B 每月都不过，"
-                           "属已知口径问题；其余的看报表里的校验清单。")
+                # 报表可能已写出，但校验或 Ventas 源数据仍需人工核对。
+                bad.append("报表步骤需要核对：可能有校验未过或 Ventas 源数据不完整。"
+                           "请查看报表【⑩ 数据缺口与待办】及本次诊断日志。")
             elif code >= 2:
                 urgent.append("报表生成失败（退出码 %d）。" % code)
                 bad.append(urgent[-1])

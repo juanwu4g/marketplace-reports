@@ -319,6 +319,8 @@ def build(pairs, month, out, metrics_out=None, strict=False,
     return {"ok": rc == 0 and wrote, "skipped": None, "returncode": rc,
             "seconds": secs, "out": out, "wrote": wrote, "stale": stale,
             "checks_failed": any(not c["ok"] and c["severity"] == "error" for c in checks),
+            "data_incomplete": any(c["key"] == "ventas_incomplete" and not c["ok"]
+                                   for c in checks),
             "checks": checks, "diagnostic_log": diagnostic_log,
             "formula_errors": "[警告] 文件里存在公式错误" in output,
             "output": output[-6000:]}

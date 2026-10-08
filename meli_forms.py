@@ -615,7 +615,7 @@ def set_sales_period(driver, months=6, timeout=45):
         time.sleep(2)
         if driver.execute_script(JS_CURRENT_PERIOD) == months:
             print("    时间范围已设为 %s" % want_label)
-            time.sleep(6)          # let the order list finish reloading
+            time.sleep(20)         # let the order list finish reloading
             return True
     print("    [警告] 时间范围未能切换到 %s" % want_label)
     return False
@@ -649,8 +649,16 @@ def request_sales_excel(driver, period_months=6):
         }
         return null;
     """)
-    print("    已移除筛选：%s" % (removed or "（无已应用筛选）"))
     time.sleep(10)
+    today_filter = driver.execute_script("""
+        return [...document.querySelectorAll('[data-testid="filters--applied"] .andes-tag')]
+          .some(t => /env[ií]os de hoy/i.test(
+              (t.querySelector('.andes-tag__label')?.innerText||'').trim()));
+    """)
+    if today_filter:
+        print("    [警告] Envíos de hoy 筛选仍在，Ventas 按钮可能保持禁用")
+    else:
+        print("    Envíos de hoy 筛选：%s" % ("已移除" if removed else "未发现已应用"))
 
     # widen the period AFTER clearing the filter - the dropdown re-renders when
     # filters change, and a handle grabbed before that goes stale
@@ -660,24 +668,40 @@ def request_sales_excel(driver, period_months=6):
     if period_months:
         set_sales_period(driver, months=period_months)
     actual = driver.execute_script(JS_CURRENT_PERIOD)
+    print("    时间范围核验：请求 %s 个月，实际 %s 个月" % (period_months, actual))
     if period_months and actual != period_months:
         print("    [警告] 请求 %s 个月，实际生效 %s 个月 —— 导出会少一段数据"
               % (period_months, actual))
     SALES_PERIOD_ACTUAL["months"] = actual
 
     btn = None
-    deadline = time.time() + 90
+    deadline = time.time() + 180
     while time.time() < deadline:
         btn = driver.execute_script("""
-            return [...document.querySelectorAll('button.report-link')]
+            // MercadoLibre uses different classes across store accounts. Match
+            // the action's label, then prefer a visible, enabled button.
+            return [...document.querySelectorAll('button')]
               .find(e => /Descargar Excel de ventas/i.test(
-                  e.getAttribute('aria-label')||e.innerText||'')) || null;
+                  (e.getAttribute('aria-label')||'') + ' ' + (e.innerText||''))
+                  && e.getClientRects().length > 0
+                  && !e.matches(':disabled')
+                  && e.getAttribute('aria-disabled') !== 'true') || null;
         """)
-        if btn is not None and btn.is_enabled():
+        if btn is not None:
             break
         time.sleep(2)
-    if btn is None or not btn.is_enabled():
-        print("    [警告] 'Descargar Excel de ventas' 始终不可点击")
+    if btn is None:
+        candidates = driver.execute_script("""
+            return [...document.querySelectorAll('button')]
+              .filter(e => /Descargar Excel de ventas/i.test(
+                  (e.getAttribute('aria-label')||'') + ' ' + (e.innerText||'')))
+              .map(e => ({visible: e.getClientRects().length > 0,
+                          disabled: e.matches(':disabled') ||
+                                    e.getAttribute('aria-disabled') === 'true'}));
+        """)
+        reason = ("未找到按钮" if not candidates else
+                  "找到 %d 个按钮，但都不可点击：%s" % (len(candidates), candidates))
+        print("    [警告] 'Descargar Excel de ventas' 在 180 秒内不可点击（%s）" % reason)
         return None
 
     rows_before = len(driver.execute_script(JS_WIDGET_ROWS))
