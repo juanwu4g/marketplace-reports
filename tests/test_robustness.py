@@ -69,3 +69,8 @@ def test_stock_reports_that_start_no_download_get_one_retry():
     import meli_forms
     assert "general" in meli_forms.STOCK_RETRY_ON_NO_START
     assert "consolidado" not in meli_forms.STOCK_RETRY_ON_NO_START, "要填弹窗的不在此列"
+
+
+def test_mercado_pago_billing_report_does_not_count_as_missing_report_data():
+    assert not download_diag.affects_report({"form": "billing/2026-09/BILL_MP_V3"})
+    assert download_diag.affects_report({"form": "billing/2026-09"})

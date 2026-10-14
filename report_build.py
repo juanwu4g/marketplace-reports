@@ -72,7 +72,7 @@ EXIT_CRASH = 70         # 未处理的异常（traceback 已打印）。70 = sys
 # 常量：原始报表的结构
 # ════════════════════════════════════════════════════════════════════════
 
-VENTAS_SHEET = "Ventas MX"
+VENTAS_SHEET = "Ventas MX"          # 智利是 "Ventas CL"，见 set_site()
 VENTAS_HEADER_ROW = 5        # 0-indexed，实际表头在第 6 行
 BILLING_HEADER_ROW = 7       # Facturación / Notas de Crédito，表头在第 8 行
 CARGOS_HEADER_ROW = 5        # Reporte_Cargos_Full_*，表头在第 6 行
@@ -122,6 +122,8 @@ F_DETALLE = "Detalle"
 F_CHANNEL = "Descontado de la operación"      # Si / No / No aplica
 F_STATE = "Estado del cargo"
 F_REVERSES = "Cargo que bonifica"             # 指向被冲销的 Número del cargo
+# 智利的账单把同一列叫 "Cargo que anula"（DAB_CL 2026-09 实测），含义相同。
+F_REVERSES_ALT = ("Cargo que anula",)
 F_AMOUNT = "Valor del cargo"
 F_SALE_NO = "Número de venta"
 F_PACK_NO = "Número de paquete"
@@ -341,6 +343,197 @@ IVA_RATE = 0.16
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 站点（国家）—— 墨西哥 / 智利 两份报表是"姐妹"：同样 10 页、同样的勾稽，
+# 但币种、Ventas 页名、列名后缀、金额精度、容差和税务口径不同。
+# ════════════════════════════════════════════════════════════════════════
+# 一份工作簿只属于一个国家（币种都不一样，混在一起没有意义），而本文件每次
+# 只出一份工作簿，所以和 meli_forms.set_site() 一样，用 set_site() 在开始时
+# 把下面这些模块级常量换成该国的值，其余代码照旧按名字读它们。
+#
+# 墨西哥的值就是本文件原来写死的那些常量，一个字不改 —— MX 报表必须逐格不变
+# （tests/test_cl_mx_unchanged.py 用一份真实 MX 下载目录逐格比对）。
+#
+# 本文件刻意不 import meli_site（见文件头"独立版"），这里只放**出报表**要用的
+# 国别事实；主机名、locale 这类下载用的事实在 meli_site.py。
+SITE = "mx"
+SITE_PROFILES = {
+    "mx": {
+        "VENTAS_SHEET": "Ventas MX",
+        "VENTAS_GLOB": "*Ventas_MX*.xlsx",
+        "CUR": "MXN", "CUR_CN": "墨西哥比索", "COUNTRY_CN": "墨西哥",
+        "MNY": '#,##0.00;(#,##0.00);-',
+        "MONEY_DEC": 2,          # fmt() 默认小数位
+        "TOL_CENT": 0.01,        # 桥B / 账单自平 / Full 核对：两边"相等"的容差
+        "CN_TOL": 0.05,          # 逐单比对（贷记明细、MercadoPago）的容差
+        "BRIDGE_A_TOL": 0.05,    # 桥A 残差容差（--tol 的默认值）
+        "COUPON_TOL": 0.02,      # 倒推券额大于它才算一笔优惠券
+        "ZERO_TOL": 0.005,       # "这一行是不是 0"（决定标色、是否列出）
+        "IVA_RATE": 0.16,
+        # 账单周期从每月几号开始。墨西哥是自然月（1 号）。
+        "BILL_CYCLE_DAY": 1,
+        # 平台是否代扣税金。墨西哥是（IVA/ISR retenciones，约 9.05% 含税价），
+        # 有一整套"代扣代缴税金"的行、校验和敏感性分析。
+        "WITHHOLDING": True,
+        # ⑦ ⑧ 页"Ventas 佣金列 − 账单纯佣金"那一列的叫法
+        "TAXCOL_CN": "平台代扣代缴税金", "TAX_SHORT": "代扣税",
+    },
+    "cl": {
+        "VENTAS_SHEET": "Ventas CL",
+        "VENTAS_GLOB": "*Ventas_CL*.xlsx",
+        "CUR": "CLP", "CUR_CN": "智利比索", "COUNTRY_CN": "智利",
+        # 比索没有分：金额一律不显示小数。单元格里的值仍保留原始精度（Ventas
+        # 的配送费会出现 .5 比索），只是显示取整 —— 不在写入时舍入，免得合计
+        # 和原始文件差出几个比索。
+        "MNY": '#,##0;(#,##0);-',
+        "MONEY_DEC": 0,
+        # 容差按"1 比索"给。Ventas 的 Total 带 .4/.5 这样的零头，而
+        # MercadoPago 流水是整数，0.05 的容差会让逐单比对凭空失败。
+        "TOL_CENT": 1.0,
+        "CN_TOL": 1.0,
+        "BRIDGE_A_TOL": 1.0,
+        "COUPON_TOL": 1.0,
+        "ZERO_TOL": 0.5,
+        "IVA_RATE": 0.19,
+        # 智利的账单不是自然月，而且**每家店的切期日不同**：DAB_CL 是 8 号到
+        # 次月 7 号（Sept 文件计费日 08-08..09-07，Oct 文件 09-08..10-07），
+        # Tecnohub_CL 是 24 号到次月 23 号（08-24..09-23，09-24..）。仓储费报表
+        # 跟着各店的切期日走。所以切期日按店从数据里推（infer_cycle_day），
+        # 这里的 8 只是一份数据都推不出来时的兜底。见 bill_cycles()。
+        "BILL_CYCLE_DAY": 8,
+        # 智利平台**不代扣**。DAB_CL 2026-09 实测：MercadoPago 结算流水的
+        # TAXES_AMOUNT 全部为 0；Ventas 的 Cargo por venta e impuestos 与账单
+        # 纯佣金 Cargo por venta 逐单相等（2,406 单里 2,389 单分毫不差，比值
+        # 1.000，不是 1.19），差额是被并进这一列的退货处理费。所以智利报表
+        # 没有"代扣代缴税金"这一行，见 sheet_pl / 桥 E 的智利版说明。
+        "WITHHOLDING": False,
+        "TAXCOL_CN": "佣金列中的退货处理费等", "TAX_SHORT": "退货处理费等",
+    },
+}
+
+
+def _ventas_col(stem):
+    return "%s (%s)" % (stem, CUR)
+
+
+def set_site(code):
+    """把模块级常量换成某个国家的值。返回规范化后的站点代码。
+
+    出报表前必须调一次（main() 会调）。未知代码直接报错 —— 拿墨西哥的列名
+    去读智利的文件只会得到一张全是 0 的报表，看起来还像是对的。
+    """
+    code = str(code or "mx").lower()
+    if code not in SITE_PROFILES:
+        raise ValueError("未知站点 %r，可用：%s" % (code, ", ".join(sorted(SITE_PROFILES))))
+    g = globals()
+    g["SITE"] = code
+    g.update(SITE_PROFILES[code])
+    # Ventas 的金额列名带币种后缀：Ingresos por productos (MXN) / (CLP)
+    g["V_REVENUE"] = _ventas_col("Ingresos por productos")
+    g["V_COMMISSION"] = _ventas_col("Cargo por venta e impuestos")
+    g["V_SHIP_INCOME"] = _ventas_col("Ingresos por envío")
+    g["V_SHIP_COST"] = _ventas_col("Costos de envío")
+    g["V_REFUND"] = _ventas_col("Anulaciones y reembolsos")
+    g["V_TOTAL"] = _ventas_col("Total")
+    g["V_UNIT_PRICE"] = _ventas_col("Precio unitario de venta de la publicación")
+    return code
+
+
+def is_cl():
+    return SITE == "cl"
+
+
+BILL_OPEN_RE = re.compile(r"podr[ií]a tener cambios hasta el cierre", re.I)
+
+
+def open_bills(folder, cycles):
+    """会计月用到的账单里，哪几张还没关账（文件顶部写着"Este reporte podría tener
+    cambios hasta el cierre del período de facturación"）。返回账单名列表。"""
+    out = []
+    for y, mth, _a, _b in cycles:
+        p = _cycle_file("Reporte_Facturacion_MercadoLibre_*.xlsx", folder, y, mth)
+        if not p:
+            continue
+        try:
+            top = pd.read_excel(p, sheet_name="REPORT", header=None, nrows=BILLING_HEADER_ROW)
+        except Exception:
+            continue
+        if any(isinstance(v, str) and BILL_OPEN_RE.search(v) for v in top.values.ravel()):
+            out.append("%s %d" % (MONTH_FULL_ES[mth], y))
+    return out
+
+
+def cycle_day(S):
+    """这家店的账单切期日（1 = 自然月）。"""
+    return S.get("cycle_day", BILL_CYCLE_DAY)
+
+
+def cycle_cn(day):
+    """'8 号到次月 7 号'。"""
+    return "%d 号到次月 %d 号" % (day, day - 1)
+
+
+def infer_cycle_day(B, folder):
+    """从这家店自己的文件里推账单切期日（智利用；墨西哥恒为自然月，不调用）。
+
+    投票：每份 Facturación 文件（名为 M 的账单）里最早的计费日若落在 M-1 月，
+    它的"日"就是切期日（广告和仓储费几乎每天都有，第一天基本不会空着）；
+    每份仓储费报表文件名的起始日（24-08-26_23-09-26_… → 24）也投一票。
+    取票数最多的；一票都没有时用站点默认值。
+    """
+    votes = []
+    fac = B[B["_doc"] == "FAC"] if "_doc" in B.columns else B
+    for f, g in fac.groupby("_file"):
+        tok = file_month_token(str(f))
+        d0 = g["cdate"].min()
+        if tok and pd.notna(d0):
+            prev = pd.Timestamp(tok[0], tok[1], 1) - pd.DateOffset(months=1)
+            if (d0.year, d0.month) == (prev.year, prev.month) and d0.day > 1:
+                votes.append(d0.day)
+    for p in glob.glob(os.path.join(folder, "*Costos_por_servicio_almacenamiento.xlsx")):
+        rng = storage_file_range(os.path.basename(p))
+        if rng:
+            votes.append(rng[0].day)
+    if not votes:
+        return BILL_CYCLE_DAY
+    return max(sorted(set(votes)), key=votes.count)
+
+
+def bill_cycles(year, month, day=None):
+    """会计月（自然月）跨到的账单周期：[(账单年, 账单月, 周期起, 周期止), ...]。
+
+    会计口径两国一样：收入和订单级费用按下单日、账单级费用按计费日
+    （Fecha del cargo）归入**自然月**。不同的只是平台的账单周期：
+
+    * 墨西哥：账单 = 自然月，9 月的会计月只碰到"Septiembre"一张账单。
+    * 智利：账单从 8 号到次月 7 号。"Septiembre"账单 = 8/8–9/7，
+      "Octubre"账单 = 9/8–10/7。所以 9 月这个会计月要用**两张**账单：
+      Septiembre 里计费日 9/1–9/7 的行 ＋ Octubre 里计费日 9/8–9/30 的行。
+
+    derive() 本来就按计费日把所有账单文件合并后再筛（不按文件名挑账单），
+    所以费用行本身两国同一套代码就对；这里给出的周期用来：判断账单是否下全
+    （两张都要在）、把桥 B 的实际付款按计费日拆到会计月、以及 Full 费用报表
+    和仓储费报表的核对范围。
+    """
+    p0 = pd.Timestamp(year, month, 1)
+    p1 = (p0 + pd.offsets.MonthEnd(1)).normalize()
+    day = BILL_CYCLE_DAY if day is None else day
+    out = []
+    if day == 1:
+        return [(year, month, p0, p1)]
+    # 名为 M 的账单覆盖 [M-1 月 day 日, M 月 day-1 日]
+    for k in (0, 1):
+        b = p0 + pd.DateOffset(months=k)
+        start = (b - pd.DateOffset(months=1)).replace(day=day)
+        end = b.replace(day=day - 1)
+        if end >= p0 and start <= p1:
+            out.append((b.year, b.month, start, end))
+    return out
+
+
+set_site(SITE)      # 模块默认：墨西哥。main() 会按店铺的 run_meta / --site 重设
+
+
+# ════════════════════════════════════════════════════════════════════════
 # ② 合并损益表的行定义 —— 写死，保证跨月行号对齐
 # ════════════════════════════════════════════════════════════════════════
 # (key, 中文行名, 西班牙语科目, kind, 说明)
@@ -457,8 +650,10 @@ def money(x, dec=2):
         return 0.0
 
 
-def fmt(x, dec=2):
-    """1427367.66 -> '1,427,367.66'"""
+def fmt(x, dec=None):
+    """1427367.66 -> '1,427,367.66'。不给 dec 时按本站点的币种精度（智利 0 位）。"""
+    if dec is None:
+        dec = MONEY_DEC
     try:
         return "{:,.{d}f}".format(float(x), d=dec)
     except (TypeError, ValueError):
@@ -622,7 +817,7 @@ def _ventas_header_row(path, limit=16):
 
 
 def load_ventas(folder):
-    path = _first(["*Ventas_MX*.xlsx", "*Ventas*.xlsx"], folder)
+    path = _first([VENTAS_GLOB, "*Ventas*.xlsx"], folder)
     if not path:
         raise IOError("找不到 Ventas 报表：%s" % folder)
     hdr, notice = _ventas_header_row(path)
@@ -681,7 +876,8 @@ def load_billing(folder):
     df["cdate"] = pd.to_datetime(df.get(F_CHARGE_DATE), errors="coerce")
     df["sdate"] = pd.to_datetime(df.get(F_SALE_DATE), errors="coerce")
     df["charge_no"] = idkey(df[F_CHARGE_NO]) if F_CHARGE_NO in df.columns else ""
-    df["reverses"] = idkey(df[F_REVERSES]) if F_REVERSES in df.columns else ""
+    rcol = next((c for c in (F_REVERSES,) + F_REVERSES_ALT if c in df.columns), None)
+    df["reverses"] = idkey(df[rcol]) if rcol else ""
     df["k_sale"] = idkey(df[F_SALE_NO]) if F_SALE_NO in df.columns else ""
     df["k_pack"] = idkey(df[F_PACK_NO]) if F_PACK_NO in df.columns else ""
     df["channel"] = df[F_CHANNEL].astype(str) if F_CHANNEL in df.columns else ""
@@ -765,6 +961,131 @@ def load_storage(folder, p0, p1):
     vals = pd.to_numeric(s[col], errors="coerce").dropna()
     accrual = float(vals.iloc[-1]) if len(vals) else 0.0
     return best, accrual, storage_file_range(os.path.basename(best))
+
+
+# ── 智利：账单周期跨月，三份"按账单出"的报表要按计费日拆回自然月 ──────────
+# 墨西哥的 Pagos / Cargos Full / 仓储费报表各自正好是一个自然月，上面三个
+# load_* 按文件名挑那一份即可。智利的账单是 8 号到次月 7 号（见 bill_cycles），
+# 一个会计月横跨两张账单，所以下面三个函数读**两期**文件，再按每一行自己的
+# 日期切出会计月那一段。只在 is_cl() 时调用，墨西哥路径不经过这里。
+
+def payable_of(frame):
+    """一组账单行里"要单独付钱"的部分：(No 通道费用, 冲销掉 No 通道费用的行)。
+
+    冲销优先按 Cargo que bonifica/anula 关联到的原费用的通道判断，一行都关联
+    不上时退回按科目字典的"账单级"判断 —— 与 derive() 里桥 B 的口径相同。
+    """
+    no = float(frame[frame["channel"] == CH_NO]["amount"].sum())
+    rev = frame[frame["is_rev"] & (frame["parent_channel"] == CH_NO)]
+    if not len(rev):
+        rev = frame[frame["is_rev"] & frame["parent_detalle"].map(
+            lambda d: FEE_BY_ES.get(str(d), (None, None, None))[2] is False).astype(bool)]
+    return no, float(rev["amount"].sum())
+
+
+def _cycle_file(pattern, folder, y, mth):
+    for p in sorted(glob.glob(os.path.join(folder, pattern))):
+        if not os.path.basename(p).startswith("~$") \
+                and file_month_token(os.path.basename(p)) == (y, mth):
+            return p
+    return None
+
+
+def load_pagos_cycles(folder, cycles):
+    """每个账单周期的 Reporte_Pagos_Facturas：汇总页 + "Detalle de Pagos del mes"。
+
+    明细页逐行写着"这笔付款的哪一部分付了哪一张费用（Número del cargo /
+    Fecha del cargo）"，所以能把一笔付款精确地拆到自然月：DAB_CL 2026-09 实测
+    Septiembre 账单的付款 583,596 里 404,998 付的是 9/1–9/7 的费用，Octubre
+    账单的付款 2,956,626 里 2,334,297 付的是 9/8–9/30 的费用。
+    """
+    out = []
+    for y, mth, c0, c1 in cycles:
+        path = _cycle_file("Reporte_Pagos_Facturas_*.xlsx", folder, y, mth)
+        P, D = pd.DataFrame(), pd.DataFrame()
+        if path:
+            try:
+                P = pd.read_excel(path, sheet_name="Pagos y notas de crédito",
+                                  header=PAGOS_HEADER_ROW).dropna(how="all")
+            except Exception:
+                P = pd.DataFrame()
+            try:
+                D = pd.read_excel(path, sheet_name="Detalle de Pagos del mes",
+                                  header=PAGOS_HEADER_ROW).dropna(how="all")
+            except Exception:
+                D = pd.DataFrame()
+        out.append({"bill": (y, mth), "start": c0, "end": c1, "path": path, "P": P, "D": D})
+    return out
+
+
+def _date_col(df, names=("Fecha de cargo", "Fecha del cargo")):
+    return next((c for c in df.columns if str(c).strip() in names), None)
+
+
+def load_cargos_full_cycles(folder, cycles, p0, p1):
+    """Full 费用明细，两期文件里计费日落在会计月内的行。
+
+    返回 (路径们, {分表: (金额, 行数)}, 合计, 缺的账单名)。
+    """
+    paths, sheets, total, missing = [], {}, 0.0, []
+    for y, mth, c0, c1 in cycles:
+        path = _cycle_file("Reporte_Cargos_Full_*.xlsx", folder, y, mth)
+        if not path:
+            missing.append("%s %d" % (MONTH_FULL_ES[mth], y))
+            continue
+        paths.append(path)
+        for sn in pd.ExcelFile(path).sheet_names:
+            d = pd.read_excel(path, sheet_name=sn, header=CARGOS_HEADER_ROW)
+            col = next((c for c in d.columns if "Monto del cargo" in str(c)), None)
+            dc = _date_col(d)
+            if col is None or dc is None:
+                continue
+            dt = pd.to_datetime(d[dc], errors="coerce")
+            v = pd.to_numeric(d[col], errors="coerce")
+            keep = v.notna() & (dt >= p0) & (dt <= p1)
+            s, n = sheets.get(sn, (0.0, 0))
+            sheets[sn] = (s + float(v[keep].sum()), n + int(keep.sum()))
+            total += float(v[keep].sum())
+    return paths, sheets, total, missing
+
+
+# 仓储费报表（Detalle 页）按"占用日"逐日给出每个 SKU 的费用；账单的仓储费
+# 计费日比占用日晚一天（DAB_CL：报表 08/09 合计 23,410.25 ↔ 账单 9/9 的
+# 23,409；报表 09/09 22,882.46 ↔ 账单 9/10 22,880），差的几个比索是逐行取整。
+STORAGE_BILL_LAG_DAYS = 1
+
+
+def load_storage_daily(folder, p0, p1):
+    """仓储费报表里占用日落在会计月内的逐日费用之和。
+
+    返回 (路径们, 合计, (覆盖起, 覆盖止) 或 None, 覆盖天数)。智利的仓储报表
+    也按 8 号切期，下载的是哪几期就只覆盖哪几天 —— 覆盖不全时如实说出来，
+    不拿半个月的数去和整月比。
+    """
+    paths, total, days = [], 0.0, []
+    for p in sorted(glob.glob(os.path.join(folder, "*Costos_por_servicio_almacenamiento.xlsx"))):
+        rng = storage_file_range(os.path.basename(p))
+        if not rng or rng[1] < p0 or rng[0] > p1:
+            continue
+        try:
+            t = pd.read_excel(p, sheet_name="Detalle", header=STORAGE_HEADER_ROW)
+        except Exception:
+            continue
+        hit = False
+        for c in t.columns:
+            dt = pd.to_datetime(str(c), format="%d/%m/%Y", errors="coerce")
+            if pd.isna(dt) or dt < p0 or dt > p1:
+                continue
+            # 每个 SKU 两行：费用行（数字）和件数行（"95 u"），后者转数字为 NaN
+            total += float(pd.to_numeric(t[c], errors="coerce").sum())
+            days.append(dt)
+            hit = True
+        if hit:
+            paths.append(p)
+    if not days:
+        return paths, 0.0, None, 0
+    days = sorted(set(days))
+    return paths, total, (days[0], days[-1]), len(days)
 
 
 def load_returns(folder):
@@ -1280,6 +1601,106 @@ def credit_note_audit(S, folder):
 # 推导层 —— 把"发现"固化成公式
 # ════════════════════════════════════════════════════════════════════════
 
+def commission_column_match(A, L):
+    """智利"没有代扣"的逐单证据：Ventas 佣金列与账单纯佣金逐单相等的订单数。
+
+    墨西哥这两者差 ~9%（代扣税），所以这个比对是区分两种税制最直接的办法：
+    若智利哪天开始代扣，相等的比例会掉到接近 0，no_withholding 校验随之失败。
+    只比能按订单号直接挂上账单佣金、且佣金列不为 0 的订单；包裹（佣金记在母
+    行、账单记在子行）和退货（佣金列并进了退货处理费）本来就不相等，照样算在
+    分母里 —— 比例因此是保守的。
+    """
+    ids = set(A["oid"]) | set(A["pid"])
+    ids.discard(""); ids.discard("nan")
+    com = L[(~L["is_rev"]) & L["parent_detalle"].map(
+        lambda d: FEE_BY_ES.get(str(d), (None, None, None))[1] == "commission").astype(bool)]
+    by = {}
+    for ks, kp, amt in zip(com["k_sale"].astype(str).str.strip(),
+                           com["k_pack"].astype(str).str.strip(), com["amount"]):
+        k = ks if ks in ids else (kp if kp in ids else None)
+        if k:
+            by[k] = by.get(k, 0.0) + float(amt)
+    n = of = 0
+    for oid, v in zip(A["oid"], -num(A, V_COMMISSION)):
+        b = by.get(oid)
+        if b is None or abs(v) <= ZERO_TOL:
+            continue
+        of += 1
+        if abs(float(v) - b) <= TOL_CENT:
+            n += 1
+    return {"com_match_n": n, "com_match_of": of}
+
+
+def _derive_pagos_cycles(S, m, folder, B, FA, p0, p1):
+    """智利的桥 B 输入：会计月内的费用实际付了多少。
+
+    应付（m["payable"]）照旧按计费日在会计月内的 No 通道费用算；实付取两张
+    账单的付款明细页里"付给计费日在会计月内的费用"的那部分。另外逐张账单记
+    下"整张账单应付 vs 整张账单实付"，供桥 B 和 ⑩ 页说明（两张都应各自平）。
+
+    贷记单（pay_nc）取计费日在会计月内的 Notas de Crédito 行：智利的 Pagos
+    汇总页把贷记单记在"用来抵哪一期"的账单下，和计费日对不上自然月。
+    """
+    cyc = load_pagos_cycles(folder, S["bill_cycles"])
+    frames, info, why = [], [], []
+    in_month, types, dates = 0.0, set(), []
+    for c in cyc:
+        y, mth = c["bill"]
+        label = "%s %d" % (MONTH_FULL_ES[mth], y)
+        span = "%s–%s" % (c["start"].strftime("%m/%d"), c["end"].strftime("%m/%d"))
+        P, D = c["P"], c["D"]
+        rows = B[(B["cdate"] >= c["start"]) & (B["cdate"] <= c["end"])]
+        no, rev = payable_of(rows)
+        paid_total, nc_ids = 0.0, set()
+        if len(P) and "Tipo de pago" in P.columns:
+            P = P.copy()
+            P["_bill"] = label
+            frames.append(P)
+            tp = P["Tipo de pago"].astype(str)
+            nota = tp.str.contains("Nota", na=False)
+            paid = ~nota & tp.str.strip().ne("") & tp.ne("nan")
+            paid_total = float(pd.to_numeric(P[paid]["Importe total"], errors="coerce")
+                               .fillna(0.0).sum())
+            types |= set(tp[paid])
+            dates += list(pd.to_datetime(P[paid].get("Fecha de pago / Emisión de NC"),
+                                         errors="coerce").dropna())
+            if "Número de nota de crédito" in P.columns:
+                nc_ids = set(P.loc[nota, "Número de nota de crédito"].astype(str))
+        applied = 0.0
+        need = {"Parte del pago aplicado a cargos", "Fecha del cargo"}
+        if len(D) and need <= set(D.columns):
+            fc = pd.to_datetime(D["Fecha del cargo"], errors="coerce")
+            part = pd.to_numeric(D["Parte del pago aplicado a cargos"], errors="coerce").fillna(0.0)
+            mine = (fc >= p0) & (fc <= p1)
+            if "Número del pago" in D.columns:
+                mine &= ~D["Número del pago"].astype(str).isin(nc_ids)
+            applied = float(part[mine].sum())
+        if not c["path"]:
+            has_bill = _cycle_file("Reporte_Facturacion_MercadoLibre_*.xlsx", folder, y, mth)
+            why.append("%s 账单（%s）%s" % (
+                label, span, "还没有 Reporte_Pagos_Facturas —— 账单尚未关账或尚未扣款，平台还没出付款报表"
+                if has_bill else "的 Reporte_Pagos_Facturas 没有下载"))
+        elif not paid_total:
+            why.append("%s 账单（%s）还没有付款记录（账单多半尚未关账或尚未扣款）"
+                       % (label, span))
+        elif not (len(D) and need <= set(D.columns)):
+            why.append("%s 账单的付款明细页（Detalle de Pagos del mes）读不出来，"
+                       "无法把付款拆到计费日" % label)
+        in_month += applied
+        info.append({"label": label, "span": span, "path": c["path"],
+                     "payable": no + rev, "paid": paid_total, "applied_month": applied})
+    S["pagos"] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    paths = [c["path"] for c in cyc if c["path"]]
+    S["files"]["pagos"] = " + ".join(paths) if paths else None
+    m["pay_auto"] = in_month
+    m["pay_cycles"] = info
+    m["pay_complete"] = not why
+    m["pay_missing"] = why
+    m["pay_types"] = sorted(types)
+    m["pay_date"] = max(dates).strftime("%Y-%m-%d") if dates else ""
+    m["pay_nc"] = -float(FA[FA["_doc"] == "NC"]["amount"].sum())
+
+
 def derive(store, folder, p0, p1):
     """读一家店一个月的全部原始文件，算出报表需要的每一个数。"""
     S = {"store": store, "folder": folder, "files": {}, "anomalies": [],
@@ -1294,7 +1715,17 @@ def derive(store, folder, p0, p1):
 
     B = load_billing(folder)
     S["billing_all"] = B
+    # 会计月归属规则（两国相同）：账单行按它自己的计费日 Fecha del cargo 归入
+    # 自然月，**不按账单文件名**。所有账单文件先合并再筛，所以：
+    #   墨西哥：账单 = 自然月，9 月只取到 Septiembre 那一张；
+    #   智利：账单是 8 号到次月 7 号，9 月取到的是 Septiembre 账单里 9/1–9/7 的行
+    #         ＋ Octubre 账单里 9/8–9/30 的行（见 bill_cycles）。
+    # 订单级费用另走 billing_linked（按订单号跨全部账单关联，不看计费日）。
     FA = B[(B["cdate"] >= p0) & (B["cdate"] <= p1)].copy()
+    # 墨西哥是自然月账单，不推；智利按店从账单/仓储文件推切期日。
+    S["cycle_day"] = 1 if BILL_CYCLE_DAY == 1 else infer_cycle_day(B, folder)
+    S["bill_cycles"] = bill_cycles(p0.year, p0.month, S["cycle_day"])
+    S["bill_open"] = open_bills(folder, S["bill_cycles"]) if S["cycle_day"] != 1 else []
     S["billing"] = FA
 
     ids = set(A["oid"]) | set(A["pid"])
@@ -1329,8 +1760,8 @@ def derive(store, folder, p0, p1):
     m["refund"] = float(-num(A, V_REFUND).sum())
     m["total"] = float(num(A, V_TOTAL).sum())
     m["coupon"] = float(A["coupon"].sum())
-    m["coupon_n"] = int((A["coupon"].abs() > 0.02).sum())
-    denoms = A.loc[A["coupon"].abs() > 0.02, "coupon"].round(2).value_counts()
+    m["coupon_n"] = int((A["coupon"].abs() > COUPON_TOL).sum())
+    denoms = A.loc[A["coupon"].abs() > COUPON_TOL, "coupon"].round(2).value_counts()
     m["coupon_denoms"] = {float(k): int(v) for k, v in denoms.items()}
 
     m["com_gross"] = bucket_sum(L, "commission", reversal=False)
@@ -1347,6 +1778,14 @@ def derive(store, folder, p0, p1):
     m["iva_in_gmv"] = m["ing"] * IVA_RATE / (1 + IVA_RATE)
     m["net_revenue_exvat"] = m["ing"] - m["iva_in_gmv"]
     m["tax_vs_iva"] = (m["tax_ret"] / m["iva_in_gmv"]) if m["iva_in_gmv"] else 0.0
+    if not WITHHOLDING:
+        # 智利没有代扣：上面的 tax_ret 只是"Ventas 佣金列 − 账单纯佣金"这个
+        # 算术差（各座桥要靠它勾稽，所以键名不变），它不是税。拆成两块：
+        #   账单里关联到本期订单的退货处理费（Ventas 把它并进了佣金列）
+        #   ＋ 剩余（退货处理费尚未出账单、包裹母子行错位等时间/关联差）
+        m["vcol_dev"] = m["dev_net"]
+        m["vcol_rest"] = m["tax_ret"] - m["dev_net"]
+        m.update(commission_column_match(A, L))
 
     # 桥 A 残差：等式成立时应为 0
     m["resid"] = m["total"] - (m["ing"] + m["env_ing"] - m["com_imp"]
@@ -1409,31 +1848,44 @@ def derive(store, folder, p0, p1):
                                   % (es, int(has_sale.sum())))
 
     # ---- 账单支付 ----
-    ppath, P = load_pagos(folder, p0.year, p0.month)
-    S["files"]["pagos"] = ppath
-    S["pagos"] = P
-    if len(P) and "Tipo de pago" in P.columns:
-        tp = P["Tipo de pago"].astype(str)
-        # 实际付款 = 除贷记单以外的所有支付行。以前只认类型里带 "Cobro" 的行，
-        # 而平台实际写的是 "Pago con débito automático"（自动扣款）或 "Pago
-        # voluntario"（主动付款）—— 于是实扣永远是 0，桥B 每家店每个月都不过。
-        # 2026-10-14 用 11 家店 9 月的真实数据核对：9 家的付款行金额与应付分毫
-        # 不差；另两家的差额是真实的（TOOL_TA03 少付 5,181.17，UNIT_TA04 多付
-        # 1.90）。贷记单另算：它冲的是订单级费用，不是这张账单的付款。
-        nota = tp.str.contains("Nota", na=False)
-        paid = ~nota & tp.str.strip().ne("") & tp.ne("nan")
-        m["pay_auto"] = float(P[paid]["Importe total"].sum())
-        m["pay_nc"] = float(P[nota]["Importe total"].sum())
-        m["pay_types"] = sorted(set(tp[paid]))
-        pd_col = "Fecha de pago / Emisión de NC"
-        dts = pd.to_datetime(P[paid].get(pd_col), errors="coerce").dropna()
-        m["pay_date"] = dts.max().strftime("%Y-%m-%d") if len(dts) else ""
+    if S["cycle_day"] != 1:
+        # 智利：会计月横跨两张账单，实付按 Pagos 明细页逐笔拆到计费日（见
+        # load_pagos_cycles）。墨西哥一张账单就是一个月，走下面原来的路径。
+        _derive_pagos_cycles(S, m, folder, B, FA, p0, p1)
     else:
-        m["pay_auto"] = m["pay_nc"] = 0.0
-        m["pay_date"] = ""
+        ppath, P = load_pagos(folder, p0.year, p0.month)
+        S["files"]["pagos"] = ppath
+        S["pagos"] = P
+        if len(P) and "Tipo de pago" in P.columns:
+            tp = P["Tipo de pago"].astype(str)
+            # 实际付款 = 除贷记单以外的所有支付行。以前只认类型里带 "Cobro" 的行，
+            # 而平台实际写的是 "Pago con débito automático"（自动扣款）或 "Pago
+            # voluntario"（主动付款）—— 于是实扣永远是 0，桥B 每家店每个月都不过。
+            # 2026-10-14 用 11 家店 9 月的真实数据核对：9 家的付款行金额与应付分毫
+            # 不差；另两家的差额是真实的（TOOL_TA03 少付 5,181.17，UNIT_TA04 多付
+            # 1.90）。贷记单另算：它冲的是订单级费用，不是这张账单的付款。
+            nota = tp.str.contains("Nota", na=False)
+            paid = ~nota & tp.str.strip().ne("") & tp.ne("nan")
+            m["pay_auto"] = float(P[paid]["Importe total"].sum())
+            m["pay_nc"] = float(P[nota]["Importe total"].sum())
+            m["pay_types"] = sorted(set(tp[paid]))
+            pd_col = "Fecha de pago / Emisión de NC"
+            dts = pd.to_datetime(P[paid].get(pd_col), errors="coerce").dropna()
+            m["pay_date"] = dts.max().strftime("%Y-%m-%d") if len(dts) else ""
+        else:
+            m["pay_auto"] = m["pay_nc"] = 0.0
+            m["pay_date"] = ""
 
     # ---- Full 费用交叉核对 ----
-    cpath, csheets, ctotal = load_cargos_full(folder, p0.year, p0.month)
+    if S["cycle_day"] != 1:
+        # 智利：两期 Cargos Full 文件里计费日落在本月的行（见 load_cargos_full_cycles）。
+        # 缺任何一期就无法核对整月，按"没有文件"跳过并说明缺哪一期。
+        cpaths, csheets, ctotal, cmiss = load_cargos_full_cycles(
+            folder, S["bill_cycles"], p0, p1)
+        cpath = " + ".join(cpaths) if cpaths and not cmiss else None
+        S["cargos_full_missing"] = cmiss
+    else:
+        cpath, csheets, ctotal = load_cargos_full(folder, p0.year, p0.month)
     S["files"]["cargos_full"] = cpath
     S["cargos_full_sheets"] = csheets
     m["cargos_full_report_total"] = ctotal
@@ -1448,7 +1900,24 @@ def derive(store, folder, p0, p1):
                               if FEE_BY_ES[es][1] == "misc"))
 
     # ---- 仓储费报表 ----
-    spath, accrual, srange = load_storage(folder, p0, p1)
+    if S["cycle_day"] != 1:
+        # 智利：仓储费报表也按账单切期日切期，只取占用日落在本月的那几天，并拿账单里
+        # **同样那几天**（计费日晚一天，见 STORAGE_BILL_LAG_DAYS）的仓储费来比。
+        spaths, accrual, srange, sdays = load_storage_daily(folder, p0, p1)
+        spath = " + ".join(spaths) if spaths else None
+        m["storage_days"] = sdays
+        m["storage_month_days"] = int((p1 - p0).days) + 1
+        st = FA[FA["parent_detalle"].astype(str) == "Cargo por servicio de almacenamiento Full"]
+        if srange:
+            lag = pd.Timedelta(days=STORAGE_BILL_LAG_DAYS)
+            b0, b1 = srange[0] + lag, srange[1] + lag
+            stb = B[(B["parent_detalle"].astype(str) == "Cargo por servicio de almacenamiento Full")
+                    & (B["cdate"] >= b0) & (B["cdate"] <= b1)]
+            m["storage_bill_cmp"] = float(stb["amount"].sum())
+        else:
+            m["storage_bill_cmp"] = float(st["amount"].sum())
+    else:
+        spath, accrual, srange = load_storage(folder, p0, p1)
     S["files"]["storage"] = spath
     m["storage_accrual"] = accrual
     m["storage_range"] = srange
@@ -1479,6 +1948,17 @@ def derive(store, folder, p0, p1):
     except Exception as e:                          # 验证本身坏了不能拖垮报表
         S["mp_orders"] = None
         S["anomalies"].append("MercadoPago 逐单验证没能完成：%s" % str(e)[:120])
+    if not WITHHOLDING and S.get("mp_orders"):
+        # 智利：mp_by_order 原样运行（不改口径），只在结果上标注一类已查明的差额。
+        # 买家另付的运费（Ingresos por envío）在 MercadoPago 里是一笔单独的
+        # SETTLEMENT_SHIPPING，收款号和商品那笔不同，账单的 Pago 列只指向商品那笔
+        # —— 所以这些订单"平台少到账"的正好是运费收入。DAB_CL 2026-09：250 单
+        # 不一致里 216 单的差额分毫不差地等于该单的运费收入；Tecnohub_CL 3/3。
+        env = dict(zip(A["oid"], num(A, V_SHIP_INCOME)))
+        ship = [x for x in S["mp_orders"]["differ"]
+                if env.get(x[0], 0.0) > CN_TOL and abs((x[1] - x[2]) - env[x[0]]) <= CN_TOL]
+        S["mp_orders"]["ship_explained"] = (len(ship), float(sum(x[1] - x[2] for x in ship)))
+        S["mp_orders"]["ship_ids"] = set(x[0] for x in ship)
 
     # ---- 组合单 / 多件单 / 换货单 ----
     m["pack_flag_yes"] = int((A[V_PACK_FLAG] == "Sí").sum()) if V_PACK_FLAG in A.columns else 0
@@ -1533,6 +2013,10 @@ def check_hints(c, S):
                 "排查提示：逐单比的是销售报表 Total 和该订单收款在 MercadoPago 的净到账（不限日期）。"
                 "一次买几件的子行（金额为 0）已跳过，钱记在包裹行上。剩下的差额原因还没有逐类查明，"
                 "请按订单号在卖家后台核对退款、争议和运费；清单见【%s】。" % SHEET_NAMES[9]]
+    if key == "no_withholding":
+        return ["排查提示：看③桥 E。剩余差额变大时，先按订单号找销售报表佣金列与账单 Cargo por venta "
+                "不相等的订单（退货、包裹以外的）；MercadoPago 流水 TAXES_AMOUNT 不为 0 说明平台开始代扣，"
+                "智利报表的结构需要重新设计。"]
     if key in ("billing_present", "sales_window", "tax_rate"):
         return ["排查提示：先核对本期账单及销售窗口是否完整；税率异常可能由缺账单、关联失败或税务状态变化引起。"]
     if key.startswith("cn_"):
@@ -1540,7 +2024,96 @@ def check_hints(c, S):
     return []
 
 
-def validate(stores, tol=0.05):
+def _billing_present_cycles(S):
+    """智利版"本期账单已下载"：会计月横跨的两张账单都得在。
+
+    只有一张时费用行会静默缺一段（缺 Octubre 就少了 9/8–9/30 的广告和仓储），
+    行数却不是 0，墨西哥那条"有没有行"的判断看不出来。按账单文件名判断。
+    """
+    name, p0 = S["store"], S["p0"]
+    have = set()
+    for f in glob.glob(os.path.join(S["folder"], "Reporte_Facturacion_MercadoLibre_*.xlsx")):
+        tok = file_month_token(os.path.basename(f))
+        if tok:
+            have.add(tok)
+    need = [(y, mth, c0, c1) for y, mth, c0, c1 in S["bill_cycles"]]
+    miss = ["%s %d（%s–%s 的费用）" % (MONTH_FULL_ES[mth], y, c0.strftime("%m/%d"),
+                                       c1.strftime("%m/%d"))
+            for y, mth, c0, c1 in need if (y, mth) not in have]
+    n_bill = len(S["billing"])
+    labels = "＋".join("%s %d（%s–%s）" % (MONTH_FULL_ES[mth], y, c0.strftime("%m/%d"),
+                                          c1.strftime("%m/%d")) for y, mth, c0, c1 in need)
+    return _chk(
+        "billing_present", name, "本期账单已下载",
+        n_bill > 0 and not miss,
+        ("本期账单 %d 行，计费日落在 %s 内；本店账单按 %s 切期，本月取自 %s 两张账单%s"
+         % (n_bill, p0.strftime("%Y-%m"), cycle_cn(cycle_day(S)), labels,
+            ("。⚠ %s 账单尚未关账（平台注明“podría tener cambios hasta el cierre”），"
+             "本月落在它里面的费用以后还可能变，关账后建议重出" % "、".join(S["bill_open"]))
+            if S.get("bill_open") else "")
+         if not miss else
+         "⚠ 本店的账单是 %s，%s 这个会计月要用 %s 两张账单，"
+         "目录里缺：%s。缺的那段计费日上的广告、仓储等费用全部缺失，桥 B 和 Full "
+         "核对也会跟着失真。等账单关账后用 run_batch.py --month %s "
+         "重新下载再重出。" % (cycle_cn(cycle_day(S)), p0.strftime("%Y-%m"), labels,
+                             "；".join(miss), p0.strftime("%Y-%m"))))
+
+
+def _bridge_b_cycles(S):
+    """智利版桥 B：会计月内的应付 vs 两张账单里付给本月费用的那部分。"""
+    m, name = S["m"], S["store"]
+    per = "；".join("%s 账单（%s）整张应付 %s、实付 %s%s" % (
+        c["label"], c["span"], fmt(c["payable"]), fmt(c["paid"]),
+        "" if not c["paid"] else (" ✓" if abs(c["payable"] - c["paid"]) <= TOL_CENT else " ✗"))
+        for c in m.get("pay_cycles", []))
+    if not m.get("pay_complete"):
+        return _chk("bridge_b", name, "桥B 账单应付 vs 实际扣款", True,
+                    "本月横跨两张账单，付款记录不全，无法核对整月：%s。（%s）"
+                    % ("；".join(m.get("pay_missing", [])), per), skipped=True)
+    d = m["payable"] - m["pay_auto"]
+    return _chk("bridge_b", name, "桥B 账单应付 vs 实际扣款",
+                abs(d) <= TOL_CENT,
+                "计费日在本月的应付 %s，两张账单的付款里付给这些费用的部分合计 %s，差 %s。"
+                "（%s）" % (fmt(m["payable"]), fmt(m["pay_auto"]), fmt(d), per))
+
+
+# 智利"佣金列里不是佣金的部分"扣掉退货处理费后，剩余占 GMV 的上限。实测 DAB_CL
+# 2026-09 是 −0.005%（时间差：退货处理费已进 Ventas、还没出账单等）。若平台开始
+# 代扣（墨西哥是 ~9%），这个比例会跳到几个百分点，远超此线。
+CL_VCOL_REST_MAX = 0.005
+
+
+def _no_withholding_check(S):
+    """智利：确认"平台不代扣税"这个前提在本期数据里仍然成立。
+
+    三条证据，任一不成立就失败（error 级 —— 前提一变，损益表的结构就不对了）：
+      ① MercadoPago 结算流水的 TAXES_AMOUNT 合计为 0（有流水时）；
+      ② Ventas 佣金列 − 账单纯佣金 − 退货处理费，剩余不超过 GMV 的 0.5%；
+      ③ （说明用）佣金列与账单纯佣金逐单相等的订单比例。
+    """
+    m, name = S["m"], S["store"]
+    mp = S.get("mp") or {}
+    taxes = mp.get("tax") if mp else None
+    rest = m.get("vcol_rest", 0.0)
+    rate = (rest / m["ing"]) if m["ing"] else 0.0
+    ok = abs(rate) <= CL_VCOL_REST_MAX and (taxes is None or abs(taxes) <= TOL_CENT)
+    n, of = m.get("com_match_n", 0), m.get("com_match_of", 0)
+    return _chk(
+        "no_withholding", name, "平台未代扣税（智利）",
+        ok,
+        "Ventas 佣金列比账单纯佣金多 %s，其中退货处理费 %s，剩余 %s（占 GMV %s，上限 %s）；"
+        "佣金列与账单佣金逐单相等 %d/%d 单；MercadoPago 流水 TAXES_AMOUNT %s。%s"
+        % (fmt(m["tax_ret"]), fmt(m.get("vcol_dev", 0.0)), fmt(rest), pct(rate, 3),
+           pct(CL_VCOL_REST_MAX, 1), n, of,
+           "无流水，未核" if taxes is None else "合计 %s" % fmt(taxes),
+           "前提成立：智利平台不代扣 IVA/所得税，报表不设代扣税行。" if ok else
+           "⚠ 前提不成立：平台可能开始代扣税金，或佣金列混进了新的扣款。"
+           "智利报表按“不代扣”设计，必须先查明再用本报表。"))
+
+
+def validate(stores, tol=None):
+    if tol is None:
+        tol = BRIDGE_A_TOL       # 墨西哥 0.05；智利按 1 比索
     out = []
     for S in stores:
         m, name = S["m"], S["store"]
@@ -1556,10 +2129,12 @@ def validate(stores, tol=0.05):
                         "残差 %s（阈值 %s）。不为零说明还有未识别的隐藏费用或折扣。"
                         % (fmt(m["resid"]), fmt(tol))))
 
-        if S["files"].get("pagos"):
+        if cycle_day(S) != 1:
+            out.append(_bridge_b_cycles(S))
+        elif S["files"].get("pagos"):
             d = m["payable"] - m["pay_auto"]
             out.append(_chk("bridge_b", name, "桥B 账单应付 vs 实际扣款",
-                            abs(d) <= 0.01,
+                            abs(d) <= TOL_CENT,
                             "应付 %s，实扣 %s，差 %s" % (fmt(m["payable"]), fmt(m["pay_auto"]), fmt(d))))
         else:
             out.append(_chk("bridge_b", name, "桥B 账单应付 vs 实际扣款", True,
@@ -1574,24 +2149,30 @@ def validate(stores, tol=0.05):
                             "；".join("%s(%s)" % (u["detalle"], fmt(u["amount"])) for u in unk))))
 
         out.append(_chk("bill_block_balance", name, "账单费用小计自平",
-                        abs(m["unc_bill"]) <= 0.01,
+                        abs(m["unc_bill"]) <= TOL_CENT,
                         "兜底行金额 %s。不为零说明有科目未在 FEE_CATALOG 里、或已登记科目出现在非预期位置。"
                         % fmt(m["unc_bill"]), severity="warn"))
 
-        r = m["tax_rate_gross"]
-        out.append(_chk("tax_rate", name, "代扣税率在预期区间",
-                        TAX_RATE_MIN <= r <= TAX_RATE_MAX,
-                        "实测 %s（预期 %s–%s）。越界说明税制或账号税务状态变了，需重新确认。"
-                        % (pct(r, 3), pct(TAX_RATE_MIN, 1), pct(TAX_RATE_MAX, 1))))
+        if WITHHOLDING:
+            r = m["tax_rate_gross"]
+            out.append(_chk("tax_rate", name, "代扣税率在预期区间",
+                            TAX_RATE_MIN <= r <= TAX_RATE_MAX,
+                            "实测 %s（预期 %s–%s）。越界说明税制或账号税务状态变了，需重新确认。"
+                            % (pct(r, 3), pct(TAX_RATE_MIN, 1), pct(TAX_RATE_MAX, 1))))
+        else:
+            out.append(_no_withholding_check(S))
 
         if S["files"].get("cargos_full"):
             d = m["cargos_full_report_total"] - m["full_bill_total"]
             out.append(_chk("cargos_full", name, "Full 费用报表 vs 账单",
-                            abs(d) <= 0.01,
+                            abs(d) <= TOL_CENT,
                             "Full 报表 %s，账单口径 %s，差 %s（两者必须相等，相加即重复计数）"
                             % (fmt(m["cargos_full_report_total"]), fmt(m["full_bill_total"]), fmt(d))))
         else:
             out.append(_chk("cargos_full", name, "Full 费用报表 vs 账单", True,
+                            ("缺 %s 的 Reporte_Cargos_Full（本月横跨两期账单，两期都要有），跳过"
+                             % "、".join(S["cargos_full_missing"]))
+                            if S.get("cargos_full_missing") else
                             "本期没有 Reporte_Cargos_Full 文件，跳过", skipped=True))
 
         MO = S.get("mp_orders")
@@ -1606,7 +2187,13 @@ def validate(stores, tol=0.05):
                                % (k, fmt(MO["sum_mp"] - MO["sum_v"])) if k else "",
                                "；另有 %d 单对不上收款号" % (MO["unlinked"] + MO["no_cash"])
                                if MO["unlinked"] + MO["no_cash"] else "",
-                               MO["span"]),
+                               MO["span"])
+                            + ("。其中 %d 单（合计 %s）的差额正好等于买家另付的运费 —— 智利运费在 "
+                               "MercadoPago 是单独一笔 SETTLEMENT_SHIPPING，收款号不同、账单的 Pago "
+                               "列关联不到，不是少付；其余 %d 单需人工核对"
+                               % (MO["ship_explained"][0], fmt(MO["ship_explained"][1]),
+                                  k - MO["ship_explained"][0])
+                               if MO.get("ship_explained") and MO["ship_explained"][0] else ""),
                             severity="warn"))
         elif MO is not None:
             out.append(_chk("mp_settlement", name, "MercadoPago 逐单交叉验证", True,
@@ -1622,18 +2209,21 @@ def validate(stores, tol=0.05):
         # 0% 或几十个百分点、桥B 和 Full 核对直接跳过），但那些都是**症状**。
         # 没有这一条，人只能从症状倒推病因。
         n_bill = len(S["billing"])
-        out.append(_chk(
-            "billing_present", name, "本期账单已下载",
-            n_bill > 0,
-            ("本期账单 %d 行，计费日落在 %s 内" % (n_bill, S["p0"].strftime("%Y-%m"))
-             if n_bill else
-             "⚠ 这个下载目录里**没有 %s 的账单**（目录里的账单是 %s）。"
-             "平台费用、佣金、代扣税全部缺失，后面几条校验的异常都是这一条的连带结果。"
-             "用 run_batch.py --month %s 重新下载该月账单再重出。"
-             % (S["p0"].strftime("%Y-%m"),
-                "、".join(sorted({d.strftime("%Y-%m") for d in S["billing_all"]["cdate"]
-                                  if pd.notna(d)})) or "（一份都没有）",
-                S["p0"].strftime("%Y-%m")))))
+        if cycle_day(S) != 1:
+            out.append(_billing_present_cycles(S))
+        else:
+            out.append(_chk(
+              "billing_present", name, "本期账单已下载",
+              n_bill > 0,
+              ("本期账单 %d 行，计费日落在 %s 内" % (n_bill, S["p0"].strftime("%Y-%m"))
+               if n_bill else
+               "⚠ 这个下载目录里**没有 %s 的账单**（目录里的账单是 %s）。"
+               "平台费用、佣金、代扣税全部缺失，后面几条校验的异常都是这一条的连带结果。"
+               "用 run_batch.py --month %s 重新下载该月账单再重出。"
+               % (S["p0"].strftime("%Y-%m"),
+                  "、".join(sorted({d.strftime("%Y-%m") for d in S["billing_all"]["cdate"]
+                                    if pd.notna(d)})) or "（一份都没有）",
+                  S["p0"].strftime("%Y-%m")))))
 
         # ---- 销售报表是否覆盖整个会计月 ----
         # 销售报表是**滚动窗口**导出：窗口起点晚于月初，这个月就是被截断的。
@@ -1796,16 +2386,35 @@ def store_count_cn(stores):
 # ① 阅读说明
 # ════════════════════════════════════════════════════════════════════════
 
+def storage_compare_text(m):
+    """智利：仓储费报表（按占用日）与账单（按计费日）同一段日子的对比说明。"""
+    rng = m.get("storage_range")
+    if not rng:
+        return "本期没有覆盖本月任何一天的仓储费报表，无法交叉核对。"
+    lag = STORAGE_BILL_LAG_DAYS
+    full = m.get("storage_days", 0) >= m.get("storage_month_days", 0)
+    return ("另有独立的仓储费报表（按占用日逐日计费），它和账单一样按店铺的切期日切期，"
+            "这次下载的%s覆盖本月 %s–%s 共 %d 天（本月 %d 天）。这几天报表合计 %s；"
+            "账单按计费日比占用日晚 %d 天，取账单 %s–%s 的仓储费 %s 来比，差 %s（逐行取整造成）。"
+            "本报表统一采用账单口径，因为那才是真正扣钱的金额。"
+            % ("两期合起来完整" if full else "只", rng[0].strftime("%m/%d"),
+               rng[1].strftime("%m/%d"), m.get("storage_days", 0),
+               m.get("storage_month_days", 0), fmt(m["storage_accrual"]), lag,
+               (rng[0] + pd.Timedelta(days=lag)).strftime("%m/%d"),
+               (rng[1] + pd.Timedelta(days=lag)).strftime("%m/%d"),
+               fmt(m["storage_bill_cmp"]), fmt(m["storage_bill_cmp"] - m["storage_accrual"])))
+
+
 def sheet_readme(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[0])
     ws.column_dimensions["A"].width = 4
     ws.column_dimensions["B"].width = 30
     ws.column_dimensions["C"].width = 118
-    ws["A1"] = "Mercado Libre 墨西哥店铺 月度财务报表"
+    ws["A1"] = "Mercado Libre %s店铺 月度财务报表" % COUNTRY_CN
     ws["A1"].font = F(15, True, C_NAVY)
     ws.row_dimensions[1].height = 26
-    ws["A2"] = ("会计期间：%s　|　币种：MXN 墨西哥比索　|　编制日期：%s　|　数据截取时点：%s"
-                % (ctx["period_cn"], ctx["build_date"], ctx["cutoff"]))
+    ws["A2"] = ("会计期间：%s　|　币种：%s %s　|　编制日期：%s　|　数据截取时点：%s"
+                % (ctx["period_cn"], CUR, CUR_CN, ctx["build_date"], ctx["cutoff"]))
     ws["A2"].font = F(9, False, C_GREY)
     incomplete = [S["store"] for S in stores if S.get("ventas_warning")]
     if incomplete:
@@ -1828,7 +2437,7 @@ def sheet_readme(wb, stores, ctx):
     mp_stores = [S for S in stores if S.get("mp")]
     coupon_stores = [S for S in stores if S["m"]["coupon_n"] > 0]
 
-    src_names = {"ventas": "销售明细(Ventas MX)", "pagos": "账单支付(Pagos)",
+    src_names = {"ventas": "销售明细(%s)" % VENTAS_SHEET, "pagos": "账单支付(Pagos)",
                  "cargos_full": "Full 费用报表(Cargos Full)", "storage": "仓储费用报表",
                  "returns": "退货质检(Returns/Triages)", "settlement": "MercadoPago 结算流水"}
     have = []
@@ -1853,12 +2462,26 @@ def sheet_readme(wb, stores, ctx):
     rows.append(("", "① 三条时间线",
                  "销售报表按【下单日】、平台账单按【计费日】、资金到账按【放款日】。同一笔订单会落在三个不同的月份，"
                  "直接把三张表加总必然对不上。本报表统一采用【订单日口径】做损益，并在“平账勾稽”页给出到账单口径的桥式调节。"))
-    rows.append(("", "② 佣金里混进了代扣税",
-                 "销售报表的“Cargo por venta e impuestos”= 平台佣金 + 平台代扣代缴的税金(IVA/ISR retenciones)，"
-                 "而平台账单里的“Cargo por venta”只有纯佣金。两者差额 = 代扣税，本期实测约占含税售价的 %s。"
-                 "这笔钱不是费用，是已预缴税款，可用于抵扣申报，必须单列。本期：%s。"
-                 % (pct(mm["tax_rate_gross"], 2),
-                    per_store(stores, lambda S: fmt(S["m"]["tax_ret"]), "、"))))
+    if WITHHOLDING:
+        rows.append(("", "② 佣金里混进了代扣税",
+                     "销售报表的“Cargo por venta e impuestos”= 平台佣金 + 平台代扣代缴的税金(IVA/ISR retenciones)，"
+                     "而平台账单里的“Cargo por venta”只有纯佣金。两者差额 = 代扣税，本期实测约占含税售价的 %s。"
+                     "这笔钱不是费用，是已预缴税款，可用于抵扣申报，必须单列。本期：%s。"
+                     % (pct(mm["tax_rate_gross"], 2),
+                        per_store(stores, lambda S: fmt(S["m"]["tax_ret"]), "、"))))
+    else:
+        rows.append(("", "② 佣金列里混进了退货处理费（智利没有代扣税）",
+                     "销售报表的“Cargo por venta e impuestos”名字里有“impuestos”，但智利平台并不代扣税："
+                     "正常订单这一列与账单的纯佣金“Cargo por venta”逐单相等（本期 %s），"
+                     "MercadoPago 流水的税金字段 TAXES_AMOUNT 也全是 0。两者的差额来自退货订单 —— "
+                     "平台把退货处理费“Cargo por devolución”并进了这一列。本期差额 %s，其中账单上的退货处理费 %s，"
+                     "剩余 %s 是时间/关联差（退货费已进销售报表、还没出账单等）。本报表按账单口径把佣金和退货处理费分两行列示，"
+                     "不设“代扣代缴税金”行。"
+                     % (per_store(stores, lambda S: "%d/%d 单" % (S["m"].get("com_match_n", 0),
+                                                                 S["m"].get("com_match_of", 0)), "、"),
+                        per_store(stores, lambda S: fmt(S["m"]["tax_ret"]), "、"),
+                        per_store(stores, lambda S: fmt(S["m"].get("vcol_dev", 0.0)), "、"),
+                        per_store(stores, lambda S: fmt(S["m"].get("vcol_rest", 0.0)), "、"))))
     rows.append(("", "③ 费用分两个通道结算",
                  "账单里“Descontado de la operación = Si”的费用（佣金、配送费）在每笔订单打款时就已扣掉，不会再收一次；"
                  "“No”的费用（广告、仓储、揽收、罚金等）月底汇总，从 MercadoPago 余额自动扣款。"
@@ -1888,10 +2511,11 @@ def sheet_readme(wb, stores, ctx):
 
     rows.append(("S", "三、本报表的核心勾稽等式（每期自动校验）", ""))
     rows.append(("", "等式 1（订单资金）",
-                 "商品收入 + 运费收入 − 卖家优惠券 − 平台佣金 − 平台配送费 − 平台代扣税 − 退款 "
-                 "= 销售报表“Total”列 = 实际到账"))
+                 "商品收入 + 运费收入 − 卖家优惠券 − 平台佣金 − 平台配送费 − %s − 退款 "
+                 "= 销售报表“Total”列 = 实际到账"
+                 % ("平台代扣税" if WITHHOLDING else "并入佣金列的退货处理费等")))
     rows.append(("", "　验证结果",
-                 ("全部店铺完全相等，差异 0.00，逐笔订单勾稽无残留 ✓" if ok_a else
+                 ("全部店铺完全相等，差异 %s，逐笔订单勾稽无残留 ✓" % fmt(0) if ok_a else
                   "⚠ 未通过：%s" % per_store(stores, lambda S: "残差 " + fmt(S["m"]["resid"])))))
     rows.append(("", "等式 2（账单支付）",
                  "本期账单中“不在订单内扣除”的费用 − 同期发票内冲销 = 月底自动扣款金额"))
@@ -1945,7 +2569,8 @@ def sheet_readme(wb, stores, ctx):
     rows.append(("S", "五、各页说明", ""))
     for nm, desc in [
         (SHEET_NAMES[1], "各店分列 + 合计，从 GMV 一路推到净利润，含费用率分析。行位置每期固定，可直接跨月对比。"),
-        (SHEET_NAMES[2], "五个桥：A 订单资金流、B 月度账单、C 两种口径对比、D 从到账净额到经营利润、E 代扣税解释。这一页是解决“平不了账”的核心。"),
+        (SHEET_NAMES[2], "五个桥：A 订单资金流、B 月度账单、C 两种口径对比、D 从到账净额到经营利润、E %s。这一页是解决“平不了账”的核心。"
+         % ("代扣税解释" if WITHHOLDING else "佣金列口径差与“智利不代扣税”的证据（F 含税口径提示）")),
         (SHEET_NAMES[3], "本期账单全部费用科目（西班牙语原文 + 中文），标明结算通道。"),
         (SHEET_NAMES[4], "按订单状态、按金额、按平台/卖家责任划分。"),
         (SHEET_NAMES[5], "Full 仓退货逐件质检结果与退货原因，含可回收/彻底损失判定。"),
@@ -1963,9 +2588,11 @@ def sheet_readme(wb, stores, ctx):
                  "广告费、Full 仓储与揽收费、页面维护费都不在里面 —— 它们是月底汇总后从同一个余额里另外扣走的（%s扣了 %s）。"
                  % (M["store"], fmt(mm["total"]), mm["pay_date"] or "结算日", fmt(mm["pay_auto"]))))
     rows.append(("", "利润指标是经营贡献毛利",
-                 "%s 本期 %s。算法：到账净额 ＋ 加回代扣税 %s − 退货处理费 %s − 广告 %s − Full 仓费用 %s − 页面费 %s。"
+                 "%s 本期 %s。算法：到账净额 ＋ 加回%s %s − 退货处理费 %s − 广告 %s − Full 仓费用 %s − 页面费 %s。"
                  "完整推导见【%s】桥 D。"
-                 % (M["store"], fmt(ctx["contrib"][M["store"]]), fmt(mm["tax_ret"]), fmt(mm["dev_net"]),
+                 % (M["store"], fmt(ctx["contrib"][M["store"]]),
+                    "代扣税" if WITHHOLDING else "佣金列里的退货处理费等", fmt(mm["tax_ret"]),
+                    fmt(mm["dev_net"]),
                     fmt(mm["ads_net"]), fmt(mm["full_bill_total"]), fmt(mm["subscription_net"]),
                     SHEET_NAMES[2])))
     pa_n, pa_v = fee_rows(M, "Cargo por campaña de publicidad de Product Ads")
@@ -1982,13 +2609,15 @@ def sheet_readme(wb, stores, ctx):
     st_n, st_v = fee_rows(M, "Cargo por servicio de almacenamiento Full")
     storage_note = ("取本期账单的 Cargo por servicio de almacenamiento Full %s（%d 笔，基本每天一笔）。"
                     % (fmt(st_v), st_n))
-    if M["files"].get("storage"):
+    if M["files"].get("storage") and "storage_bill_cmp" in mm:
+        storage_note += storage_compare_text(mm)
+    elif M["files"].get("storage"):
         d = mm["storage_bill"] - mm["storage_accrual"]
         storage_note += ("另有一张独立的仓储费报表按实际占用日算出 %s，两者差 %s，原因是账单按计费日、报表按占用日，跨月错了一两天。"
                          "本报表统一采用账单口径，因为那才是真正扣钱的金额。" % (fmt(mm["storage_accrual"]), fmt(d)))
     rows.append(("", "仓储费怎么归集的", storage_note))
     full_items = [(FEE_BY_ES[es][0], v) for es, v in mm["bill_fee_net"].items()
-                  if FEE_BY_ES[es][1] in ("storage", "fulfillment", "penalty") and abs(v) > 0.005]
+                  if FEE_BY_ES[es][1] in ("storage", "fulfillment", "penalty") and abs(v) > ZERO_TOL]
     full_items.sort(key=lambda x: -abs(x[1]))
     rows.append(("", "Full 仓相关费用",
                  "%s，合计 %s。%s"
@@ -2018,8 +2647,23 @@ def sheet_readme(wb, stores, ctx):
                 ws.row_dimensions[r].height = est_height(c, 78)
         r += 1
 
-    notes = ["本报表所有金额均为墨西哥比索(MXN)，不含商品采购成本（平台数据不提供）。",
-             "“平台代扣代缴税金”在损益表中单列为备查项，不计入费用。请与你的墨西哥会计师核对该笔预缴税款的抵扣处理。"]
+    notes = ["本报表所有金额均为%s(%s)，不含商品采购成本（平台数据不提供）。" % (CUR_CN, CUR)]
+    if WITHHOLDING:
+        notes.append("“平台代扣代缴税金”在损益表中单列为备查项，不计入费用。请与你的墨西哥会计师核对该笔预缴税款的抵扣处理。")
+    else:
+        notes.append("智利平台不代扣税，本报表没有“代扣代缴税金”行。收入为含税（IVA %s）口径，"
+                     "GMV 中所含 IVA 在【%s】备查项列示，仅供参考。⚠ 会计判断（请交智利会计师确认）："
+                     "① 销项 IVA 由卖家自行向 SII 申报缴纳；② 平台费用发票（佣金、配送、广告、Full）"
+                     "所含 IVA 能否作为进项抵扣；③ 账单金额是否含 IVA —— 平台导出的账单里没有单列 IVA。"
+                     % (pct(IVA_RATE, 0), SHEET_NAMES[1]))
+        notes.append("智利的平台账单不按自然月出，而且每家店切期日不同（%s）。本报表的会计月是"
+                     "自然月：账单级费用按每一行的计费日归月，所以本月的费用取自两张账单（%s）。"
+                     % (per_store(stores, lambda S: "按 %s，“%s”账单 = %s–%s" % (
+                         cycle_cn(cycle_day(S)), MONTH_FULL_ES[S["bill_cycles"][0][1]],
+                         S["bill_cycles"][0][2].strftime("%m/%d"),
+                         S["bill_cycles"][0][3].strftime("%m/%d")), "；"),
+                        "＋".join("%s %d" % (MONTH_FULL_ES[mth], y)
+                                 for y, mth, _a, _b in main_store(stores)["bill_cycles"])))
     no_mp = [S["store"] for S in stores if not S.get("mp")]
     if no_mp:
         notes.append("%s 本期没有 MercadoPago 资金流水（常见原因是该登录账号无报表权限），"
@@ -2046,9 +2690,24 @@ def sheet_readme(wb, stores, ctx):
 # ② 合并损益表
 # ════════════════════════════════════════════════════════════════════════
 
+# 智利版 ② 的说明列：行本身（key、行名、西语科目、行序）与墨西哥完全一样，只换
+# 掉说到"代扣税"的说明 —— 智利没有代扣（见 SITE_PROFILES["cl"]）。
+PL_NOTES_NO_WITHHOLDING = {
+    "cn_adj": "平台对部分退款订单按退款比例退还佣金，但销售报表的“退款与取消”列会把原佣金"
+              "再扣一次。本行把多扣的加回来，逐单明细见 ⑩ 页。",
+    "com_neg": "账单口径纯佣金（含联盟推广佣金）。智利平台不代扣税，账单佣金与销售报表佣金列"
+               "在正常订单上逐单相等",
+    "dev_neg": "退货产生的逆向物流/处理费。销售报表把它并进了“Cargo por venta e impuestos”列，"
+               "本表按账单单列一行",
+}
+
+
 def build_pl_rows():
     """PL_LINES + 按 FEE_CATALOG 顺序生成的账单级费用行 + PL_TAIL。行序恒定。"""
     rows = list(PL_LINES)
+    if not WITHHOLDING:
+        rows = [(k, lab, es, kind, PL_NOTES_NO_WITHHOLDING.get(k, note))
+                for k, lab, es, kind, note in rows]
     for es, zh, bucket, order_level in FEE_CATALOG:
         if order_level:
             continue
@@ -2088,13 +2747,47 @@ def pl_value(S, key):
     return 0.0
 
 
+def pl_memo_no_withholding(stores):
+    """智利版 ② 备查项。没有代扣税，也就没有"若代扣税不可抵扣"的敏感性行。
+
+    第一行是 Ventas 佣金列与账单纯佣金的差 —— 它在桥 A / 桥 D 里要用来勾稽，
+    但不是税：主要是并进佣金列的退货处理费（已在上表“退货处理费”行按账单扣除）。
+    最后一行是 GMV 中所含的 IVA，仅供参考；怎么申报、能抵多少进项是会计判断。
+    """
+    vat = pct(IVA_RATE, 0)
+    return [
+        ("销售报表佣金列 − 账单纯佣金（非税）", "Cargo por venta e impuestos − Cargo por venta",
+         lambda S: S["m"]["tax_ret"], None,
+         "智利平台不代扣税（MercadoPago 流水 TAXES_AMOUNT 为 0）。这个差额主要是销售报表并进佣金列的"
+         "退货处理费 %s —— 上表已按账单在“退货处理费”行扣过，所以本行不再扣；剩余 %s 是时间/关联差。"
+         "详见【%s】桥 E。"
+         % (per_store(stores, lambda S: fmt(S["m"].get("vcol_dev", 0.0)), "、"),
+            per_store(stores, lambda S: fmt(S["m"].get("vcol_rest", 0.0)), "、"), SHEET_NAMES[2])),
+        ("口径尾差（应为 0）", "",
+         lambda S: S["m"]["resid"], None,
+         "上表的收入与费用逐项加总后与销售报表 Total 列的差额。为 0 表示无任何未解释差额。"),
+        ("本期账单实际支付（按计费日归本月）", "Pago con débito automático / Pago voluntario",
+         lambda S: S["m"]["pay_auto"], None,
+         "智利账单不按自然月出（本店切期见【①】），本月的费用分属两张账单；这里取两张账单的付款明细里"
+         "付给本月计费日费用的部分，与上表的勾稽见【%s】桥 B。" % SHEET_NAMES[2]),
+        ("本期贷记单（平台退还）", "Notas de crédito",
+         lambda S: S["m"]["pay_nc"], None,
+         "计费日在本月的贷记单行，针对取消/退货订单退还的佣金与运费，已在“退款与取消（净）”中抵减。"),
+        ("GMV 中所含 IVA（%s，销项税，参考）" % vat, "IVA débito fiscal (referencia)",
+         lambda S: S["m"]["iva_in_gmv"], None,
+         "＝ GMV × %s/(1+%s)。智利售价含 IVA，平台不代扣，这笔税由卖家自行向 SII 申报缴纳，"
+         "可用进项 IVA 抵扣。⚠ 会计判断：B2B 开票订单、退货冲减与平台费用发票的进项抵扣，"
+         "请交智利会计师确认；本行不参与上表任何计算。" % (vat, vat)),
+    ]
+
+
 def sheet_pl(wb, stores, ctx):
     n = len(stores)
     sh = Sheet(wb, SHEET_NAMES[1], first_store_col=3, nstores=n)
     ws = sh.ws
     sh.title("合并损益表（%s）" % ctx["period_cn"],
-             "口径：按【订单日】归集收入与订单级费用；月度账单费用按【计费日】归集。单位：MXN。"
-             "灰底=公式行，浅蓝=小计，黄底=需你录入。行位置每期固定，可直接跨月对比。")
+             "口径：按【订单日】归集收入与订单级费用；月度账单费用按【计费日】归集。单位：%s。"
+             "灰底=公式行，浅蓝=小计，黄底=需你录入。行位置每期固定，可直接跨月对比。" % CUR)
     incomplete = [S["store"] for S in stores if S.get("ventas_warning")]
     if incomplete:
         ws["A3"] = "⚠ %s 的 Ventas 数据不完整；本店及合计金额可能偏低。" % "、".join(incomplete)
@@ -2180,7 +2873,7 @@ def sheet_pl(wb, stores, ctx):
                 cc.fill = fill(C_INPUT)
                 cc.font = F(10, True, "0000FF")
         if key in ("unc_order_neg", "unc_bill_neg"):
-            has = any(abs(pl_value(S, key)) > 0.005 for S in stores)
+            has = any(abs(pl_value(S, key)) > ZERO_TOL for S in stores)
             for c in range(1, ncol_idx + 1):
                 ws.cell(row=r, column=c).fill = fill(C_BAD if has else C_WARN)
     rr = R("税前净利润")
@@ -2213,6 +2906,8 @@ def sheet_pl(wb, stores, ctx):
          "＝ 经营贡献毛利 − 代扣代缴税金。请与墨西哥会计师确认该笔预扣能否全额抵扣；"
          "不能抵扣时利润会大幅下降，这是本报表最大的不确定项。"),
     ]
+    if not WITHHOLDING:
+        memo = pl_memo_no_withholding(stores)
     tax_memo_row = r
     for label, es, fn, special, note in memo:
         ws.cell(row=r, column=1, value=label).font = F(10)
@@ -2256,7 +2951,7 @@ def _bridge_head(wb, stores, ctx):
     ws["A1"].font = F(14, True, C_NAVY)
     ws.row_dimensions[1].height = 24
     ws["A2"] = ("把“销售报表 / 平台账单 / 实际资金”三张表逐项打通。"
-                "每个桥的最后一行都是差异检验，✓ 表示完全勾稽。单位：MXN")
+                "每个桥的最后一行都是差异检验，✓ 表示完全勾稽。单位：%s" % CUR)
     ws["A2"].font = F(9, False, C_GREY)
     for i, w in enumerate([6, 44] + [16] * n + [16, 60], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -2341,21 +3036,27 @@ def _bridge_head(wb, stores, ctx):
 
     # ───────── 桥 A ─────────
     block("桥 A　订单资金流：从销售报表推算到实际到账",
-          "销售报表(Ventas MX)的每一行是一笔订单。平台在给你打款时，已经把佣金、配送费和代扣税直接扣掉了，"
-          "所以“Total”列就是这笔订单真正进你 MercadoPago 账户的钱。")
+          "销售报表(%s)的每一行是一笔订单。平台在给你打款时，已经把佣金、配送费和%s直接扣掉了，"
+          "所以“Total”列就是这笔订单真正进你 MercadoPago 账户的钱。"
+          % (VENTAS_SHEET, "代扣税" if WITHHOLDING else "退货处理费"))
     head()
     a1 = line("A1", "商品销售收入 (GMV)", V(lambda S: S["m"]["ing"]),
-              "Ventas MX → Ingresos por productos，按下单日归集")
-    line("A2", "＋ 运费收入", V(lambda S: S["m"]["env_ing"]), "Ventas MX → Ingresos por envío")
+              "%s → Ingresos por productos，按下单日归集" % VENTAS_SHEET)
+    line("A2", "＋ 运费收入", V(lambda S: S["m"]["env_ing"]), "%s → Ingresos por envío" % VENTAS_SHEET)
     line("A3", "− 平台销售佣金", V(lambda S: -S["m"]["com_gross"]),
          "账单 Facturación → Cargo por venta（纯佣金，含联盟佣金，不含税）")
     line("A4", "− 平台配送费", V(lambda S: -S["m"]["env_cost"]),
-         "Ventas MX → Costos de envío（已扣平台运费补贴后的净额）")
-    line("A5", "− 平台代扣代缴税金 (IVA/ISR)", V(lambda S: -S["m"]["tax_ret"]),
-         "★ 关键项。= Ventas 的“Cargo por venta e impuestos” − 账单的纯佣金。本期实测约为含税售价的 %s。"
-         "这是平台替你预缴给墨西哥税局的钱，不是费用。" % pct(mm["tax_rate_gross"], 2))
+         "%s → Costos de envío（已扣平台运费补贴后的净额）" % VENTAS_SHEET)
+    if WITHHOLDING:
+        line("A5", "− 平台代扣代缴税金 (IVA/ISR)", V(lambda S: -S["m"]["tax_ret"]),
+             "★ 关键项。= Ventas 的“Cargo por venta e impuestos” − 账单的纯佣金。本期实测约为含税售价的 %s。"
+             "这是平台替你预缴给墨西哥税局的钱，不是费用。" % pct(mm["tax_rate_gross"], 2))
+    else:
+        line("A5", "− 佣金列中的退货处理费等（非税）", V(lambda S: -S["m"]["tax_ret"]),
+             "＝ %s 的“Cargo por venta e impuestos” − 账单的纯佣金。智利平台不代扣税，"
+             "这一列只是把退货处理费（Cargo por devolución）也算了进去，拆解见桥 E。" % VENTAS_SHEET)
     line("A6", "− 退款与取消（净）", V(lambda S: -S["m"]["refund"]),
-         "Ventas MX → Anulaciones y reembolsos")
+         "%s → Anulaciones y reembolsos" % VENTAS_SHEET)
     cs = [S for S in stores if S["m"]["coupon_n"] > 0]
     coupon_note = ("★ 平台把 Descuentos y bonificaciones 这一列导出成了空白，所以这笔钱在任何明细列里都看不到，"
                    "只能用 Total 倒推。已交叉验证：账单佣金 ÷（原价 − 券额）＝ 标准费率。")
@@ -2372,12 +3073,12 @@ def _bridge_head(wb, stores, ctx):
     a7 = line("A7", "＝ 推算到账净额",
               lambda c, j: "=SUM(%s%d:%s%d)" % (c, a1, c, a6b),
               "按上述公式推算出的应到账金额", kind="t")
-    a8 = line("A8", "销售报表 “Total (MXN)” 列实际合计", V(lambda S: S["m"]["total"]),
-              "直接取 Ventas MX 的 Total 列求和，作为独立验证", kind="s")
-    ok_a = all(abs(S["m"]["resid"]) <= 0.05 for S in stores)
+    a8 = line("A8", "销售报表 “Total (%s)” 列实际合计" % CUR, V(lambda S: S["m"]["total"]),
+              "直接取 %s 的 Total 列求和，作为独立验证" % VENTAS_SHEET, kind="s")
+    ok_a = all(abs(S["m"]["resid"]) <= BRIDGE_A_TOL for S in stores)
     line("A9", "差异检验（A8 − A7）",
          lambda c, j: "=%s%d-%s%d" % (c, a8, c, a7),
-         ("全部店铺均为 0.00 —— 逐笔订单完全勾稽，无任何未解释差额 ✓" if ok_a else
+         ("全部店铺均为 %s —— 逐笔订单完全勾稽，无任何未解释差额 ✓" % fmt(0) if ok_a else
           "⚠ 存在残差，说明还有未识别的隐藏费用或折扣，请按【%s】的排查步骤处理。" % SHEET_NAMES[9]),
          kind="chk")
 
@@ -2404,7 +3105,9 @@ def _bridge_head(wb, stores, ctx):
         for i, (oid, vt, mp) in enumerate(MO["differ"][:15], 1):
             cross.append(("V1.%d" % i, "订单 %s" % oid, vt, mp,
                           "销售报表把它记成 0，平台却有到账 —— 可能是退款/争议后来按卖家有利结案"
-                          if abs(vt) <= CN_TOL and mp > 0 else "逐单核对"))
+                          if abs(vt) <= CN_TOL and mp > 0 else
+                          "差额＝买家另付的运费（单独一笔 SETTLEMENT_SHIPPING，收款号不同）"
+                          if oid in MO.get("ship_ids", ()) else "逐单核对"))
         if len(MO["differ"]) > 15:
             cross.append(("…", "另有 %d 单不一致，全部清单见【%s】"
                           % (len(MO["differ"]) - 15, SHEET_NAMES[9]),
@@ -2448,16 +3151,29 @@ def _bridge_head(wb, stores, ctx):
     b6 = line("B6", "＝ 应付账单金额",
               lambda c, j: "=%s%d+%s%d" % (c, b4, c, b5),
               "这才是真正要掏钱的部分", kind="t")
-    b7 = line("B7", "实际支付金额", V(lambda S: S["m"]["pay_auto"]),
-              "Pagos 报表里除贷记单以外的支付行：自动扣款（Pago con débito automático）或"
-              "主动付款（Pago voluntario），最近一笔在 %s" % (mm["pay_date"] or "结算日"),
-              kind="s")
-    ok_b = all(abs(S["m"]["payable"] - S["m"]["pay_auto"]) <= 0.01
+    if all(cycle_day(S) == 1 for S in stores):
+        b7_note = ("Pagos 报表里除贷记单以外的支付行：自动扣款（Pago con débito automático）或"
+                   "主动付款（Pago voluntario），最近一笔在 %s" % (mm["pay_date"] or "结算日"))
+    else:
+        b7_note = ("智利账单不按自然月出（%s），本月的费用分属两张账单。取两张账单 Pagos 报表"
+                   "“Detalle de Pagos del mes”页里付给本月计费日费用的那部分（该页逐行写明每笔付款"
+                   "付了哪一张费用），最近一笔付款在 %s。各张账单整张的应付与实付见 B10。"
+                   % (per_store(stores, lambda S: cycle_cn(cycle_day(S)), "；"),
+                      mm["pay_date"] or "结算日"))
+    b7 = line("B7", "实际支付金额", V(lambda S: S["m"]["pay_auto"]), b7_note, kind="s")
+    ok_b = all(abs(S["m"]["payable"] - S["m"]["pay_auto"]) <= TOL_CENT
                for S in stores if S["files"].get("pagos"))
+    pay_gap = [S for S in stores if cycle_day(S) != 1 and not S["m"].get("pay_complete")]
+    if pay_gap:
+        b8_note = ("⚠ 付款记录不全（%s），差异不可作结论，见【%s】"
+                   % ("；".join(x for S in pay_gap for x in S["m"].get("pay_missing", [])),
+                      SHEET_NAMES[9]))
+    elif ok_b:
+        b8_note = "全部店铺均为 %s，完全勾稽 ✓" % fmt(0)
+    else:
+        b8_note = "⚠ 存在差异，见【%s】" % SHEET_NAMES[9]
     line("B8", "差异检验（B7 − B6）",
-         lambda c, j: "=%s%d-%s%d" % (c, b7, c, b6),
-         "全部店铺均为 0.00，完全勾稽 ✓" if ok_b else "⚠ 存在差异，见【%s】" % SHEET_NAMES[9],
-         kind="chk")
+         lambda c, j: "=%s%d-%s%d" % (c, b7, c, b6), b8_note, kind="chk")
     line("B7a", "其中：与订单挂钩、但走账单支付的费用",
          V(lambda S: S["m"]["order_linked_billed"]),
          "多为联盟推广佣金等。这部分已计入【%s】的订单级费用行，"
@@ -2466,7 +3182,24 @@ def _bridge_head(wb, stores, ctx):
     line("B9", "另：贷记单退还 (Notas de Crédito)", V(lambda S: S["m"]["pay_nc"]),
          "针对取消/退货订单退还的佣金与运费，走红字发票单独退回，"
          "已在桥 A 的“退款与取消（净）”中体现，不要重复计入。")
-
+    if any(cycle_day(S) != 1 for S in stores):
+        # 智利：两张账单各自整张的应付 / 实付。一个会计月的桥 B 只用到每张账单的
+        # 一部分，整张账单自己平不平要单独看，免得两头的差异互相抵掉看不出来。
+        ncyc = max(len(S["m"].get("pay_cycles", [])) for S in stores)
+        for k in range(ncyc):
+            def cyc(S, key, k=k):
+                cs = S["m"].get("pay_cycles", [])
+                return cs[k][key] if k < len(cs) else 0.0
+            lab = next((S["m"]["pay_cycles"][k] for S in stores
+                        if k < len(S["m"].get("pay_cycles", []))), None)
+            # 账单名各店相同，切期日各店不同（DAB 8 号、Tecnohub 24 号），周期写在说明里
+            name = "%s 账单" % lab["label"] if lab else ""
+            line("B10.%d" % (k + 1), "%s整张应付" % name, V(lambda S: cyc(S, "payable")),
+                 "计费日在该账单周期内的 No 通道费用＋冲销（不限本月）。周期：%s"
+                 % per_store(stores, lambda S: cyc(S, "span") or "—", "、"))
+            line("", "%s整张实付" % name, V(lambda S: cyc(S, "paid")),
+                 "其中付给本月计费日的部分：%s"
+                 % per_store(stores, lambda S: fmt(cyc(S, "applied_month")), "、"))
     # ───────── 桥 C ─────────
     gap()
     block("桥 C　为什么“销售报表的扣费”和“账单的费用”对不上",
@@ -2474,9 +3207,14 @@ def _bridge_head(wb, stores, ctx):
     head()
     c1 = line("C1", "销售报表显示的平台扣费（佣金及税金＋配送费）",
               V(lambda S: S["m"]["com_imp"] + S["m"]["env_cost"]),
-              "Ventas MX 中 Cargo por venta e impuestos ＋ Costos de envío 的绝对值")
-    c2 = line("C2", "− 其中属于代扣代缴税金，不是平台费用",
-              V(lambda S: -S["m"]["tax_ret"]), "★ 差异的最大来源")
+              "%s 中 Cargo por venta e impuestos ＋ Costos de envío 的绝对值" % VENTAS_SHEET)
+    if WITHHOLDING:
+        c2 = line("C2", "− 其中属于代扣代缴税金，不是平台费用",
+                  V(lambda S: -S["m"]["tax_ret"]), "★ 差异的最大来源")
+    else:
+        c2 = line("C2", "− 其中属于退货处理费等（并进了佣金列）",
+                  V(lambda S: -S["m"]["tax_ret"]),
+                  "智利没有代扣税；这部分在账单里是独立科目 Cargo por devolución，见桥 E")
     c3 = line("C3", "＝ 销售报表口径的真实平台费用",
               lambda c, j: "=%s%d+%s%d" % (c, c1, c, c2), "", kind="t")
     c4 = line("C4", "账单中与订单挂钩的费用（佣金＋配送费，毛额）",
@@ -2530,7 +3268,9 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
     gap()
     block("桥 D　从“到账净额”到“经营利润”：为什么到账净额不等于利润",
           "销售报表的 Total（到账净额）只是订单层面进账的钱，广告费和仓储费是月底另外从同一个 MercadoPago 余额里扣走的，"
-          "不在这个数里。同时它扣掉了代扣代缴税金——那是预缴税款不是费用。要得到利润，必须做下面这个桥。")
+          "不在这个数里。%s要得到利润，必须做下面这个桥。"
+          % ("同时它扣掉了代扣代缴税金——那是预缴税款不是费用。" if WITHHOLDING else
+             "同时它把退货处理费并在佣金列里扣掉了，而本报表按账单单列退货处理费（D3），所以先加回 D2 再扣 D3，避免扣两次。"))
     head()
     d1 = line("D1", "销售报表 “Total” 到账净额", V(lambda S: S["m"]["total"]),
               "桥 A 的结论。这是订单层面真正进你账户的钱，不是利润。", kind="s")
@@ -2540,10 +3280,17 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
          "MercadoPago 现金流水验证过：正常订单里 93%%–97%% 的 Total 与实际到账"
          "分毫不差，而这些单**每一笔**都正好差一个原佣金。明细见【%s】3.3。"
          % SHEET_NAMES[9])
-    line("D2", "＋ 加回平台代扣代缴税金", V(lambda S: S["m"]["tax_ret"]),
-         "预缴给税局的钱，能抵扣就不是成本，所以算利润时要加回来（若不能抵扣，见【%s】敏感性行）" % SHEET_NAMES[1])
-    line("D3", "− 退货处理费", V(lambda S: -S["m"]["dev_net"]),
-         "Cargo por devolución，在退款交易里单独扣，不在 Total 内")
+    if WITHHOLDING:
+        line("D2", "＋ 加回平台代扣代缴税金", V(lambda S: S["m"]["tax_ret"]),
+             "预缴给税局的钱，能抵扣就不是成本，所以算利润时要加回来（若不能抵扣，见【%s】敏感性行）" % SHEET_NAMES[1])
+        line("D3", "− 退货处理费", V(lambda S: -S["m"]["dev_net"]),
+             "Cargo por devolución，在退款交易里单独扣，不在 Total 内")
+    else:
+        line("D2", "＋ 加回佣金列中的退货处理费等（非税）", V(lambda S: S["m"]["tax_ret"]),
+             "销售报表佣金列 − 账单纯佣金（＝桥 A 的 A5）。不是税：智利平台不代扣。加回后由下一行按账单口径扣退货处理费，"
+             "两行之差就是桥 E 里的时间/关联差")
+        line("D3", "− 退货处理费", V(lambda S: -S["m"]["dev_net"]),
+             "Cargo por devolución（账单口径，按订单关联跨账期取数）")
     line("D4", "− 广告费（Product Ads ＋ Display Ads ＋ 粉丝推广，净）", V(lambda S: -S["m"]["ads_net"]),
          "★ 完全不在销售报表里。账单 Descontado=No，月底自动扣款")
     line("D5", "− Full 仓相关费用（仓储/揽收/仓位/罚金等）", V(lambda S: -S["m"]["full_bill_total"]),
@@ -2572,61 +3319,65 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
     gap()
     contrib_m = ctx["contrib"][M["store"]]
     banner("一句话：到账净额是「现金」，经营贡献毛利才是「利润」。%s 本期到账 %s，"
-           "但加回代扣税、再扣掉广告和仓储之后，真正的经营贡献是 %s；两者差 %s%s——这就是只看到账额会误判的地方。"
-           % (M["store"], fmt(mm["total"]), fmt(contrib_m), fmt(abs(contrib_m - mm["total"])),
+           "但%s扣掉广告和仓储之后，真正的经营贡献是 %s；两者差 %s%s——这就是只看到账额会误判的地方。"
+           % (M["store"], fmt(mm["total"]), "加回代扣税、再" if WITHHOLDING else "",
+              fmt(contrib_m), fmt(abs(contrib_m - mm["total"])),
               "，方向还相反" if contrib_m > mm["total"] else ""))
 
-    # ───────── 桥 E ─────────
-    gap()
-    block("桥 E　“平台代扣代缴税金”到底是什么，为什么算利润时要加回来",
-          "这是本报表唯一一项“从现金里扣了、但不算费用”的支出。下面是它在原始数据里的准确形态与验证过程。")
-    head()
-    e1 = line("E1", "本期被代扣金额", V(lambda S: S["m"]["tax_ret"]),
-              "MercadoPago 结算流水里有独立字段 TAXES_AMOUNT，与手续费 FEE_AMOUNT 分开列示，"
-              "说明平台自己也不把它当手续费")
-    mp = next((S for S in stores if S.get("mp") and S["mp"].get("rate_n")), None)
-    rate_note = "本期各店实测：%s。" % per_store(
-        stores, lambda S: "%s %s" % (S["store"], pct(S["m"]["tax_rate_gross"], 3)), "、")
-    if mp:
-        rate_note += ("%s 的 %d 笔结算流水中有 %d 笔费率完全一致，标准差 %.4f —— 费率高度统一，是法定预扣不是浮动费用。"
-                      % (mp["store"], mp["mp"]["rate_n"], mp["mp"]["rate_mode_n"], mp["mp"]["rate_std"]))
-    line("E2", "占含税成交额比例",
-         lambda c, j: "=IF(%s%d=0,0,%s%d/%s%d)" % (c, H["a1"], c, e1, c, H["a1"]),
-         rate_note, total=False, fmt_code=PCT3)
-    line("E3", "占不含税价比例（÷1.16 后）",
-         lambda c, j: "=IF(%s%d=0,0,%s%d/(%s%d/(1+%s)))" % (c, H["a1"], c, e1, c, H["a1"], IVA_RATE),
-         "本期各店实测 %s。按墨西哥数字平台代扣制度，最可能的构成是 IVA 预扣 8%% ＋ ISR 预扣 2.5%%，"
-         "但准确拆分必须以 MercadoPago 每月出具的 Constancia de retenciones de IVA e ISR 为准 —— "
-         "该凭证不在本次下载的文件里。" % per_store(
-             stores, lambda S: "%s %s" % (S["store"], pct(
-                 S["m"]["tax_ret"] / S["m"]["net_revenue_exvat"] if S["m"]["net_revenue_exvat"] else 0, 2)), "、"),
-         total=False, fmt_code=PCT3)
-    line("E4", "为什么算利润时要加回", [None] * n,
-         "预扣税是“预先替你缴给税局的税”，性质是预付税款（资产），不是经营成本。"
-         "你在做 IVA/ISR 申报时可以拿它抵减应缴税额。若当成费用扣掉，等于同一笔税被计两次。",
-         kind="s", total=False)
+    if not WITHHOLDING:
+        _bridge_tax_no_withholding(stores, ctx, ws, H, n, banner)
+    else:
+        # ───────── 桥 E ─────────
+        gap()
+        block("桥 E　“平台代扣代缴税金”到底是什么，为什么算利润时要加回来",
+              "这是本报表唯一一项“从现金里扣了、但不算费用”的支出。下面是它在原始数据里的准确形态与验证过程。")
+        head()
+        e1 = line("E1", "本期被代扣金额", V(lambda S: S["m"]["tax_ret"]),
+                  "MercadoPago 结算流水里有独立字段 TAXES_AMOUNT，与手续费 FEE_AMOUNT 分开列示，"
+                  "说明平台自己也不把它当手续费")
+        mp = next((S for S in stores if S.get("mp") and S["mp"].get("rate_n")), None)
+        rate_note = "本期各店实测：%s。" % per_store(
+            stores, lambda S: "%s %s" % (S["store"], pct(S["m"]["tax_rate_gross"], 3)), "、")
+        if mp:
+            rate_note += ("%s 的 %d 笔结算流水中有 %d 笔费率完全一致，标准差 %.4f —— 费率高度统一，是法定预扣不是浮动费用。"
+                          % (mp["store"], mp["mp"]["rate_n"], mp["mp"]["rate_mode_n"], mp["mp"]["rate_std"]))
+        line("E2", "占含税成交额比例",
+             lambda c, j: "=IF(%s%d=0,0,%s%d/%s%d)" % (c, H["a1"], c, e1, c, H["a1"]),
+             rate_note, total=False, fmt_code=PCT3)
+        line("E3", "占不含税价比例（÷1.16 后）",
+             lambda c, j: "=IF(%s%d=0,0,%s%d/(%s%d/(1+%s)))" % (c, H["a1"], c, e1, c, H["a1"], IVA_RATE),
+             "本期各店实测 %s。按墨西哥数字平台代扣制度，最可能的构成是 IVA 预扣 8%% ＋ ISR 预扣 2.5%%，"
+             "但准确拆分必须以 MercadoPago 每月出具的 Constancia de retenciones de IVA e ISR 为准 —— "
+             "该凭证不在本次下载的文件里。" % per_store(
+                 stores, lambda S: "%s %s" % (S["store"], pct(
+                     S["m"]["tax_ret"] / S["m"]["net_revenue_exvat"] if S["m"]["net_revenue_exvat"] else 0, 2)), "、"),
+             total=False, fmt_code=PCT3)
+        line("E4", "为什么算利润时要加回", [None] * n,
+             "预扣税是“预先替你缴给税局的税”，性质是预付税款（资产），不是经营成本。"
+             "你在做 IVA/ISR 申报时可以拿它抵减应缴税额。若当成费用扣掉，等于同一笔税被计两次。",
+             kind="s", total=False)
 
-    # ───────── 桥 F 含税口径提示 ─────────
-    gap()
-    banner("⚠ 但要注意：本报表的收入是含税口径", C_WARN, F(11, True, C_RED))
-    head()
-    f1 = line("F1", "含税商品收入（报表中的 GMV）", V(lambda S: S["m"]["ing"]),
-              "买家实付金额，含 %s IVA" % pct(IVA_RATE, 0))
-    f2 = line("F2", "其中 IVA 成分（× 16/116）",
-              lambda c, j: "=%s%d*%s/(1+%s)" % (c, f1, IVA_RATE, IVA_RATE),
-              "这部分钱在报表里被算进了收入，但它不属于你，最终要交给税局")
-    line("F3", "不含税收入（参考）",
-         lambda c, j: "=%s%d-%s%d" % (c, f1, c, f2),
-         "若要编制正式的不含税损益表，应以此为收入起点", kind="t")
-    f4 = line("F4", "已通过代扣预缴的部分", V(lambda S: S["m"]["tax_ret"]), "")
-    line("F5", "预缴占 IVA 成分比例",
-         lambda c, j: "=IF(%s%d=0,0,%s%d/%s%d)" % (c, f2, c, f4, c, f2),
-         "本期 %s。也就是说 IVA 还没缴完，剩余部分要在申报时结清（可用采购与费用的进项 IVA 抵扣）。"
-         "★ 结论：加回代扣税只是把“不该当费用的”剔出去；要得到真正的税后净利，"
-         "还需要用采购发票做完整的 IVA 销项—进项计算，这已超出平台数据能覆盖的范围，请交给你的墨西哥会计师。"
-         % per_store(stores, lambda S: "%s %s" % (
-             S["store"], pct(S["m"]["tax_vs_iva"], 1)), "、"),
-         total=False, fmt_code=PCT, kind="chk")
+        # ───────── 桥 F 含税口径提示 ─────────
+        gap()
+        banner("⚠ 但要注意：本报表的收入是含税口径", C_WARN, F(11, True, C_RED))
+        head()
+        f1 = line("F1", "含税商品收入（报表中的 GMV）", V(lambda S: S["m"]["ing"]),
+                  "买家实付金额，含 %s IVA" % pct(IVA_RATE, 0))
+        f2 = line("F2", "其中 IVA 成分（× 16/116）",
+                  lambda c, j: "=%s%d*%s/(1+%s)" % (c, f1, IVA_RATE, IVA_RATE),
+                  "这部分钱在报表里被算进了收入，但它不属于你，最终要交给税局")
+        line("F3", "不含税收入（参考）",
+             lambda c, j: "=%s%d-%s%d" % (c, f1, c, f2),
+             "若要编制正式的不含税损益表，应以此为收入起点", kind="t")
+        f4 = line("F4", "已通过代扣预缴的部分", V(lambda S: S["m"]["tax_ret"]), "")
+        line("F5", "预缴占 IVA 成分比例",
+             lambda c, j: "=IF(%s%d=0,0,%s%d/%s%d)" % (c, f2, c, f4, c, f2),
+             "本期 %s。也就是说 IVA 还没缴完，剩余部分要在申报时结清（可用采购与费用的进项 IVA 抵扣）。"
+             "★ 结论：加回代扣税只是把“不该当费用的”剔出去；要得到真正的税后净利，"
+             "还需要用采购发票做完整的 IVA 销项—进项计算，这已超出平台数据能覆盖的范围，请交给你的墨西哥会计师。"
+             % per_store(stores, lambda S: "%s %s" % (
+                 S["store"], pct(S["m"]["tax_vs_iva"], 1)), "、"),
+             total=False, fmt_code=PCT, kind="chk")
 
     # ───────── 常见误算 ─────────
     gap()
@@ -2663,6 +3414,25 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
          "Full 费用报表是账单里 Full 科目的明细拆分，两者金额相同（本期差 %s）。相加即每笔仓储费重复计一次。"
          % fmt(tot(lambda S: S["m"]["cargos_full_report_total"] - S["m"]["full_bill_total"]))),
     ]
+    if not WITHHOLDING:
+        # 智利：把说"代扣税"的几条换成智利真正容易错的地方，其余照旧。
+        mis[0] = ("❌ 把“到账净额”当成利润",
+                  "到账净额里没有广告费(%s)、Full 仓费用(%s)和页面费(%s)，这些是月底另外扣的。见桥 D。"
+                  % (fmt(tot(lambda S: S["m"]["ads_net"])), fmt(tot(lambda S: S["m"]["full_bill_total"])),
+                     fmt(tot(lambda S: S["m"]["subscription_net"]))))
+        mis[2] = ("❌ 把“Cargo por venta e impuestos”当成“佣金＋代扣税”",
+                  "智利平台不代扣税：这一列在正常订单上就是纯佣金，退货订单上还并进了退货处理费"
+                  "（本期差额 %s）。照墨西哥的做法把差额当税加回而不扣退货处理费，利润会被高估。见桥 E。"
+                  % per_store(stores, lambda S: fmt(S["m"]["tax_ret"]), " / "))
+        mis[3] = ("❌ 拿一张账单当一个月",
+                  "智利账单不按自然月出，%s：“%s”账单装的是 %s 的费用。直接拿一张账单当本月会错开好几天；"
+                  "本报表按每一行的计费日把两张账单拆回自然月，订单级费用另按订单号跨账期关联。见桥 B、桥 C。"
+                  % (("%s 按 %s" % (M["store"], cycle_cn(cycle_day(M)))), MONTH_FULL_ES[ctx["p0"].month],
+                     "%s–%s" % (M["bill_cycles"][0][2].strftime("%m/%d"),
+                                M["bill_cycles"][0][3].strftime("%m/%d"))))
+        mis[4] = ("❌ 以为 IVA 平台已经代缴了",
+                  "智利平台不代扣（MercadoPago 流水 TAXES_AMOUNT 为 0），GMV 里的 IVA（本期 %s）全额由卖家自行申报。"
+                  % fmt(tot(lambda S: S["m"]["iva_in_gmv"])))
     for lab, note in mis:
         r = state["r"]
         ws.cell(row=r, column=2, value=lab).font = F(10, True, C_RED)
@@ -2675,6 +3445,56 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
         ws.row_dimensions[r].height = est_height(note, 56)
         state["r"] = r + 1
     ws.freeze_panes = "%s5" % sh.scol(0)
+
+
+def _bridge_tax_no_withholding(stores, ctx, ws, H, n, banner):
+    """智利版桥 E / F。墨西哥的桥 E 讲"代扣税是什么、为什么加回"，桥 F 讲含税口径；
+    智利没有代扣，这里改讲"佣金列里那块不是佣金的钱是什么"，并把含税口径的提示
+    和需要会计判断的地方写清楚。行号与墨西哥不同，智利报表不和墨西哥的跨表对齐。"""
+    block, head, line, gap = H["block"], H["head"], H["line"], H["gap"]
+    V = lambda f: [f(S) for S in stores]
+
+    gap()
+    block("桥 E　智利没有代扣税：佣金列里不是佣金的那部分是什么",
+          "销售报表的“Cargo por venta e impuestos”名字里有“impuestos”，墨西哥这一列确实含平台代扣的税；"
+          "智利不是。下面三条证据都来自本期原始数据，⑩ 页的“平台未代扣税（智利）”校验每期自动复核。")
+    head()
+    line("E1", "销售报表佣金列 − 账单纯佣金", V(lambda S: S["m"]["tax_ret"]),
+         "＝ 桥 A 的 A5 ＝ 桥 D 的 D2")
+    line("E2", "其中：账单上的退货处理费 (Cargo por devolución)", V(lambda S: S["m"].get("vcol_dev", 0.0)),
+         "按订单号关联到本期订单、跨账期取数。平台把它并进了销售报表的佣金列，损益表按账单单列")
+    line("E3", "剩余：时间 / 关联差", V(lambda S: S["m"].get("vcol_rest", 0.0)),
+         "退货处理费已进销售报表、账单要到下一期才出；多件包裹的佣金记在母行、账单记在子行等。"
+         "本期占 GMV %s（校验上限 %s）。"
+         % (per_store(stores, lambda S: pct(S["m"].get("vcol_rest", 0.0) / S["m"]["ing"]
+                                             if S["m"]["ing"] else 0, 3), "、"),
+            pct(CL_VCOL_REST_MAX, 1)), kind="s")
+    line("E4", "佣金列与账单佣金逐单相等的订单数", V(lambda S: S["m"].get("com_match_n", 0)),
+         "可比订单（佣金列不为 0、能按订单号挂上账单佣金）共 %s 单。墨西哥这两者逐单差约 9%%（代扣税），"
+         "智利逐单相等，比值是 1.000 而不是 1.19 —— 既不是代扣，也不是在佣金上另加 IVA。"
+         % per_store(stores, lambda S: "%d" % S["m"].get("com_match_of", 0), "、"), fmt_code=INT)
+    line("E5", "MercadoPago 结算流水的税金字段 TAXES_AMOUNT",
+         V(lambda S: (S.get("mp") or {}).get("tax")),
+         "本月结算流水里平台代扣的税金合计。为 0 表示平台没有在打款时扣税；空白表示本店没有流水。")
+
+    gap()
+    banner("⚠ 但要注意：本报表的收入是含税口径（智利 IVA %s），而且平台不替你缴" % pct(IVA_RATE, 0),
+           C_WARN, F(11, True, C_RED))
+    head()
+    f1 = line("F1", "含税商品收入（报表中的 GMV）", V(lambda S: S["m"]["ing"]),
+              "买家实付金额，含 %s IVA" % pct(IVA_RATE, 0))
+    f2 = line("F2", "其中 IVA 成分（× 19/119）",
+              lambda c, j: "=%s%d*%s/(1+%s)" % (c, f1, IVA_RATE, IVA_RATE),
+              "销项 IVA（débito fiscal）。平台不代扣，全额由卖家自行向 SII 申报缴纳")
+    line("F3", "不含税收入（参考）",
+         lambda c, j: "=%s%d-%s%d" % (c, f1, c, f2),
+         "若要编制正式的不含税损益表，应以此为收入起点", kind="t")
+    line("F4", "需要会计判断的地方", [None] * n,
+         "⚠ 以下不是平台数据能回答的，请交智利会计师：① 销项 IVA 的申报（含开了 factura 的 B2B 订单、"
+         "退货与取消的冲减）；② 平台费用（佣金、配送、广告、Full）的发票里含不含 IVA、能否作为进项抵扣 —— "
+         "平台导出的账单只给一个“Valor del cargo”，没有单列 IVA；③ 退货处理费、信誉保障计划扣款等"
+         "科目的税务性质。本报表的经营贡献毛利是含税口径，没有扣任何税。",
+         kind="chk", total=False)
 
 
 def sheet_bridge(wb, stores, ctx):
@@ -2695,7 +3515,7 @@ def sheet_fees(wb, stores, ctx):
     ws.row_dimensions[1].height = 24
     ws["A2"] = ("数据源：Reporte_Facturacion_MercadoLibre + Reporte_Notas_Credito。"
                 "结算通道决定这笔钱是“下单时已扣”还是“月底再扣”，混淆两者是平不了账的主因之一。"
-                "未在 FEE_CATALOG 登记的科目以红底标出。单位：MXN")
+                "未在 FEE_CATALOG 登记的科目以红底标出。单位：%s" % CUR)
     ws["A2"].font = F(9, False, C_GREY)
     cols = ["店铺", "西班牙语科目 (Detalle)", "中文科目", "结算通道", "笔数", "金额", "占该店 GMV%"]
     widths = [18, 52, 30, 16, 10, 16, 14]
@@ -2877,7 +3697,7 @@ def sheet_returns_money(wb, stores, ctx):
     ws["A1"].font = F(14, True, C_NAVY)
     ws.row_dimensions[1].height = 24
     ws["A2"] = ("一笔退货会同时影响：退给买家的货款、平台退还的佣金与运费、额外的退货处理费、以及库存能否回收。"
-                "下表按订单状态拆开，并标明责任方。单位：MXN")
+                "下表按订单状态拆开，并标明责任方。单位：%s" % CUR)
     ws["A2"].font = F(9, False, C_GREY)
     n_par = sum(len(S["cn"]["partial"]) for S in stores)
     if n_par:
@@ -2965,7 +3785,7 @@ def sheet_returns_money(wb, stores, ctx):
     tcol = 1 + n + 1
     ncol = tcol + 1
     kpi_rows = [
-        ("本期订单总数", lambda S: S["m"]["rows"], INT, "Ventas MX 按下单日，按行计"),
+        ("本期订单总数", lambda S: S["m"]["rows"], INT, "%s 按下单日，按行计" % VENTAS_SHEET),
         ("其中：售后/异常订单数", lambda S: S["m"]["abnormal_orders"], INT, "含取消、退货、仲裁、投诉、换货"),
         ("售后订单占比", "ratio_prev", PCT, "售后订单数 ÷ 订单总数"),
         ("实际退款金额", lambda S: S["m"]["refund"], MNY, "Anulaciones y reembolsos 净额"),
@@ -3267,7 +4087,7 @@ def sku_grid():
         ("店铺", 16), ("SKU", 16), ("商品名称", 38),
         ("订单数", 9), ("销售件数", 10),
         ("销售额 GMV", 14), ("运费收入", 12),
-        ("平台佣金", 13), ("平台代扣代缴税金", 15), ("平台配送费", 13),
+        ("平台佣金", 13), (TAXCOL_CN, 15), ("平台配送费", 13),
         ("退款金额", 13), ("卖家优惠券", 12),
         ("单位采购成本\n（只在表五填）", 14), ("采购成本合计", 14),
         ("净贡献毛利", 14), ("贡献率", 10),
@@ -3415,7 +4235,7 @@ def split_commission(S):
     note = ("%d/%d 单的佣金直接取自账单明细" % (n_hit, len(A))
             + ("；其余 %d 单账单尚未出，按店内实际佣金率推算" % (len(A) - n_hit)
                if n_hit < len(A) else "")
-            + ("；另有 %s MXN 账单佣金未能挂到具体订单，已按比例摊回" % fmt(resid)
+            + ("；另有 %s %s 账单佣金未能挂到具体订单，已按比例摊回" % (fmt(resid), CUR)
                if abs(resid) > 0.005 and n_hit == len(A) else ""))
     return pure, v_com - pure, note
 
@@ -3500,7 +4320,7 @@ def sheet_sku(wb, stores, ctx):
     ws["A1"].font = F(14, True, C_NAVY)
     ws.row_dimensions[1].height = 24
     ws["A2"] = ("【使用说明】单位采购成本（到岸成本，含头程运费与关税）只在最下方"
-                "【表五】的黄色 M 列填一次，表一与表四会自动引用同一个值，不要分头填。单位：MXN")
+                "【表五】的黄色 M 列填一次，表一与表四会自动引用同一个值，不要分头填。单位：%s" % CUR)
     ws["A2"].font = F(9, True, C_RED)
     ws["A3"] = ("本页共五张表。**要看某个 SKU 到底赚不赚钱，直接看最下方的【表五】** —— "
                 "它是最终口径。表一只算正常订单，表二至表四是三类异常订单的逐单明细。"
@@ -3516,8 +4336,11 @@ def sheet_sku(wb, stores, ctx):
                     % (n_par, fmt(sum(S["cn"]["partial_total"] for S in stores)),
                        SHEET_NAMES[1], SHEET_NAMES[9]))
         ws["A5"].font = F(9, False, C_AMBER)
-    ws["A4"] = ("注 1：佣金与代扣代缴税金已拆成两列 —— 平台在 Ventas 报表里把它们合并给出，"
-                "本页用账单明细的纯佣金逐单还原（见表末说明）。每一列只放一项费用，不再合并。"
+    ws["A4"] = (("注 1：佣金与代扣代缴税金已拆成两列 —— 平台在 Ventas 报表里把它们合并给出，"
+                 if WITHHOLDING else
+                 "注 1：佣金与并进佣金列的退货处理费等已拆成两列（智利平台不代扣税）—— "
+                 "平台在 Ventas 报表里把它们合并给出，")
+                + "本页用账单明细的纯佣金逐单还原（见表末说明）。每一列只放一项费用，不再合并。"
                 "注 2：组合订单（Paquete de N productos）的母行金额已按 件数×单价 拆到各子 SKU。"
                 "注 3：广告费、Full 仓储/揽收费在平台账单里没有商品编号，无法按 SKU 拆分，"
                 "故本页是“订单级贡献”，未分摊店铺级共同费用。")
@@ -3775,7 +4598,7 @@ def sheet_sku(wb, stores, ctx):
         "所以每店末尾单列两行残留费用，把这部分留在合计里。"
         "因此本表的店铺合计与表一的店铺合计相等，也与损益表对得上 —— 只是钱的归属换了个分法。"
         "（两表可能相差 1 分：表一按“正常/异常”分组后各自四舍五入到分，本表按 SKU 合并后再舍入，"
-        "落点不同。差额只在佣金与代扣税之间互相抵消，两列之和不变。）"
+        "落点不同。差额只在佣金与%s之间互相抵消，两列之和不变。）" % TAX_SHORT
     )).font = F(9, False, C_GREY)
     r += 1
     ws.cell(row=r, column=1, value=(
@@ -3875,13 +4698,17 @@ def sheet_sku(wb, stores, ctx):
 
     # ---- 表末：佣金/代扣税拆分的取数说明，避免有人以为这两列是平台直接给的 ----
     r += 1
-    ws.cell(row=r, column=1, value="佣金与代扣代缴税金的拆分口径").font = F(11, True, C_NAVY)
+    ws.cell(row=r, column=1, value="佣金与%s的拆分口径" % ("代扣代缴税金" if WITHHOLDING else TAXCOL_CN)).font = F(11, True, C_NAVY)
     r += 1
     ws.cell(row=r, column=1, value=(
         "平台只在 Ventas 报表给出合并值 Cargo por venta e impuestos（佣金＋代扣税），"
         "账单明细 Facturación 只给纯佣金 Cargo por venta，代扣税没有独立科目。"
         "本页按订单号把账单的纯佣金挂回每一单，代扣税 ＝ 合并值 − 纯佣金。"
-        "两列之和等于损益表的『平台销售佣金 ＋ 平台代扣代缴税金』。")).font = F(9, False, C_GREY)
+        "两列之和等于损益表的『平台销售佣金 ＋ 平台代扣代缴税金』。" if WITHHOLDING else
+        "平台只在 Ventas 报表给出合并值 Cargo por venta e impuestos。智利平台不代扣税：正常订单上"
+        "这个值就是账单的纯佣金 Cargo por venta；退货订单上还并进了退货处理费。本页按订单号把账单的"
+        "纯佣金挂回每一单，I 列 ＝ 合并值 − 纯佣金（主要是退货处理费）。两列之和等于损益表的"
+        "『平台销售佣金 ＋ 退货处理费』再加上桥 E 的时间/关联差。")).font = F(9, False, C_GREY)
     r += 1
     for t in split_notes:
         ws.cell(row=r, column=1, value=t).font = F(9, False, C_GREY)
@@ -3897,6 +4724,7 @@ def sheet_sku(wb, stores, ctx):
 # 账单关联覆盖率低于这个值就不信账单，改用税率推算 —— 半数以上订单挂不上时，
 # 用挂上的那点钱当整月佣金会把代扣税撑得离谱。
 TREND_LINK_MIN = 0.5
+TREND_LINK_MIN_NO_WITHHOLDING = 0.95
 SRC_BILLED = "账单实测"
 SRC_RATED = "按本店实测税率推算"
 
@@ -3935,7 +4763,11 @@ def monthly_commission(S):
                 billed += float(amt)
                 hit.add(k)
         cov = len(hit & oids) / max(1, A["oid"].nunique())
-        if cov >= TREND_LINK_MIN:
+        # 智利的账单不按自然月切，月末那几天的订单常常还在下一期没出的账单里：
+        # 半数挂上就当实测，没挂上那部分的佣金会整笔被算成"佣金列口径差"
+        # （DAB_CL 2026-10 只挂上一半，口径差虚高到 GMV 的 5%）。所以智利要求几乎
+        # 全部挂上（95%）才算实测，否则按实测比例推。
+        if cov >= (TREND_LINK_MIN if WITHHOLDING else TREND_LINK_MIN_NO_WITHHOLDING):
             out[ym] = (billed, vcom - billed, SRC_BILLED)
             if gmv > 0:
                 measured.append((gmv, vcom - billed, billed))
@@ -3943,8 +4775,10 @@ def monthly_commission(S):
             out[ym] = (None, None, None)      # 第二轮按税率补
 
     tot_gmv = sum(g for g, _, _ in measured)
-    rate = (sum(t for _, t, _ in measured) / tot_gmv) if tot_gmv > 0 else TAX_RATE_NOMINAL_GROSS
-    src = SRC_RATED + "（%.2f%%）" % (rate * 100)
+    # 智利没有法定代扣率可作兜底：一个账单月都没有时按 0 推（整列算佣金）。
+    rate = (sum(t for _, t, _ in measured) / tot_gmv) if tot_gmv > 0 else \
+        (TAX_RATE_NOMINAL_GROSS if WITHHOLDING else 0.0)
+    src = (SRC_RATED if WITHHOLDING else "按本店实测比例推算") + "（%.2f%%）" % (rate * 100)
     # 推算月份的哨兵：代扣税率一旦推高了，多算的税会**整笔落到佣金列**上，
     # 表现为佣金率异常偏低。只查偏低这一个方向 —— 佣金率偏高多半是品类结构
     # 变了（佣金按品类 13%~18%），本来就该逐月波动，当成异常只会天天误报。
@@ -3958,7 +4792,7 @@ def monthly_commission(S):
         tax = gmv * rate
         pure = vcom - tax
         note = src
-        if floor is not None and gmv > 0 and pure / gmv < floor:
+        if WITHHOLDING and floor is not None and gmv > 0 and pure / gmv < floor:
             note = ("%s ⚠ 倒推出的佣金率只有 %s，远低于实测月份的 %s —— "
                     "说明当月实际代扣税率高于 %s（账号税务登记状态多半和现在不同），"
                     "本行两列的分摊不可用，合计仍准确"
@@ -3991,19 +4825,24 @@ def sheet_trend(wb, stores, ctx):
     ws["A1"] = "月度经营趋势"
     ws["A1"].font = F(14, True, C_NAVY)
     ws.row_dimensions[1].height = 24
-    ws["A2"] = ("数据源：Ventas MX（销售报表为滚动窗口导出，窗口两端的月份可能不完整）。"
-                "本期为 %s，灰斜体行表示不完整月份，仅供参考。单位：MXN" % ctx["period"])
+    ws["A2"] = ("数据源：%s（销售报表为滚动窗口导出，窗口两端的月份可能不完整）。"
+                "本期为 %s，灰斜体行表示不完整月份，仅供参考。单位：%s"
+                % (VENTAS_SHEET, ctx["period"], CUR))
     ws["A2"].font = F(9, False, C_GREY)
     ws["A3"] = ("平台三项扣费各占一列，不合并。佣金与代扣代缴税金在平台报表里是一个数，"
                 "本表按账单明细逐单还原；账单只覆盖最近两三个计费期，更早的月份改按本店"
                 "实测代扣税率推算代扣税、再倒推佣金（两者之和始终等于平台给出的合并值）。"
-                "每行末列注明这一行到底是实测还是推算。")
+                "每行末列注明这一行到底是实测还是推算。" if WITHHOLDING else
+                "平台三项扣费各占一列，不合并。智利平台不代扣税；销售报表的佣金列在退货订单上"
+                "并进了退货处理费，本表按账单明细逐单拆成“平台佣金”和“%s”两列。账单只覆盖"
+                "最近两三个计费期，更早的月份按本店实测比例推算（两者之和始终等于平台给出的合并值）。"
+                "每行末列注明这一行到底是实测还是推算。" % TAXCOL_CN)
     ws["A3"].font = F(9, False, C_NAVY)
     cols = ["店铺", "月份", "订单数", "销售件数", "销售额 GMV", "客单价",
-            "平台佣金", "平台代扣代缴税金", "平台配送费",
-            "佣金率", "代扣税率", "配送费率",
+            "平台佣金", TAXCOL_CN, "平台配送费",
+            "佣金率", TAX_SHORT.rstrip("等") + "率", "配送费率",
             "退款金额", "退款率", "卖家优惠券", "售后订单数", "售后率",
-            "到账净额", "到账率", "佣金/代扣税来源"]
+            "到账净额", "到账率", "佣金/%s来源" % TAX_SHORT.rstrip("等")]
     widths = [16, 10, 9, 10, 15, 11, 14, 15, 14, 9, 10, 10, 13, 9, 12, 10, 9, 15, 9, 52]
     for i, t in enumerate(cols, 1):
         c = ws.cell(row=4, column=i, value=t)
@@ -4096,16 +4935,24 @@ def trend_notes(stores, ctx):
         cr = (g["佣金"] / gm).dropna()
         if len(cr):
             out.append("%s 的佣金率区间 %s–%s，本期 %s（账单实测的月份有 %d 个，"
-                       "其余月份的佣金是用合并值减推算代扣税倒推的）。佣金率变动说明品类结构变了。"
+                       "其余月份的佣金是用合并值减推算%s倒推的）。佣金率变动说明品类结构变了。"
                        % (S["store"], pct(cr.min(), 1), pct(cr.max(), 1),
-                          pct(cur["佣金"] / cur["GMV"] if cur["GMV"] else 0, 1), len(billed)))
+                          pct(cur["佣金"] / cur["GMV"] if cur["GMV"] else 0, 1), len(billed),
+                          TAX_SHORT))
         sr = (g["运费"] / gm).dropna()
         if len(sr):
             out.append("%s 的配送费率区间 %s–%s，本期 %s。每单配送费基本固定，"
                        "这个比率主要随客单价走 —— 客单价低则费率高。"
                        % (S["store"], pct(sr.min(), 1), pct(sr.max(), 1),
                           pct(cur["运费"] / cur["GMV"] if cur["GMV"] else 0, 1)))
-        if len(billed):
+        if len(billed) and not WITHHOLDING:
+            tr = (billed["代扣税"] / billed["GMV"].replace(0, float("nan"))).dropna()
+            if len(tr):
+                out.append("%s 的“%s”占 GMV（账单实测月份）区间 %s–%s。智利平台不代扣税，"
+                           "这一列只是并进佣金列的退货处理费，应接近 0；明显变大说明平台开始代扣"
+                           "或佣金列混进了新的扣款，需要人工确认。"
+                           % (S["store"], TAXCOL_CN, pct(tr.min(), 2), pct(tr.max(), 2)))
+        elif len(billed):
             tr = (billed["代扣税"] / billed["GMV"].replace(0, float("nan"))).dropna()
             if len(tr):
                 out.append("%s 的代扣代缴税率（账单实测月份）区间 %s–%s，法定名义值 %s。"
@@ -4120,9 +4967,9 @@ def trend_notes(stores, ctx):
                           pct(cur["退款"] / cur["GMV"] if cur["GMV"] else 0, 2),
                           pct(cur["异常"] / cur["订单数"] if cur["订单数"] else 0, 2)))
         out.append("%s 的到账率（Ventas Total ÷ GMV）本期 %s，即每 100 元 GMV 实际到账约 %s 元，"
-                   "其余是佣金、代扣税、配送费与退款。注意这个比率还没有扣广告费和仓储费。"
+                   "其余是佣金、%s、配送费与退款。注意这个比率还没有扣广告费和仓储费。"
                    % (S["store"], pct(cur["净额"] / cur["GMV"] if cur["GMV"] else 0, 1),
-                      fmt(cur["净额"] / cur["GMV"] * 100 if cur["GMV"] else 0, 0)))
+                      fmt(cur["净额"] / cur["GMV"] * 100 if cur["GMV"] else 0, 0), TAX_SHORT))
     if len(stores) > 1:
         # key 不能省：两家店的比率完全相等时（最常见的是两家当月都没有销售，
         # 比率都是 0），元组比较会接着去比第二个元素 —— 两个 dict，直接
@@ -4589,7 +5436,11 @@ def sheet_gaps(wb, stores, ctx):
                          fmt(sum(x[2] for x in zero)),
                          "；".join("%s：%s → %s" % (o, fmt(v), fmt(mp)) for o, v, mp in dif[:40]),
                          "；…另 %d 单" % (len(dif) - 40) if len(dif) > 40 else ""),
-                      "在卖家后台按订单号查这些订单的退款 / 争议处理结果，确认哪一边是对的。",
+                      ("其中 %d 单（%s）的差额等于买家另付的运费：智利运费在 MercadoPago 是单独一笔"
+                       "（SETTLEMENT_SHIPPING），不是少付，可忽略。其余的" % (
+                           MO["ship_explained"][0], fmt(MO["ship_explained"][1]))
+                       if MO.get("ship_explained") and MO["ship_explained"][0] else "")
+                      + "在卖家后台按订单号查这些订单的退款 / 争议处理结果，确认哪一边是对的。",
                       "销售报表若漏记了这些到账，本店的到账和毛利偏低；反之则偏高。"))
 
     for S in stores:
@@ -4657,9 +5508,16 @@ def sheet_gaps(wb, stores, ctx):
                           "没有找到本期的 Reporte_Cargos_Full 文件，无法与账单的 Full 科目交叉核对。",
                           "在 Full 后台重新导出本期的 Cargos Full 报表。",
                           "少了一道校验；账单口径仍然准确，但无法独立验证。"))
-        if S["files"].get("storage"):
+        if S["files"].get("storage") and "storage_bill_cmp" in m \
+                and m.get("storage_days", 0) < m.get("storage_month_days", 0):
+            items.append(("低", "仓储费报表只覆盖本月一部分（%s）" % S["store"],
+                          storage_compare_text(m),
+                          "无需处理。智利仓储报表按店铺的切期日切期；想覆盖整月，下载时需多拉一期"
+                          "（上月切期日起的那一期）。本报表统一采用账单口径。",
+                          "不影响损益：损益表的仓储费取自账单，按计费日完整覆盖本月。"))
+        elif S["files"].get("storage") and "storage_bill_cmp" not in m:
             d = m["storage_bill"] - m["storage_accrual"]
-            if abs(d) > 0.01:
+            if abs(d) > TOL_CENT:
                 items.append(("低", "仓储费两个口径的时间差（%s）" % S["store"],
                               "账单（按计费日）%s vs 独立仓储报表（按占用日）%s，差 %s。"
                               % (fmt(m["storage_bill"]), fmt(m["storage_accrual"]), fmt(d)),
@@ -4677,14 +5535,32 @@ def sheet_gaps(wb, stores, ctx):
                       "%s 为不完整月份（销售报表是滚动窗口导出）。" % "、".join(ctx["partial_months"]),
                       "下月初重新下载完整数据；长期看应按月累积保存指标，才能得到真实趋势。",
                       "本报表未将这些月份计入损益，仅在【%s】作参考。" % SHEET_NAMES[7]))
-    items.append(("低", "代扣代缴税金的税务处理",
-                  "本期%s被代扣 %s，约为含税售价的 %s。"
-                  % (store_count_cn(stores),
-                     fmt(sum(S["m"]["tax_ret"] for S in stores)),
-                     pct(agg_tax_rate(stores), 2)),
-                  "把 MercadoPago 的 Constancia de retenciones（预扣凭证）交给墨西哥会计师，"
-                  "确认能否全额抵扣 IVA/ISR 申报。",
-                  "若能全额抵扣，这笔钱不是成本；若不能，需重新计入费用，会显著改变净利润。"))
+    if WITHHOLDING:
+        items.append(("低", "代扣代缴税金的税务处理",
+                      "本期%s被代扣 %s，约为含税售价的 %s。"
+                      % (store_count_cn(stores),
+                         fmt(sum(S["m"]["tax_ret"] for S in stores)),
+                         pct(agg_tax_rate(stores), 2)),
+                      "把 MercadoPago 的 Constancia de retenciones（预扣凭证）交给墨西哥会计师，"
+                      "确认能否全额抵扣 IVA/ISR 申报。",
+                      "若能全额抵扣，这笔钱不是成本；若不能，需重新计入费用，会显著改变净利润。"))
+    else:
+        items.append(("中", "IVA 与平台费用发票的税务处理（会计判断）",
+                      "智利平台不代扣税（MercadoPago 流水 TAXES_AMOUNT 为 0，佣金列与账单佣金逐单相等）。"
+                      "本期%s GMV 所含 IVA（%s）约 %s，全部由卖家自行申报。平台账单只给“Valor del cargo”"
+                      "一个金额，没有单列 IVA。"
+                      % (store_count_cn(stores), pct(IVA_RATE, 0),
+                         fmt(sum(S["m"]["iva_in_gmv"] for S in stores))),
+                      "请智利会计师确认：① 销项 IVA 的申报口径（含 B2B 开票订单、退货冲减）；"
+                      "② 平台费用（佣金、配送、广告、Full、退货处理费、信誉保障计划扣款）的发票是否含 IVA、"
+                      "能否作为进项抵扣；③ 需不需要从 SII 下载平台开给你的电子发票（DTE）逐张核对。",
+                      "本报表的经营贡献毛利是含税口径、未扣任何税；税后利润取决于上述判断。"))
+        for S in stores:
+            if cycle_day(S) != 1 and not S["m"].get("pay_complete"):
+                items.append(("中", "桥 B 付款记录不全（%s）" % S["store"],
+                              "；".join(S["m"].get("pay_missing", [])) + "。",
+                              "等该账单自动扣款后（通常次月 7 号关账、约一周后扣款）重新下载账单再重出。",
+                              "不影响损益表（费用按账单行计），只是暂时无法证实这些费用已付清。"))
 
     order = {"高": 0, "中": 1, "低": 2}
     items.sort(key=lambda x: order.get(x[0], 9))
@@ -4783,8 +5659,11 @@ def sheet_gaps(wb, stores, ctx):
            for S in stores for k, net, st, d, sku in S["cn"]["unrev"]], sum_cols=(3,))
 
     block("3.3 部分退款订单：销售报表把原佣金重复扣了一次",
-          "平台按退款比例 p 同时退还佣金与代扣税（代扣税在账单里没有科目，只在 MercadoPago 流水可见）。"
-          "应退 ＝ p ×（GMV − 佣金 − 代扣税）；而销售报表的“退款与取消”列写的是 应退 ＋ 原佣金，"
+          ("平台按退款比例 p 同时退还佣金与代扣税（代扣税在账单里没有科目，只在 MercadoPago 流水可见）。"
+           "应退 ＝ p ×（GMV − 佣金 − 代扣税）；" if WITHHOLDING else
+           "平台按退款比例 p 退还佣金（智利不代扣税；公式里“佣金列其余部分”是并进佣金列的退货处理费等）。"
+           "应退 ＝ p ×（GMV − 佣金 − 佣金列其余部分）；")
+          + "而销售报表的“退款与取消”列写的是 应退 ＋ 原佣金，"
           "于是多扣一个原佣金。“认定依据”为现金凭证的，是用 MercadoPago 实际净额与销售报表 Total "
           "的差值直接证实（该差值精确等于原佣金）；无流水的店只能按规律推定。"
           "本表合计已计入损益表的“加：部分退款重复扣佣金调整”行。",
@@ -4954,7 +5833,7 @@ def parse_store_arg(v):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Mercado Libre MX 月度财务报表生成器",
+        description="Mercado Libre 月度财务报表生成器（墨西哥 / 智利）",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--month", required=True, help="会计期间，如 2026-08")
     ap.add_argument("--store", action="append", required=True, type=parse_store_arg,
@@ -4965,13 +5844,35 @@ def main(argv=None):
                     help="任一 error 级校验未通过、或平台声明 Ventas 导出不完整，"
                          "就不写出文件，退出码 %d" % EXIT_STRICT_ABORT)
     ap.add_argument("--no-recalc", action="store_true", help="跳过 LibreOffice 重算")
-    ap.add_argument("--tol", type=float, default=0.05, help="桥A 残差容差，默认 0.05")
+    ap.add_argument("--tol", type=float, default=None,
+                    help="桥A 残差容差，默认按站点：墨西哥 0.05，智利 1 比索")
     ap.add_argument("--build-date", default=None, help="覆盖编制日期（用于可复现测试）")
+    ap.add_argument("--site", type=str.lower, choices=sorted(SITE_PROFILES), default=None,
+                    help="国家站点 mx / cl。不给时取第一家店下载目录 run_meta.json 里的 site"
+                         "（老目录没有这个字段，按 mx）")
     a = ap.parse_args(argv)
+
+    # ---- 站点：一份工作簿只属于一个国家 ----
+    # 每家店的下载目录在 run_meta.json 里记着 "site"。与本次站点不一致的店铺
+    # 不能混进来（币种、列名、账单周期、税务口径都不一样），按"店铺数据可用"
+    # 未通过剔除，和坏数据的店铺同一个出口，汇总里看得见。
+    site_of = {name: str(load_run_meta(path).get("site") or "mx").lower()
+               for name, path in a.store}
+    site = set_site(a.site or site_of[a.store[0][0]])
+    if site != "mx":
+        print("[站点] %s（%s，%s）" % (site, COUNTRY_CN, CUR))
+    if a.tol is None:
+        a.tol = BRIDGE_A_TOL
 
     p0, p1 = month_bounds(a.month)
     stores, unusable = [], []
     for name, path in a.store:
+        if site_of[name] != site:
+            unusable.append((name, "下载目录记的站点是 %s（run_meta.json），本报表是 %s 的。"
+                                   "两国的币种、账单周期和税务口径不同，不能放进同一份报表；"
+                                   "请按国家分开出（run_reports.py --region）。"
+                             % (site_of[name].upper(), site.upper())))
+            continue
         print("[读取] %s ← %s" % (name, path))
         S = derive(name, path, p0, p1)
         V = S["ventas_all"]

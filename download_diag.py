@@ -630,10 +630,16 @@ NOT_IN_REPORT = {
 }
 
 
+# 账单页上的第五张 "Facturación de Mercado Pago"（BILL_MP_V3）点下载后会先弹一个
+# 选格式的对话框，脚本没处理，所以从来没下到过（墨西哥 EWTTO_SM、智利 DAB_CL 都有）。
+# 报表也不读它 —— 缺了照样记原因，但不算报表缺数据。
+NOT_IN_REPORT_SUFFIXES = ("/BILL_MP_V3",)
+
+
 def affects_report(record):
     """缺了这张，财务报表会不会少数据。"""
     form = (record or {}).get("form") or ""
-    return form not in NOT_IN_REPORT
+    return form not in NOT_IN_REPORT and not form.endswith(NOT_IN_REPORT_SUFFIXES)
 
 
 def needs_attention(record):

@@ -92,6 +92,12 @@ def interpreter():
     return p if os.path.exists(p) else sys.executable
 
 
+def run_hours(n):
+    """n 家店大概要跑多久，给确认框用。每家约 15 分钟。"""
+    m = n * 15
+    return "%d 分钟" % m if m < 60 else "%.1f 小时" % (m / 60.0)
+
+
 def recent_months(n=15):
     d = site_time.site_today().replace(day=1)   # 和 run_reports.prev_month 同一个"今天"
     out = []
@@ -265,7 +271,7 @@ class App(object):
         rows = [
             ("① + ② 一次跑完", self.do_all,
              "先下载【上面所选店铺】的数据，下完接着出报表，中间不用管。"
-             "全部 12 家约 3 小时。平时就点这一个。", True),
+             "每家店约 15 分钟（墨西哥 12 家约 3 小时）。平时就点这一个。", True),
             ("① 下载数据", self.do_download,
              "打开紫鸟，下载【上面所选店铺】的报表并清洗。每家约 15 分钟。", True),
             ("② 出报表", self.do_reports,
@@ -547,14 +553,15 @@ class App(object):
         who = ("%s全部 %d 家店铺" % (region_choice.label(self.region),
                                     len(self.stores)) if stores is None
                else "所选的 %d 家店铺" % len(stores))
+        n_run = len(self.stores) if stores is None else len(stores)
         if not messagebox.askokcancel(
                 "一次跑完",
                 "会先下载 %s 的 %s 数据，下完接着出报表。\n\n"
-                "全部 12 家大约 3 小时，中间不需要你操作。\n"
+                "每家店约 15 分钟，%d 家大约 %s，中间不需要你操作。\n"
                 "期间这台机器会反复开关紫鸟浏览器 —— 请不要手动去点紫鸟，\n"
                 "那会打断下载。\n\n"
                 "这个窗口可以关掉，不影响后台继续跑。\n\n开始？"
-                % (who, self.month.get())):
+                % (who, self.month.get(), n_run, run_hours(n_run))):
             return
         self.start("both", "下载 + 出报表", stores)
 

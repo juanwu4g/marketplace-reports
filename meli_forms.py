@@ -968,7 +968,10 @@ STOCK_REPORTS = [
     ("costos",       "reporte de costos por el servicio de almacenamiento"),
     ("general",      "reporte general de stock"),
     ("consolidado",  "reporte consolidado de movimientos"),
-    ("devoluciones", "reporte de devoluciones a la bodega"),
+    # 墨西哥叫 "a la bodega"，智利叫 "al centro de distribución"（2026-10-15 实测）。
+    # 用 "|" 隔开的几种叫法依次试，哪个点得到算哪个。
+    ("devoluciones", "reporte de devoluciones a la bodega|"
+                     "reporte de devoluciones al centro de distribución"),
 ]
 
 JS_OPEN_STOCK_MENU = JS_NORM + """
@@ -1256,7 +1259,7 @@ def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240,
                 download_diag.give_up(diag, driver, f, "ui-missing",
                                       step="库存报表菜单始终为空", menu_items=[])
             break
-        if not driver.execute_script(JS_CLICK_STOCK_ITEM, label):
+        if not click_stock_item(driver, label):
             print("      [警告] 未找到该菜单项")
             if diag is not None:
                 items = driver.execute_script(JS_STOCK_ITEMS)
@@ -1328,6 +1331,14 @@ def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240,
     return out
 
 
+def click_stock_item(driver, label):
+    """点库存报表菜单里的一项。label 可以是用 "|" 隔开的几种叫法（不同国家站点）。"""
+    for one in label.split("|"):
+        if driver.execute_script(JS_CLICK_STOCK_ITEM, one):
+            return True
+    return False
+
+
 # 这几项点一下菜单就直接下载（没有弹窗要填）：没有下载开始时值得重点一次。
 STOCK_RETRY_ON_NO_START = ("general", "devoluciones")
 
@@ -1366,7 +1377,7 @@ def download_stock_reports(driver, download_dir, months_back=2, timeout=240,
             results[key] = []
             continue
 
-        if not driver.execute_script(JS_CLICK_STOCK_ITEM, label):
+        if not click_stock_item(driver, label):
             items = driver.execute_script(JS_STOCK_ITEMS)
             print("    [警告] 未找到菜单项 %r，当前菜单为：%s" % (label, items))
             download_diag.give_up(diag, driver, form, "ui-missing",
@@ -1406,8 +1417,7 @@ def download_stock_reports(driver, download_dir, months_back=2, timeout=240,
             print("      没有下载开始，重开页面再点一次")
             driver.get(SPACE_MANAGEMENT)
             time.sleep(12)
-            if _open_stock_menu(driver) and driver.execute_script(
-                    JS_CLICK_STOCK_ITEM, label):
+            if _open_stock_menu(driver) and click_stock_item(driver, label):
                 time.sleep(5)
                 files = wait_for_downloads(download_dir, before, min_files=1,
                                            timeout=timeout, settle=6,

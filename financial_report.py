@@ -60,9 +60,10 @@ OUTCOME_LABELS = {
 # 报表必需的输入。缺 Ventas 或账单就算不出损益表，这样的目录不能用 —— 光取"最新
 # 目录"是不够的：一次只跑了 --only ventas 的运行会留下一个看着很新、其实缺账单的
 # 目录（BOCINA_SM 的 20260903_110457 就是）。
+# 每项是 (几个可接受的文件名模式, 名称)：智利的销售报表叫 Ventas_CL。
 REQUIRED = (
-    ("*Ventas_MX*.xlsx", "Ventas"),
-    ("Reporte_Facturacion_MercadoLibre_*.xlsx", "账单"),
+    (("*Ventas_MX*.xlsx", "*Ventas_CL*.xlsx"), "Ventas"),
+    (("Reporte_Facturacion_MercadoLibre_*.xlsx",), "账单"),
 )
 
 
@@ -113,6 +114,7 @@ def sales_reaches(folder, month):
     if span:
         return span[0] <= month <= span[1]
     hits = (sorted(glob.glob(os.path.join(folder, "*Ventas_MX*.xlsx")))
+            or sorted(glob.glob(os.path.join(folder, "*Ventas_CL*.xlsx")))
             or sorted(glob.glob(os.path.join(folder, "*Ventas*.xlsx"))))
     if not hits:
         return False
@@ -156,6 +158,29 @@ def billing_months(folder):
     return out
 
 
+def folder_site(folder):
+    """下载目录记的站点（run_meta.json 的 "site"）。老目录没有这个字段，按 mx。"""
+    try:
+        with io.open(os.path.join(folder, "run_meta.json"), encoding="utf-8") as fh:
+            return str((json.load(fh) or {}).get("site") or "mx").lower()
+    except Exception:
+        return "mx"
+
+
+def bills_needed(folder, want):
+    """做 want（(年, 月)）这个会计月要哪几期账单。
+
+    墨西哥账单是自然月，只要当月那一期。智利账单不按自然月切（各店切期日不同，
+    如 8 号或 24 号），一个自然月横跨"当月"和"次月"两期账单 —— 两期都要有，
+    报表才拿得全本月的费用（report_build.bill_cycles 是同一条规则）。
+    """
+    y, m = want
+    if folder_site(folder) == "mx":
+        return {want}
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    return {want, (ny, nm)}
+
+
 def available():
     return os.path.isfile(SCRIPT)
 
@@ -178,8 +203,8 @@ def has_libreoffice():
 def _usable(folder):
     """这个下载目录是否够算一份报表。"""
     import glob
-    missing = [label for pat, label in REQUIRED
-               if not glob.glob(os.path.join(folder, pat))]
+    missing = [label for pats, label in REQUIRED
+               if not any(glob.glob(os.path.join(folder, p)) for p in pats)]
     return (not missing), missing
 
 
@@ -222,6 +247,11 @@ def latest_run(store, base=None, month=None):
     if want:
         wm = "%04d-%02d" % want
         # 第一优先：确实含该月账单的目录。没有账单，费用侧整块是空的。
+        # 智利要两期账单都在（见 bills_needed）；先找两期都在的，找不到再退一步。
+        for r, folder in usable:
+            need = bills_needed(folder, want)
+            if len(need) > 1 and need <= billing_months(folder):
+                return folder, "%s（含 %s 账单及次月账单）" % (r, wm)
         for r, folder in usable:
             if want in billing_months(folder):
                 return folder, "%s（含 %s 账单）" % (r, wm)
@@ -319,7 +349,7 @@ def _write_diag(out, month, pairs, rc, secs, output):
 
 
 def build(pairs, month, out, metrics_out=None, strict=False,
-          no_recalc=None, timeout=3600, echo=True):
+          no_recalc=None, timeout=3600, echo=True, site=None):
     """生成一份报表。pairs 是 [(店铺名, 下载目录), ...]。
 
     一份报表可以覆盖多家店 —— 汇总报表就是把 12 家一起传进来。
@@ -363,6 +393,9 @@ def build(pairs, month, out, metrics_out=None, strict=False,
         cmd.append("--strict")
     if no_recalc:
         cmd.append("--no-recalc")
+    if site:
+        # 国家（mx / cl）。不给时 report_build 读下载目录 run_meta.json 的 site。
+        cmd += ["--site", str(site).lower()]
 
     env = dict(os.environ)
     # 报表全程中文输出，管道里必须是 UTF-8，否则一句 print 就会 UnicodeEncodeError

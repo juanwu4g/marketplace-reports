@@ -13,9 +13,10 @@
 每家店用它**最近一个文件齐全**的下载目录 —— 不是无脑取最新，因为一次
 `--only ventas` 的运行会留下缺账单的目录。
 
-区域（--region，默认 MX）只决定两件事：不给 --stores 时"全部店铺"是哪几家
-（store_config.stores_for_region），以及全店汇总表的文件名（combined_name）。
-报表内容一个字不因它而变。
+区域（--region，默认 MX）决定三件事：不给 --stores 时"全部店铺"是哪几家
+（store_config.stores_for_region）、全店汇总表的文件名（combined_name），以及
+传给 report_build 的 --site（币种、账单周期、税务口径按国家走；下载目录
+run_meta.json 记的站点与之不符的店铺会被剔除并在报表里记一笔）。
 
 退出码
 ------
@@ -218,6 +219,7 @@ def main():
             print("-" * 62)
             r = safe_build(
                 [(name, folder)], month, out, strict=args.strict,
+                site=args.region.lower(),   # 国家传给报表：币种、账单周期、税务口径
                 metrics_out=(os.path.join(args.out_dir, "%s_%s_指标.json"
                                           % (name, month)) if args.metrics else None))
             r["label"] = name
@@ -231,6 +233,7 @@ def main():
         print("-" * 62)
         r = safe_build(
             usable, month, out, strict=args.strict,
+            site=args.region.lower(),       # 一份汇总只属于一个国家，见 report_build --site
             metrics_out=(os.path.join(args.out_dir, "全店_%s_指标.json" % month)
                          if args.metrics else None))
         r["label"] = "全店汇总"
