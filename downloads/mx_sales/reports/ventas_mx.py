@@ -27,8 +27,20 @@ from mx_sales.readers.excel import read_grouped_sheet
 from mx_sales.reports.base import ReportSpec, require_columns
 
 SHEET_NAME = "Ventas MX"
+
+#: Where the two header rows usually sit (0-indexed). Not relied on: ML pushes the whole
+#: table down a row when it puts a banner on top -- it does so on exports it flags as
+#: incomplete -- and reading the fixed rows then takes the group row for the header.
+#: 28 of 902 production files failed that way with "expected columns missing". The
+#: header is located by :data:`HEADER_ANCHORS`; these are the fallback, and their
+#: difference is how far above the header the group row is.
 GROUP_ROW = 4
 HEADER_ROW = 5
+
+#: Lower-row names that identify the header. The same two the report stage anchors on
+#: (``report_build._ventas_header_row``), and the two ``transform`` cannot do without.
+HEADER_ANCHORS = ("# de venta", "Fecha de venta")
+REQUIRED_COLUMNS = ("ventas__de_venta", "ventas__fecha_de_venta")
 
 #: A package parent row announces how many child rows follow it. In the workbook these
 #: are the dark grey rows; the children below them are the light grey ones. Detection is
@@ -169,13 +181,37 @@ OUTPUT_ORDER = [
 
 
 def load(path: Path) -> pd.DataFrame:
-    """Read the ``Ventas MX`` sheet using its two-row grouped header."""
-    return read_grouped_sheet(path, SHEET_NAME, group_row=GROUP_ROW, header_row=HEADER_ROW)
+    """Read the ``Ventas MX`` sheet using its two-row grouped header.
+
+    Fails here, saying what was looked for and what was found instead, when no header
+    can be located -- rather than later in ``transform`` with a list of missing slugs
+    that says nothing about why. The file is not named: the pipeline prefixes it.
+    """
+    try:
+        frame = read_grouped_sheet(
+            path, SHEET_NAME, group_row=GROUP_ROW, header_row=HEADER_ROW, anchors=HEADER_ANCHORS
+        )
+    except IndexError:
+        # Fewer rows than the fallback position: there is no table in this sheet at all.
+        frame = None
+
+    if frame is None or not set(REQUIRED_COLUMNS) <= set(frame.columns):
+        # Empty header cells come through as "nan" / "unnamed"; they say nothing.
+        seen = [] if frame is None else [
+            c for c in frame.columns if not c.startswith(("unnamed", "nan"))
+        ][:6]
+        raise ValueError(
+            f"ventas_mx: no usable header in sheet {SHEET_NAME!r}: expected a row holding "
+            f"{' and '.join(repr(a) for a in HEADER_ANCHORS)} under a 'Ventas' group near "
+            f"the top; columns read instead: {seen or 'none'}. The export layout changed, "
+            "or the account language was not Spanish when it was generated -- download it again."
+        )
+    return frame
 
 
 def transform(frame: pd.DataFrame) -> pd.DataFrame:
     """Clean, type and enrich the raw sales frame."""
-    require_columns(frame, ["ventas__de_venta", "ventas__fecha_de_venta"], report="ventas_mx")
+    require_columns(frame, list(REQUIRED_COLUMNS), report="ventas_mx")
 
     out = pd.DataFrame(index=frame.index)
 

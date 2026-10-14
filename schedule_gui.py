@@ -4,9 +4,20 @@
     双击 定时设置.cmd    （推荐，它会用对解释器）
     或   .venv\\Scripts\\python schedule_gui.py
 
-做四件事：建/改每月的计划任务、试跑一次、看状态、检查这台机器够不够格
-无人值守。**业务逻辑一行都没有** —— 真正跑的是 run_monthly.cmd，这里只是
+做五件事：建/改每月的计划任务、试跑一次、看状态、看日志、检查这台机器够不
+够格无人值守。**业务逻辑一行都没有** —— 真正跑的是 run_monthly.cmd，这里只是
 把 Windows 任务计划程序那一堆勾选项替人点好。
+
+和「启动」窗口跑的是同一个过程
+------------------------------
+计划任务的动作是 `run_monthly.cmd --entrance scheduled`；「启动」窗口点按钮
+起的是同一个 run_monthly.py，只是 `--entrance manual`。两边唯一的区别就是
+这里多了"几号几点"。窗口下方的「运行日志」和「启动」窗口里的是同一个控件
+（log_view.py），看的是同一批文件（logs\runs），所以在这里也能实时看到、
+也能中止任何一轮 —— 包括窗口开着的时候到点自己跑起来的那轮。
+
+**在这次改动之前登记的任务不带 --entrance scheduled**，日志里会被记成
+「命令行」。再点一次「设为每月自动跑」就改过来了；状态栏会提醒。
 
 为什么用 XML 而不是 schtasks 的命令行参数
 -----------------------------------------
@@ -14,8 +25,8 @@
 
 * 「如果错过计划的开始时间，立即启动任务」（StartWhenAvailable）—— 15 号
   机器关着就补跑，对一台没人管的老 PC 来说这条最要紧
-* 「如果任务运行超过 N 小时则停止」（ExecutionTimeLimit）—— 脚本自己不做
-  超时，全靠它兜底
+* 「如果任务运行超过 N 小时则停止」（ExecutionTimeLimit）—— run_monthly 自己
+  会在 5 小时掐断下载并接着出报表，这一项只是它也卡死时的最后一道兜底
 * 电池相关的两项 —— 笔记本上默认会拦住任务
 
 让不写代码的人去 taskschd.msc 里找这三个勾，比让他们敲命令还难。所以这里
@@ -39,16 +50,29 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+import runlog
+from log_view import LogView, fit_to_screen
 from gui import ROOT, interpreter, store_list, load_settings, save_settings
 # 报表输出目录的解析规则只有一份，在 run_monthly 里 —— 定时任务真正跑的是它。
 from run_monthly import resolve_out_dir
+
+# 左列说明文字的折行宽度（像素），和「启动」窗口取同一个值。
+WRAP = 470
 
 TASK = "MX月度报表"
 REHEARSAL = TASK + "-试跑"
 RUNNER = os.path.join(ROOT, "run_monthly.cmd")
 LOG_DIR = os.path.join(ROOT, "logs")
 
+# 计划任务传给 run_monthly.cmd 的参数。和「启动」窗口用的是同一个拼法
+# （runlog.runner_argv），只有 entrance 不同；月份、店铺、输出目录都不写，
+# 由 run_monthly 取默认值：上个月、全部店铺、主界面里选的输出目录。
+TASK_ARGS = " ".join(runlog.runner_argv("scheduled"))
+REHEARSAL_ARGS = " ".join(runlog.runner_argv("scheduled", step="report"))
+
 # 任务超时，超了 Windows 会把**整条链**杀掉，报表那一步就再也跑不到。
+# 现在这只是兜底：run_monthly 自己在 5 小时（它的 MAX_HOURS）就会掐断下载、
+# 接着出报表和写告警。这里必须比那个数大，留出出报表的时间。
 # 实测：9/17 那轮带 --month 的批次每家店 8–15 分钟，全程约 3 小时；9/21 凌晨
 # 平台库存报表没响应，每家店 26.5 分钟，全程约 5.3 小时 —— 超过当时的 5 小时
 # 上限被杀，当月没出报表。已经修掉了那晚浪费时间的两处（未开始的账期、下载
@@ -143,15 +167,19 @@ def task_state(name):
     xml = d.get("XML", "")
     day = re.search(r"<Day>(\d+)</Day>", xml)
     at = re.search(r"<StartBoundary>[^<]*T(\d\d:\d\d)", xml)
+    arg = re.search(r"<Arguments>([^<]*)</Arguments>", xml)
+    d["ARGS"] = arg.group(1).strip() if arg else ""
     d["DAY"] = day.group(1) if day else "?"
     d["TIME"] = at.group(1) if at else "?"
     return d
 
 
-def task_xml(args=None, day=None, hour=0, minute=0):
+def task_xml(args=TASK_ARGS, day=None, hour=0, minute=0):
     """生成任务 XML。
 
     day 为 None 时不带触发器 —— 试跑任务只靠手工触发，不该自己跑起来。
+    args 是传给 run_monthly.cmd 的参数，至少要有 --entrance scheduled：
+    日志靠它标出"这一轮是定时任务起的"。
     """
     who = current_user()
     trigger = ""
@@ -314,14 +342,20 @@ class SchedApp(object):
         self.busy = False
         self.busy_label = ""
         root.title("每月自动出报表 —— 设置")
-        root.geometry("860x660")
-        root.minsize(760, 560)
+        fit_to_screen(root, 1680, 900)
+        root.minsize(1000, 600)
 
         s = load_settings()
         self.day = tk.IntVar(value=int(s.get("sched_day", 15)))
         self.hour = tk.IntVar(value=int(s.get("sched_hour", 2)))
         self.minute = tk.IntVar(value=int(s.get("sched_minute", 0)))
 
+        # 和「启动」窗口同一个排法：左边是设置和按钮，右边整列给运行日志 ——
+        # 两个窗口看日志的地方长得一样、一样大。
+        self.left = ttk.Frame(root)
+        self.left.pack(side="left", fill="y")
+        self.right = ttk.Frame(root)
+        self.right.pack(side="left", fill="both", expand=True)
         self._build_status()
         self._build_form()
         self._build_actions()
@@ -333,21 +367,27 @@ class SchedApp(object):
     # ---------------------------------------------------------- 布局
 
     def _build_status(self):
-        f = ttk.LabelFrame(self.root, text=" 现在是什么状态 ", padding=10)
-        f.pack(fill="x", padx=12, pady=(10, 6))
+        f = ttk.LabelFrame(self.left, text=" 现在是什么状态 ", padding=10)
+        f.pack(fill="x", padx=(12, 6), pady=(12, 6))
         self.status = tk.StringVar(value="正在读取…")
         self.status_lbl = ttk.Label(f, textvariable=self.status,
                                     font=("Microsoft YaHei UI", 11, "bold"))
         self.status_lbl.pack(anchor="w")
         self.detail = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.detail, foreground="#555",
-                  justify="left").pack(anchor="w", pady=(4, 0))
+                  justify="left", wraplength=WRAP).pack(anchor="w", pady=(4, 0))
+        # 定时跑是没人看着的：上一轮要是有店铺要人去登录 / 验证，这里要一眼
+        # 看得到，而且说清楚去哪儿处理。处理和补跑在「启动」窗口里做。
+        self.human_note = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.human_note, foreground="#b42318",
+                  justify="left", wraplength=WRAP,
+                  font=("", 10, "bold")).pack(anchor="w", pady=(4, 0))
         ttk.Button(f, text="刷新状态", command=self.refresh, width=12).pack(
             anchor="w", pady=(8, 0))
 
     def _build_form(self):
-        f = ttk.LabelFrame(self.root, text=" 什么时候自动跑 ", padding=10)
-        f.pack(fill="x", padx=12, pady=6)
+        f = ttk.LabelFrame(self.left, text=" 什么时候自动跑 ", padding=10)
+        f.pack(fill="x", padx=(12, 6), pady=6)
         row = ttk.Frame(f)
         row.pack(anchor="w")
         ttk.Label(row, text="每月").pack(side="left")
@@ -360,7 +400,7 @@ class SchedApp(object):
         ttk.Spinbox(row, from_=0, to=59, width=4, increment=5, format="%02.0f",
                     textvariable=self.minute).pack(side="left", padx=(8, 4))
         ttk.Label(row, text="分").pack(side="left")
-        ttk.Label(f, foreground="#555", justify="left", text=(
+        ttk.Label(f, foreground="#555", justify="left", wraplength=WRAP, text=(
             "出的永远是【上个月】的报表。9 月 15 号跑，出的是 8 月。\n"
             "选 15 号是因为上个月的账单到那时已经结清，数字不会再变。\n"
             "选凌晨是因为跑的时候会重开紫鸟浏览器，会关掉别人正开着的窗口。\n"
@@ -368,35 +408,47 @@ class SchedApp(object):
                   ).pack(anchor="w", pady=(8, 0))
 
     def _build_actions(self):
-        f = ttk.LabelFrame(self.root, text=" 操作 ", padding=10)
-        f.pack(fill="x", padx=12, pady=6)
+        f = ttk.LabelFrame(self.left, text=" 操作 ", padding=10)
+        f.pack(fill="x", padx=(12, 6), pady=6)
         rows = [
             ("设为每月自动跑", self.do_install,
              "按上面选的时间登记到 Windows。已经登记过就按新时间改掉。"),
             ("试跑一次（1 分钟）", self.do_rehearse,
-             "只出报表，不下载、不开浏览器，跑完自动收拾干净。\n"
+             "只出报表，不下载、不开浏览器，跑完自动收拾干净。"
              "用来确认这台电脑到时候真能自动跑起来 —— 别等到 15 号才发现跑不了。"),
             ("现在就跑一次", self.do_run_now,
-             "立刻按正式任务跑一遍：下载 + 出报表，约 3 小时。不影响以后的自动跑。"),
+             "立刻按正式任务跑一遍：下载 + 出报表，约 3 小时。不影响以后的自动跑。"
+             "跑起来以后，右边的「运行日志」会实时显示。"),
             ("检查这台电脑", self.do_check,
-             "看这台电脑能不能撑住半夜没人管地跑：会不会睡着、会不会锁屏、\n"
+             "看这台电脑能不能撑住半夜没人管地跑：会不会睡着、会不会锁屏、"
              "开机要不要有人输密码。只看不改。"),
             ("取消每月自动跑", self.do_delete,
              "只撤掉 Windows 里的登记。程序、数据、已出的报表都不动。"),
             ("打开日志文件夹", self.do_logs,
-             "每次自动跑的完整记录都在这里（logs\\monthly_年月.log）。"),
+             "每一轮的完整记录都在这里（logs\\runs\\日期_时间_入口.log），"
+             "手动跑的和自动跑的放在一起。平时不用开：右边的「运行日志」里就能看、能挑。"),
         ]
         self.buttons = []
         for i, (label, cmd, desc) in enumerate(rows):
             b = ttk.Button(f, text=label, command=cmd, width=18)
             b.grid(row=i, column=0, sticky="w", pady=3)
-            ttk.Label(f, text=desc, foreground="#555", justify="left").grid(
+            ttk.Label(f, text=desc, foreground="#555", justify="left",
+                      wraplength=WRAP - 170).grid(
                 row=i, column=1, sticky="w", padx=12)
             self.buttons.append(b)
 
     def _build_log(self):
-        f = ttk.Frame(self.root)
-        f.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        # 两页：运行日志是和「启动」窗口共用的那个查看器，看的是 run_monthly
+        # 写的日志文件；操作记录是本窗口自己的话（登记成没成、自检结果），
+        # 它们不是某一轮运行的输出，不该混进那个标准格式里。
+        self.tabs = ttk.Notebook(self.right)
+        self.tabs.pack(fill="both", expand=True, padx=(6, 12), pady=12)
+        self.view = LogView(self.tabs, who="定时设置窗口", height=10,
+                            on_state=self._on_run_state)
+        self.tabs.add(self.view, text=" 运行日志（手动、定时共用） ")
+        f = ttk.Frame(self.tabs)
+        self.tabs.add(f, text=" 本窗口的操作记录 ")
+        self.ops_tab = f
         self.txt = tk.Text(f, wrap="word", height=10,
                            font=("Consolas", 9), background="#fbfbfb")
         self.txt.pack(side="left", fill="both", expand=True)
@@ -414,6 +466,24 @@ class SchedApp(object):
         self.txt.insert("end", line + "\n", tag or ())
         self.txt.see("end")
         self.txt.configure(state="disabled")
+        if line.strip():
+            try:
+                self.tabs.select(self.ops_tab)     # 有话要说就翻到这一页
+            except tk.TclError:
+                pass
+
+    def _show_run_log(self):
+        """翻到运行日志那页，并回到"跟随当前运行"。"""
+        try:
+            self.view.follow_current()
+            self.tabs.select(self.view)
+        except tk.TclError:
+            pass
+
+    def _on_run_state(self, st):
+        # 一轮跑完了（不管谁起的）：上面的"上次结果"也该跟着变。
+        if st and st.get("state") != "running" and not self.busy:
+            self.refresh()
 
     def _lock(self, busy, label=""):
         self.busy = busy
@@ -462,7 +532,26 @@ class SchedApp(object):
         # 只读查询，不锁按钮：它要 2 秒，锁上的话刚开窗口那两秒点什么都没反应。
         self._work(lambda: task_state(TASK), self._show_state, lock=False)
 
+    def _show_human(self):
+        try:
+            got = runlog.pending_human_actions()
+        except Exception:
+            got = {"actions": []}
+        acts = got.get("actions") or []
+        stores = []
+        for a in acts:
+            if a["store"] not in stores:
+                stores.append(a["store"])
+        self.human_note.set(
+            "⚠ 上一轮有 %d 家店铺需要人工处理：%s。\n双击「启动.cmd」，在左边"
+            "「需要人工处理」里打开店铺处理，再点「重跑这些店铺并重出全部报表」。"
+            % (len(stores), "；".join(
+                "%s（%s）" % (s, "、".join(sorted(set(
+                    a["title"] for a in acts if a["store"] == s))))
+                for s in stores)) if acts else "")
+
     def _show_state(self, st):
+        self._show_human()
         if isinstance(st, tuple):                    # 出错了
             self.status.set("读不到任务状态")
             self.status_lbl.configure(foreground="#b42318")
@@ -474,18 +563,27 @@ class SchedApp(object):
             self.detail.set("选好时间，点「设为每月自动跑」。")
             return
         code = st.get("RESULT", "")
-        # 0–5 是 run_monthly.py 自己的退出码（见它的文件头），267xxx 是
+        # 0–7 是 run_monthly.py 自己的退出码（见它的文件头），267xxx 是
         # Windows 任务计划程序的状态码。都翻成人话，不要让人去查代码表。
         verdict = {"0": "上次跑完，一切正常",
-                   "1": "上次跑完了，但有几项要人看一眼（点「打开日志文件夹」）",
-                   "2": "上次没跑成：浏览器没能启动，报表也没出",
+                   "1": "上次跑完了，但有几项要人看一眼（看右边的「运行日志」）",
+                   "2": "上次没跑成：浏览器没能启动 / 没有一家店下到数据 / "
+                        "有报表没出来",
                    "3": "上次没跑成：店铺名单对不上，要改配置",
                    "4": "上次没跑成：配置文件读不了",
-                   "5": "上次没跑：上一轮还没结束，这次被跳过了",
+                   "5": "上次没跑：另一轮（可能是手动点的）还没结束，这次被跳过了",
+                   "6": "上次被人点了「中止」",
+                   "7": "上次下载超过 5 小时被掐断，报表是按已下到的数据出的",
                    "267009": "正在跑",
                    "267011": "还没跑过",
-                   "267014": "上次被中途停掉了（超时，或有人手动停的）"}.get(
-            code, "上次没跑成（代码 %s），点「打开日志文件夹」看原因" % code)
+                   "267014": "上次被 Windows 中途停掉了（超过 6 小时，或有人在"
+                             "任务计划程序里停的）"}.get(
+            code, "上次没跑成（代码 %s），看右边的「运行日志」" % code)
+        if "--entrance" not in st.get("ARGS", ""):
+            # 这次改动之前登记的任务。照样能跑，跑的也是同一个过程，只是日志
+            # 的"入口"一列会写成「命令行」而不是「定时」。
+            verdict += ("\n⚠ 这个任务是旧版登记的：再点一次「设为每月自动跑」，"
+                        "日志里才会标成「定时」。")
         self.status.set("● 已设置：每月 %s 号 %s 自动跑"
                         % (st.get("DAY"), st.get("TIME")))
         self.status_lbl.configure(foreground="#1a7f37")
@@ -526,14 +624,16 @@ class SchedApp(object):
                            sched_minute=m))
         self.log("")
         self.log("正在登记：每月 %d 号 %02d:%02d" % (d, h, m))
-        self._work(lambda: install(TASK, task_xml(day=d, hour=h, minute=m)),
+        self._work(lambda: install(TASK, task_xml(TASK_ARGS, day=d, hour=h,
+                                                  minute=m)),
                    self._after_install, label="设为每月自动跑")
 
     def _after_install(self, r):
         rc, out = r
         if rc == 0:
             self.log("✓ 登记好了。另外这几项也一并设上了：那天电脑要是关着，"
-                     "开机后会补跑；跑超过 5 小时自动停；用电池也照跑。", "good")
+                     "开机后会补跑；用电池也照跑。下载超过 5 小时会被掐断并"
+                     "接着出报表，整轮超过 6 小时 Windows 会强行停掉。", "good")
             self.log("建议现在点一次「试跑一次」，1 分钟就知道到时候跑不跑得起来。",
                      "dim")
             self.refresh()
@@ -553,9 +653,10 @@ class SchedApp(object):
         self.log("=" * 64)
         self.log(">>> 试跑  %s" % datetime.datetime.now().strftime("%H:%M:%S"))
         self._work(self._rehearse_body, self._after_rehearse, label="试跑一次")
+        self._show_run_log()
 
     def _rehearse_body(self):
-        rc, out = install(REHEARSAL, task_xml(args="--step report"))
+        rc, out = install(REHEARSAL, task_xml(args=REHEARSAL_ARGS))
         if rc != 0:
             return ("err", "建不了临时任务：%s" % (out.strip() or rc))
         rc, out = _run(["schtasks", "/run", "/tn", REHEARSAL])
@@ -583,8 +684,10 @@ class SchedApp(object):
                          "但有几项要人看一眼（这在每个月都很常见）。", "good"),
                    "267009": ("⚠ 还没跑完，过一会儿点「刷新」", "warn")}
         msg, tag = meaning.get(
-            val, ("✗ 试跑没成功（代码 %s）。点「打开日志文件夹」看 "
-                  "monthly_年月.log 里的原因。" % val, "bad"))
+            val, ("✗ 试跑没成功（代码 %s：%s）。原因在「运行日志」那一页"
+                  "最近一轮「定时」的记录里。"
+                  % (val, runlog.exit_meaning(val)[0]
+                     if val.isdigit() and int(val) < 8 else "见日志"), "bad"))
         self.log(msg, tag)
         self.log("临时任务已经删掉了。", "dim")
 
@@ -593,7 +696,15 @@ class SchedApp(object):
                 "现在就跑一次",
                 "立刻完整跑一遍：下载 + 出报表，约 3 小时。\n\n"
                 "跑的时候浏览器会自己反复开关，别去点它。\n"
-                "这个窗口可以关掉，不影响后台继续跑。\n\n开始？"):
+                "这个窗口可以关掉，不影响后台继续跑。\n"
+                "要中途停下来：点下面「运行日志」右上角的「中止这一轮」。\n\n开始？"):
+            return
+        cur = runlog.active_run()
+        if cur:
+            messagebox.showwarning(
+                "正在运行",
+                "已经有一轮在跑了（入口：%s）。等它结束，或先中止它。"
+                % runlog.ENTRANCE_ZH.get(cur.get("entrance"), "?"))
             return
         self._work(self._run_now_body, self._after_run_now, label="现在就跑一次")
 
@@ -608,8 +719,9 @@ class SchedApp(object):
         if rc == -2:
             self.log("✗ 还没设置过自动跑，先点「设为每月自动跑」。", "bad")
         elif rc == 0:
-            self.log("✓ 已经开始跑了。跑完前这个状态栏不会变，"
-                     "过一会儿点「刷新」看进度，或去日志文件夹看。", "good")
+            self.log("✓ 已经开始跑了，进度看「运行日志」那一页（已经帮你翻过去）。",
+                     "good")
+            self._show_run_log()
         else:
             self.log("✗ 没能启动：%s" % (out.strip() or rc), "bad")
 
@@ -664,14 +776,18 @@ class SchedApp(object):
         self.refresh()
 
     def do_logs(self):
-        if not os.path.isdir(LOG_DIR):
+        d = runlog.runs_dir(LOG_DIR)
+        if not os.path.isdir(d):
+            # 升级前的日志（monthly_年月.log）还在上一层，没跑过新版就开那里。
+            d = LOG_DIR
+        if not os.path.isdir(d):
             messagebox.showinfo("还没有日志",
-                                "还没跑过，所以还没有日志：\n%s" % LOG_DIR)
+                                "还没跑过，所以还没有日志：\n%s" % d)
             return
         if os.name == "nt":
-            os.startfile(LOG_DIR)             # noqa: S606
+            os.startfile(d)                   # noqa: S606
         else:
-            subprocess.Popen(["xdg-open", LOG_DIR])
+            subprocess.Popen(["xdg-open", d])
 
     def _on_close(self):
         save_settings(dict(load_settings(), sched_day=self.day.get(),

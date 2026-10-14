@@ -107,7 +107,10 @@ for that period, so select-all yields a different number each month:
 
 The master charge ledger — every fee MercadoLibre billed in the period.
 
-- Sheet `REPORT`, **header row 8**, 33 columns
+- Sheet `REPORT`, **header row 8**, 33 columns — usually. The cleaning pipeline
+  does not rely on the number: it takes the first row near the top that holds
+  both `Detalle` and `Valor del cargo`, so a notice row inserted above the
+  table is followed. Row 8 is only the fallback.
 - Key columns: `Detalle` (charge type), `Valor del cargo`, `Fecha del cargo`,
   `N° de factura fiscal`, `Estado del cargo`
 - Charge types seen: `Cargo por venta`, `Cargo por envíos de Mercado Libre`,
@@ -146,7 +149,8 @@ Payments made against invoices.
 
 Credit notes — reversals of earlier charges.
 
-- Sheet `REPORT`, **header row 8**
+- Sheet `REPORT`, **header row 8** (located by column names, exactly as for
+  `Facturacion` — it is read by the same loader)
 - Same shape as `Facturacion`; `Valor del cargo` is negative,
   `Cargo que bonifica` points at the reversed charge
 
@@ -163,7 +167,13 @@ Credit notes — reversals of earlier charges.
 
 One row per order line — the backbone of all sales analysis.
 
-- Sheet `Ventas MX`, **header row 6**, 63 columns
+- Sheet `Ventas MX`, **header row 6**, 63 columns — **when there is no banner**.
+  MercadoLibre inserts a notice row above the table when it has something to
+  say (it does so on exports it flags as incomplete), and every row below moves
+  down one. Both the cleaning pipeline and `report_build.py` therefore find the
+  header as the row holding `# de venta` and `Fecha de venta`; the group row
+  keeps its distance above it. Reading the fixed row took the group row for the
+  header and failed 28 of 902 production files with "expected columns missing".
 - Key columns: `# de venta`, `Fecha de venta`, `Estado`, `Unidades`,
   `Ingresos por productos (MXN)`, `Cargo por venta e impuestos (MXN)`,
   `Ingresos por envío (MXN)`, `Costos de envío (MXN)`,
@@ -210,6 +220,12 @@ One row per order line — the backbone of all sales analysis.
 **Code:** `meli_forms.download_stock_reports()`
 
 The button is a dropdown offering four reports, each behaving differently.
+
+A store **without Full** has none of these. The page cannot tell "no Full" from
+"the menu did not render", so say so explicitly: list the store under
+`stores.no_full` in `config.json`, or pass `--no-full-stores STORE …`. Its
+missing stock reports are then recorded as `NOT_AVAILABLE` rather than as
+something needing attention.
 
 ### 6. `<DD-MM-YY>_<DD-MM-YY>_Costos_por_servicio_almacenamiento.xlsx` ×2
 
@@ -571,6 +587,14 @@ and Poscobro records an end date a day *later* than the one selected.
 period we picked and, failing that, adopts whatever the newest row says - which
 is what the wizard flavour always had to do.
 
+Adopting a row is not free: there is no way to know whether the top row is the
+one just created or one that was already there, so the file fetched may be an
+**earlier** report. The flow is unchanged, but the request now records an
+`adopted_existing_row` caution with both the requested and the adopted period
+(and likewise when the top row did not change at all after `Generar`). It shows
+in the batch output under `已下载但要留意`, in the run's `REPORT.md` and in
+`run_meta.json` → `cautions`. When the two periods disagree, check the file.
+
 A fourth row state turned up while checking this: **`--processed`**, on
 Liberaciones, carrying a normal download button. It needs no special handling,
 but it confirms the state list is open-ended, which is why readiness is decided
@@ -620,6 +644,33 @@ Verified on UNIT_TA04 2026-09-03, all four states including a ready row, which
 must keep returning `READY` — a false positive here silently discards a good
 report, which is worse than waiting.
 
+A fifth outcome is kept apart from all of these: **ready, clicked, and no file
+landed**. It used to print the same "not ready yet" as a report still
+generating, which sends people off to wait for a platform that finished long
+ago. The collect loop now says so (`已就绪，但点了下载后文件没有落盘`), keeps the
+entry, and the diagnosis reports it as `DOWNLOAD_NOT_LANDED` — with any
+half-written `.crdownload` named, since "the download started and did not
+finish" and "the click did nothing" are different faults. A plain "not ready"
+line now also says what the probe saw (`尚未就绪（列表里还没有这一行）`).
+
+### Every report that does not arrive gets a cause
+
+`download_diag.py` computes what a run should have produced and gives each
+missing report one cause code from a closed set — `STILL_GENERATING`,
+`PLATFORM_DELAYED`, `NO_DATA`, `NOT_AVAILABLE`, `REQUEST_NOT_REGISTERED`,
+`DOWNLOAD_NOT_LANDED`, `NO_PERMISSION`, `UI_NOT_FOUND`, … — with the evidence
+(page address, title, visible banner, row status, a screenshot) saved under
+`<download folder>/_diag/`. The traps in this section map onto it directly:
+`--empty` is `NO_DATA`, `--delayed` is `PLATFORM_DELAYED`, the permission wall
+below is `NO_PERMISSION`, a changed selector is `UI_NOT_FOUND`. The full table,
+with who is responsible and what the operator does, is in GUIDE.md §10 ("Why a
+report is missing") and in the README.
+
+For billing, the tick-box ids map to file-name prefixes (`BILL_ML` →
+`Reporte_Facturacion_MercadoLibre`, `FULL` → `Reporte_Cargos_Full`, `PAYMENT` →
+`Reporte_Pagos_Facturas`, `NC_ML` → `Reporte_Notas_Credito_MercadoLibre`), so
+"ticked 4, got 3" now names the one that is missing, e.g. `billing/1/FULL`.
+
 ### A store can be blocked from reports entirely
 
 MercadoPago reports are gated per **collaborator login**, not per store. If the
@@ -651,6 +702,12 @@ report cannot sink the other five. That is right, but it must be *recorded*: on
 2026-09-02 all six MercadoPago requests returned `None` on EWTTO_SM and the
 store still reported `ok, 13 files`. A route asked to run and producing nothing
 now counts as an error, so the store reports `partial` and the batch exits 1.
+
+The same now holds for the synchronous routes and for reports still owed: a
+billing or stock report that was expected and did not arrive (for a reason
+other than `NO_DATA` / `NOT_AVAILABLE`) is a route error, and a store that
+still owes a report is `partial`, not `ok`. If **no** store at all reaches
+`ok` / `partial`, the batch exits 2 rather than 1.
 
 ### The site's "today" is not this machine's today
 
@@ -742,3 +799,6 @@ Seen in the panel but not downloaded. Add sections here as they are built.
 | 2026-09-09 | Ventas verified to survive a store close/reopen, so it is deferrable too |
 | 2026-09-09 | Accounting workbooks now written per store as each finishes, not batched at the end |
 | 2026-09-03 | Fixed three ways a finished report read as "not ready": first-row-wins matching, an unavailable format, and a period the site recorded differently |
+| 2026-10-13 | Every expected report that does not arrive gets a cause code and saved evidence (`download_diag.py`, `_diag/`); a store with reports owed or missing is `partial`; batch exit 2 when no store got data |
+| 2026-10-13 | "Ready but the file did not land" reported apart from "not ready"; `adopted_existing_row` caution when MercadoPago shows no new row; `--no-full-stores` / `stores.no_full` |
+| 2026-10-13 | Ventas, Facturación and Notas de crédito headers located by column names instead of fixed rows |

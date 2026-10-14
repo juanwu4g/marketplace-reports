@@ -41,10 +41,15 @@ class RunResult:
     rows: int = 0
     output: Path | None = None
     errors: list[str] = None  # type: ignore[assignment]
+    #: Raw-dir-relative path of each failed file, parallel to ``errors``. ``errors``
+    #: carries only the file name, which cannot say which run a file came from.
+    failed_files: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.errors is None:
             self.errors = []
+        if self.failed_files is None:
+            self.failed_files = []
 
 
 def discover(settings: Settings = SETTINGS) -> list[Discovered]:
@@ -70,6 +75,24 @@ def matches_file(path: Path, only: Path | str, settings: Settings) -> bool:
     text = str(only).replace("\\", "/")
     relative = path.relative_to(settings.raw_dir).as_posix()
     return relative == text or path.name == candidate.name or path.stem == candidate.stem
+
+
+def relative_name(path: Path, settings: Settings = SETTINGS) -> str:
+    """``path`` relative to the raw dir with forward slashes, e.g. ``STORE/<stamp>/x.xlsx``."""
+    try:
+        return path.relative_to(settings.raw_dir).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def from_runs(relative: str, runs: set[str] | frozenset[str]) -> bool:
+    """Was this file downloaded by one of ``runs`` (run-folder names)?
+
+    Downloads land in ``<store>/<stamp>[_mYYYYMM]/``, so the run a file belongs to is
+    the name of a folder above it. Any parent folder is accepted rather than exactly
+    the second one, so a custom layout with an extra level still resolves.
+    """
+    return bool(runs & set(relative.split("/")[:-1]))
 
 
 def process_file(item: Discovered, settings: Settings = SETTINGS) -> pd.DataFrame:
@@ -112,6 +135,7 @@ def run(
         except Exception as exc:  # one bad export must not sink the run
             logger.warning("failed to process %s: %s", item.path.name, exc)
             result.errors.append(f"{item.path.name}: {exc}")
+            result.failed_files.append(relative_name(item.path, settings))
             continue
         frames.setdefault(item.spec.name, []).append(frame)
         result.files += 1

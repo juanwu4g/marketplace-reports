@@ -27,6 +27,7 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(ROOT, "logs")
 PATH = os.path.join(LOG_DIR, "pending.json")
+EXPIRED_NAME = "pending_expired.json"
 
 # Reports do not stay downloadable forever, and an entry nobody has collected
 # after this long is far more likely to be a stale record than a live report.
@@ -107,15 +108,55 @@ def remove(done, path=PATH):
     return entries
 
 
-def prune(max_age_days=MAX_AGE_DAYS, path=PATH):
-    """Drop entries too old to still be worth chasing. Returns what it dropped."""
-    cutoff = time.time() - max_age_days * 86400
+def prune(max_age_days=MAX_AGE_DAYS, path=PATH, now=None):
+    """Drop entries too old to still be worth chasing. Returns what it dropped.
+
+    丢掉的条目不是凭空消失：每一条都标上 cause=EXPIRED 追加进同目录的
+    pending_expired.json。以前只打印一个数字（"已清理 2 张"），是哪家店的
+    哪张报表、最后看到它是什么状态，全都跟着没了 —— 而那恰恰是一张**确定
+    没拿到**的报表。
+    """
+    now = time.time() if now is None else now
+    cutoff = now - max_age_days * 86400
     entries, stale = [], []
     for e in load(path):
         (stale if e.get("requested_at", 0) < cutoff else entries).append(e)
     if stale:
+        for e in stale:
+            e["cause"] = "EXPIRED"
+            e["expired_at"] = now
         save(entries, path)
+        _archive_expired(stale, path)
     return stale
+
+
+def expired_path(path=PATH):
+    return os.path.join(os.path.dirname(path), EXPIRED_NAME)
+
+
+def _archive_expired(stale, path=PATH):
+    """追加到过期记录里。写不出只警告 —— 和 save() 一个态度。"""
+    out = expired_path(path)
+    try:
+        old = []
+        if os.path.exists(out):
+            with io.open(out, encoding="utf-8") as f:
+                old = (json.load(f) or {}).get("entries") or []
+        with io.open(out, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"entries": list(old) + list(stale)},
+                               ensure_ascii=False, indent=2))
+        return True
+    except (IOError, OSError, ValueError) as e:
+        print("  [警告] 无法写入 %s（%s），过期的待取记录没有留档" % (out, e))
+        return False
+
+
+def describe_entry(e):
+    """一条待取记录的一行说明：哪家店、哪张报表、哪个区间。"""
+    form = ("ventas" if e.get("kind") == "ventas"
+            else "mercadopago/%s" % e.get("report", "?"))
+    return "%s %s%s" % (e.get("store"), form,
+                        "（%s）" % e["range"] if e.get("range") else "")
 
 
 def for_store(name, path=PATH):

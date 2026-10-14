@@ -28,6 +28,7 @@ import os
 import sys
 import time
 
+import site_time
 from ziniao_client import ZiniaoClient, ZiniaoError, StoreNotAllowed
 from store_config import StoreConfigError
 import console  # noqa: F401  中文输出编码保护
@@ -35,6 +36,7 @@ import store_config
 import meli_forms
 import mercadopago
 import run_report
+import download_diag
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -81,7 +83,27 @@ def add_route_args(ap):
     ap.add_argument("--skip-ip-check", action="store_true")
     ap.add_argument("--skip-lang-check", action="store_true",
                     help="跳过进店时的界面语言检查（调试用）")
+    ap.add_argument("--no-full-stores", nargs="*", default=None, metavar="STORE",
+                    help="这些店没有 Full 仓：库存报表下不到记为「平台不提供」，"
+                         "不算需要关注。也可以写在 config.json 的 "
+                         "stores.no_full 里。")
     return ap
+
+
+def store_has_full(store_name, args=None):
+    """这家店有没有 Full 仓。False = 明确没有；None = 不知道（按有处理）。
+
+    页面上分不出"没有 Full"和"库存菜单没渲染出来" —— 两者都是菜单为空。
+    所以这件事只能由人告诉脚本，脚本不猜。
+    """
+    names = list(getattr(args, "no_full_stores", None) or [])
+    try:
+        cfg = store_config._stores().get("no_full")
+        if isinstance(cfg, list):
+            names.extend(cfg)
+    except Exception:
+        pass
+    return False if store_name in names else None
 
 
 def month_stamp(stamp, args):
@@ -141,7 +163,14 @@ def _guard(result, label, fn, *a, **kw):
 
     Returns FAILED on an exception, except for PASSTHROUGH errors which are
     re-raised for the caller to handle.
+
+    诊断：异常被接住的这一刻页面还在，所以在这里取证。收集器从 `diag=`（会
+    原样传给 fn）或 `_diag=`（fn 不认 diag 时用）拿；`_form` 是报表 id，不给
+    就用 label；`_driver` 不给就取第一个位置参数。带下划线的三个不会传给 fn。
     """
+    diag = kw.pop("_diag", None) or kw.get("diag")
+    form = kw.pop("_form", None) or label
+    driver = kw.pop("_driver", None)
     try:
         return fn(*a, **kw)
     except PASSTHROUGH:
@@ -150,6 +179,11 @@ def _guard(result, label, fn, *a, **kw):
         msg = "%s: %s: %s" % (label, e.__class__.__name__, e)
         print("  [错误] %s" % msg)
         result["errors"].append(msg)
+        if driver is None and a:
+            driver = a[0]
+        download_diag.give_up(diag, driver, form, "exception", step=label,
+                              exception_class=e.__class__.__name__,
+                              exception=str(e))
         return FAILED
 
 
@@ -170,6 +204,12 @@ def _request(result, label, pending, fn, *a, **kw):
         msg = "%s: requested nothing (see the [warn] above)" % label
         print("  [错误] %s" % msg)
         result["errors"].append(msg)
+        # 申请函数自己放弃时已经取过证；这里只兜它没取到的情况，免得这张
+        # 报表最后落得一句"没有任何证据"。
+        diag, form = kw.get("diag"), kw.get("_form") or label
+        if diag is not None and form not in diag.items:
+            download_diag.give_up(diag, a[0] if a else None, form,
+                                  "request-none", step=label)
         return
     pending.append(p)
 
@@ -177,6 +217,26 @@ def _request(result, label, pending, fn, *a, **kw):
 def label_of(p):
     return ("ventas" if p["kind"] == "ventas"
             else "mercadopago/%s" % p.get("report", "?"))
+
+
+# 就绪了、点了，文件没到。和"尚未就绪"是两回事，不能共用一个返回值。
+NOT_LANDED = object()
+
+
+def _why_waiting(info):
+    """"尚未就绪"后面跟的那半句：这一眼到底看到了什么。"""
+    info = info or {}
+    state = info.get("row_state")
+    if state == "absent":
+        return "列表里还没有这一行"
+    if state == "accordion":
+        act = info.get("action")
+        return "折叠面板：%s" % (act if act else "该月的面板还没出现")
+    if state == "ventas-widget":
+        return ("通知里有 %s 条，申请前 %s 条，最上面：%s"
+                % (info.get("widget_rows"), info.get("rows_before"),
+                   info.get("top_sub") or "（空）"))
+    return info.get("status_text") or "en preparación"
 
 
 def collect_pending(d, pending, out_dir, result, budget, poll=20):
@@ -192,7 +252,13 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
     of the cycle immediately rather than burning the budget for the reports that
     are still genuinely generating.
 
-    Returns the entries still outstanding when it stops.
+    Returns the entries still outstanding when it stops. **探测抛异常的条目也
+    在其中**：以前它被直接从列表里拿掉，run_batch 的补收看到"不在返回值里"
+    就当它办完了，从登记簿里删掉 —— 一次页面抖动，那张报表就再没人去取。
+
+    每个条目上会留下诊断字段（probes / first_probe_at / last_probe_at /
+    last_state / last_status_text / evidence），只留最新一次的。截图只在最后
+    一轮拍：中间每一轮的画面没有人会看。
     """
 
     def probe_and_fetch(p):
@@ -203,7 +269,12 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
         if p["kind"] == "ventas":
             if not meli_forms.probe_sales_excel(d, p):
                 return []
+            before = meli_forms.snapshot_dir(out_dir)
             got = meli_forms.fetch_sales_excel(d, p, out_dir)
+            if not got:
+                p["_delta"] = download_diag.folder_delta(
+                    before, meli_forms.snapshot_dir(out_dir))
+                return NOT_LANDED
             result["sales"].extend(got)
             return got
         state = mercadopago.probe(d, p)
@@ -213,35 +284,61 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
             return DELAYED
         if state != mercadopago.READY:
             return []
+        before = meli_forms.snapshot_dir(out_dir)
         got = mercadopago.fetch(d, p, out_dir)
+        if not got:
+            p["_delta"] = download_diag.folder_delta(
+                before, meli_forms.snapshot_dir(out_dir))
+            return NOT_LANDED
         result["mp"].extend(got)
         return got
 
     deadline = time.time() + budget
     remaining = list(pending)
+    errored = []
     cycle = 0
     # do-while：至少完整扫一轮再谈超时。budget=0 就是"只扫一遍、不等待"，
     # 这正是店内收取需要的语义 —— 探测本身的开销省不掉，省掉的是轮询空等。
     while remaining:
         cycle += 1
+        left = deadline - time.time()
+        # 到点之后的这一轮是最后一轮，而且要扫完：每张还欠着的报表都得有
+        # "放弃时的现场"。以前是到点就在半路跳出，后半截报表的最后状态
+        # 就停在上一轮。
+        final = left <= 0
         print("\n>>> 收取轮次 %d —— 剩余 %d 秒，%d 张待取：%s"
-              % (cycle, int(deadline - time.time()), len(remaining),
+              % (cycle, max(0, int(left)), len(remaining),
                  ", ".join(label_of(p) for p in remaining)))
         for p in list(remaining):
-            # 第一轮必须完整扫完再谈超时：budget=0 的语义是"扫一遍就走"，
-            # 若在这里提前跳出，这一趟等于什么都没做。
-            if cycle > 1 and time.time() >= deadline:
-                break
-            got = _guard(result, "%s/collect" % label_of(p), probe_and_fetch, p)
-            if got is FAILED:
-                # the probe itself blew up; stop retrying this one
+            label = label_of(p)
+            try:
+                got = probe_and_fetch(p)
+            except PASSTHROUGH:
+                raise
+            except Exception as e:
+                # 探测本身出错。这一趟不再试它，但**仍然欠着**：报表在平台上
+                # 照样在生成，丢掉记录就是丢掉报表。
+                msg = "%s/collect: %s: %s" % (label, e.__class__.__name__, e)
+                print("  [错误] %s" % msg)
+                result["errors"].append(msg)
+                for k in ("_probe", "_fetch", "_delta"):
+                    p.pop(k, None)
+                download_diag.note_probe(
+                    p, dict(download_diag.exception_evidence(e, step="collect"),
+                            row_state="probe-error"))
+                download_diag.snapshot_entry(d, p, out_dir)
+                errored.append(p)
                 remaining.remove(p)
-            elif got is DELAYED:
+                continue
+
+            info = dict(p.pop("_probe", None) or {})
+            fetch = p.pop("_fetch", None)
+            delta = p.pop("_delta", None)
+            if got is DELAYED:
                 # MercadoPago has data still settling and will not build the
                 # report for hours. Nothing to wait for now, but the request
                 # stands - a later run collects it.
-                print("    %-28s MercadoPago 数据处理中，留到后续运行再取"
-                      % label_of(p))
+                print("    %-28s MercadoPago 数据处理中，留到后续运行再取" % label)
                 result["pending"].append(
                     "mercadopago/%s (%s) - %s 数据处理中"
                     % (p["report"], p["range"], DELAYED_MARK))
@@ -250,24 +347,53 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
                 # for a later run. An EMPTY one is dropped instead - that range
                 # will never produce a report, so keeping it would mean probing
                 # it forever.
+                download_diag.note_probe(p, dict(info, row_state="delayed"))
                 result.setdefault("retry_later", []).append(p)
                 remaining.remove(p)
             elif got is NO_DATA:
                 # Terminal, and not a fault: MercadoPago will not build a report
                 # for a range with no movements.
-                print("    %-28s 该区间无流水，跳过"
-                      % label_of(p))
+                print("    %-28s 该区间无流水，跳过" % label)
                 result["empty"].append(
                     "mercadopago/%s (%s)" % (p["report"], p["range"]))
+                download_diag.note_probe(p, dict(info, row_state="empty"))
+                result.setdefault("no_data", []).append(p)
                 remaining.remove(p)
+            elif got is NOT_LANDED:
+                # 已就绪，是下载这一步没成。说"尚未就绪"会把人引去等平台，
+                # 而平台早就好了。留在列表里，下一轮再点一次。
+                info["row_state"] = "ready"
+                info["fetch"] = fetch
+                if fetch == "clicked":
+                    info["signal"] = "download-not-landed"
+                    info.update(delta or {})
+                    print("    %-28s 已就绪，但点了下载后文件没有落盘%s"
+                          % (label, "（有没写完的 %s）" % "、".join(
+                              delta["crdownload"][:2])
+                             if delta and delta.get("crdownload") else ""))
+                else:
+                    print("    %-28s 已就绪，但页面上没有可点击的下载入口" % label)
+                download_diag.note_probe(p, info)
+                if final:
+                    download_diag.snapshot_entry(d, p, out_dir)
             elif got:
                 remaining.remove(p)
+                result.setdefault("collected", {})[label] = list(got)
             else:
-                print("    %-28s 尚未就绪" % label_of(p))
-        if not remaining or time.time() >= deadline:
+                print("    %-28s 尚未就绪（%s）" % (label, _why_waiting(info)))
+                download_diag.note_probe(p, info)
+                if final:
+                    download_diag.snapshot_entry(d, p, out_dir)
+        if not remaining or final:
             break
-        time.sleep(poll)
-    return remaining
+        # 剩下的时间不够一个完整间隔，就只睡剩下的那点：以前照睡满 poll，
+        # 醒来已经过了期限，下一行还印出一个负的"剩余 N 秒"。
+        wait = min(poll, max(0, deadline - time.time()))
+        if wait > 0:
+            time.sleep(wait)
+    # 原来的先后顺序：调用方按它打印
+    left_over = remaining + errored
+    return [p for p in pending if any(p is q for q in left_over)]
 
 
 # 销售报表的"最近 N 个月"菜单**只有 2 和 6 两档**。
@@ -277,6 +403,12 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
 # 超过 6 个月的目标月这里够不着，菜单里的 Último año / Fecha personalizada
 # 要用 download_history.py 那条路径。
 SALES_WINDOWS = (2, 6)
+
+
+def mp_cover_from(args):
+    """有 --month 时，MercadoPago 的申请区间至少要从目标月 1 号开始。"""
+    want = month_arg(args)
+    return datetime.date(want[0], want[1], 1) if want else None
 
 
 def month_arg(args):
@@ -303,7 +435,7 @@ def sales_window(args, today=None):
     want = month_arg(args)
     if not want:
         return args.period_months
-    today = today or datetime.date.today()
+    today = today or site_time.site_today()
     y, m = want
     # 目标月月初距今几个月（向上取整到整月）
     back = (today.year - y) * 12 + (today.month - m) + 1
@@ -336,8 +468,12 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     result = {"store": store_name, "out_dir": out_dir,
               "billing": {}, "sales": [], "stock": {}, "mp": [],
               "pending": [], "empty": [], "deferred": [],
-              "errors": [], "seconds": 0}
+              "errors": [], "seconds": 0,
+              "expected": [], "missing": [], "flags": {}, "cautions": []}
     began = time.time()
+    # 这家店自己的诊断收集器，显式传给每条路线。不放模块级：批量跑时会串店。
+    diag = download_diag.Collector(out_dir, store_name)
+    owed = []
 
     store = client.find_store(store_name)
     print("店铺：%s（%s）" % (store.get("browserName"), store.get("platform_name")))
@@ -351,6 +487,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
             print("IP 检测：%s" % ("通过" if ok else "失败"))
             if not ok:
                 result["errors"].append("ip check failed")
+                diag.flag("ip_check_failed", True)
         else:
             session.driver.get(session.launcher_page)
 
@@ -368,10 +505,12 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
         # 也是西语，而导出语言跟着账号的界面语言走。放在后面就来不及了 ——
         # 账期页的月份名核对会静默跳过整期，费用少算而毫无提示。
         if not args.skip_lang_check:
-            got = _guard(result, "language", meli_forms.ensure_language, d)
+            got = _guard(result, "language", meli_forms.ensure_language, d,
+                         _diag=diag)
             if got is not FAILED:
                 was, changed = got
                 result["locale"] = was
+                diag.flag("locale", was)
                 if changed:
                     result["errors"].append(
                         "language: 界面语言原本是 %s，已改回 es_MX。"
@@ -384,20 +523,32 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
         if args.only in ("ventas", "all"):
             _request(result, "ventas/request", pending,
                      meli_forms.request_sales_excel,
-                     d, period_months=sales_window(args))
+                     d, period_months=sales_window(args),
+                     diag=diag, _form="ventas")
         if args.only in ("mercadopago", "all"):
             # every report type under /balance/reports shares one UI
             for kind in mercadopago.REPORTS:
                 try:
                     _request(result, "mercadopago/%s/request" % kind, pending,
                              mercadopago.request_report,
-                             d, report=kind, days=args.mp_days)
+                             d, report=kind, days=args.mp_days,
+                             cover_from=mp_cover_from(args),
+                             diag=diag, _form="mercadopago/%s" % kind)
                 except mercadopago.NoReportAccess as e:
                     # The wall is on the login, not the report, so the other
                     # five would fail identically. Say it once and move on.
                     print("  [错误] mercadopago：%s" % e)
                     result["errors"].append("mercadopago: %s" % e)
+                    # 记在整条路线上：没来得及申请的那几张都按它归因。
+                    download_diag.give_up(diag, d, "mercadopago", "no-permission",
+                                          exception_class="NoReportAccess",
+                                          exception=str(e))
                     break
+        for p in pending:
+            # 按列表里已有的行匹配的申请：不是失败，但要让人看得见。
+            if p.get("adopted_existing_row"):
+                diag.caution(label_of(p), "adopted_existing_row",
+                             **p["adopted_existing_row"])
         if pending:
             print("\n>>> 阶段一完成：%d 张报表已在后台生成"
                   % len(pending))
@@ -411,16 +562,16 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                 got = _guard(result, "billing",
                              meli_forms.download_billing_for_months,
                              d, out_dir, want[0], want[1],
-                             extra=args.billing_after)
+                             extra=args.billing_after, diag=diag)
             else:
                 got = _guard(result, "billing",
                              meli_forms.download_billing_reports,
                              d, out_dir, months=args.months,
-                             skip_current=args.skip_current)
+                             skip_current=args.skip_current, diag=diag)
             result["billing"] = got if isinstance(got, dict) else {}
         if args.only in ("stock", "all"):
             got = _guard(result, "stock", meli_forms.download_stock_reports,
-                         d, out_dir, months_back=2)
+                         d, out_dir, months_back=2, diag=diag)
             result["stock"] = got if isinstance(got, dict) else {}
 
         # ---------------- PHASE 3: go back and collect ------------------------
@@ -481,6 +632,10 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
             result["deferred"] = list(remaining)
             remaining = []
 
+        # 还欠着的：推迟到补收的、单店模式下超时的、平台说"数据处理中"的。
+        owed = (list(result["deferred"]) + list(remaining)
+                + list(result.get("retry_later", [])))
+
         for p in remaining:
             result["pending"].append(
                 "ventas" if p["kind"] == "ventas"
@@ -494,6 +649,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     # A written record lands beside the files themselves, so the folder still
     # explains itself once the terminal output is gone.
     result["sales_window_months"] = meli_forms.SALES_PERIOD_ACTUAL.get("months")
+    diagnose(result, args, diag, owed)
     write_run_meta(out_dir, result, began)
     result["report"] = run_report.write(
         result, args=args,
@@ -501,11 +657,53 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     return result
 
 
+def route_errors(missing):
+    """同步路线（账单、库存）缺了报表 -> 每条路线一行错误。纯函数。
+
+    以前账单或库存一张都没下到也不算错，店铺照样是 ok —— 包括 --month 路线上
+    目标月本身失败。平台不提供 / 没有数据的不算：那是对的。
+    """
+    by_route = {}
+    for r in missing or []:
+        route = download_diag.route_of(r.get("form"))
+        if route in ("billing", "stock") and download_diag.needs_attention(r):
+            by_route.setdefault(route, []).append(r)
+    return ["%s: %d 张未下载 —— %s" % (
+                route, len(recs), "；".join(
+                    "%s [%s]" % (r["form"], r["cause"]) for r in recs))
+            for route, recs in sorted(by_route.items())]
+
+
+def diagnose(result, args, diag, owed):
+    """这家店跑完的诊断这一步：应有的报表里缺了哪些、各是为什么。
+
+    结果写进 result 的 expected / missing / flags / cautions。绝不抛异常 ——
+    文件已经在盘上了，解释失败的代码自己失败，不能反过来算作下载失败。
+    """
+    try:
+        result["expected"] = download_diag.expected_forms(args)
+        result["flags"] = dict(diag.flags)
+        result["cautions"] = list(diag.cautions)
+        result["missing"] = download_diag.diagnose_store(
+            result["expected"], diag, entries=owed,
+            no_data=result.get("no_data", []),
+            collected=result.get("collected"),
+            out_dir=result["out_dir"],
+            has_full=store_has_full(result["store"], args))
+        result["errors"].extend(route_errors(result["missing"]))
+    except Exception as e:
+        print("  [警告] 诊断这一步自己出错了：%s: %s"
+              % (e.__class__.__name__, str(e)[:120]))
+        result["errors"].append("diagnosis: %s: %s" % (e.__class__.__name__, e))
+    return result
+
+
 def write_run_meta(out_dir, result, began):
     """往下载目录写一份机器可读的 run_meta.json。
 
-    只放报表端**判断数据完整性**需要的东西。目前就一项：销售报表实际生效的
-    时间范围。没有它就分不清"销售数据只到 7 月 13 号"是窗口不够、还是这家店
+    只放报表端**判断数据完整性**需要的东西：销售报表实际生效的时间范围，以及
+    这一趟应有哪些报表、缺了哪些、各是为什么（expected / missing / flags）。
+    没有前者就分不清"销售数据只到 7 月 13 号"是窗口不够、还是这家店
     7 月 13 号才开张 —— 两者在数据里长得一模一样，结论却完全相反。
     """
     path = os.path.join(out_dir, "run_meta.json")
@@ -524,12 +722,46 @@ def write_run_meta(out_dir, result, began):
     if result.get("sales_window_months") is not None:
         meta["sales_window_months"] = result["sales_window_months"]
     meta.setdefault("sales_window_months", None)
+    # 诊断结果。result 里没有这些键（老调用方）就不动文件里已有的。
+    for key in ("expected", "missing", "flags", "cautions"):
+        if key in result:
+            meta[key] = result[key]
     try:
         with io.open(path, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, ensure_ascii=False, indent=2)
     except Exception as e:            # 元数据写不出不该拖垮已经下好的文件
         print("  [警告] run_meta.json 写入失败：%s" % str(e)[:80])
     return meta
+
+
+def update_run_meta(out_dir, **fields):
+    """只改 run_meta.json 里给定的几个键，其余原样保留。绝不抛异常。
+
+    批次收尾改写诊断结论时用：那时不该去动 downloaded_at 和销售窗口，
+    --collect-only 时手里也没有当初那一趟的 result。
+    """
+    path = os.path.join(out_dir, "run_meta.json")
+    try:
+        meta = {}
+        if os.path.isfile(path):
+            with io.open(path, encoding="utf-8") as fh:
+                meta = json.load(fh) or {}
+        meta.update(fields)
+        with io.open(path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=2)
+        return meta
+    except Exception as e:
+        print("  [警告] run_meta.json 更新失败：%s" % str(e)[:80])
+        return None
+
+
+def read_run_meta(out_dir):
+    try:
+        with io.open(os.path.join(out_dir, "run_meta.json"),
+                     encoding="utf-8") as fh:
+            return json.load(fh) or {}
+    except Exception:
+        return {}
 
 
 def count_files(result):
@@ -572,6 +804,15 @@ def print_summary(result):
         print("\n  [错误] %d 条路线失败：" % len(result["errors"]))
         for x in result["errors"]:
             print("      %s" % x)
+    if result.get("missing"):
+        print("\n  [未下载 —— 原因]")
+        for r in result["missing"]:
+            print("      %-30s [%s] %s" % (r["form"], r["cause"], r["explain"]))
+            print("      %-30s 重试%s ｜ %s"
+                  % ("", "有用" if r["retry"] else "没用", r["action"]))
+    for c in result.get("cautions") or []:
+        print("  [留意] %s 申请 %s，按列表里已有的 %s 匹配 —— 取回的可能是更早的报表"
+              % (c.get("form"), c.get("requested"), c.get("adopted")))
 
     # .csv matters: the MercadoPago reports are csv, and counting only xlsx
     # under-reported every run that included them.
@@ -631,6 +872,8 @@ def main():
               % (args.expect, len(on_disk)))
         return 1
     if result["errors"]:
+        return 1
+    if any(download_diag.needs_attention(r) for r in result.get("missing") or []):
         return 1
     print("\n  %d 个文件全部就位" % len(on_disk))
     return 0

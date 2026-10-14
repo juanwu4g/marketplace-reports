@@ -21,11 +21,41 @@ import re
 import subprocess
 import sys
 import time
-import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(ROOT, "report_build.py")
 DOWNLOADS = os.path.join(ROOT, "downloads")
+
+# 没写出报表时的现场记录放这里，不放报表输出目录：那是财务每个月要打开的文件
+# 夹，以前每出一份报表（包括成功的）就往里面的 diagnostics/ 丢一个日志，从不
+# 清理，一年下来几百个。logs/ 本来就是放运行记录的地方（.gitignore 已排除）。
+DIAG_DIR = os.path.join(ROOT, "logs", "report_diag")
+
+# report_build.py 的退出码。照抄自那边的 EXIT_*（本文件刻意不 import 它，见文
+# 件头），两边要一起改。
+RC_OK = 0             # 已写出，error 级校验全过
+RC_CHECKS = 1         # 已写出，有 error 级校验未过或公式错误
+RC_NO_STORE = 2       # 没有一家店可用，没写
+RC_STRICT_ABORT = 10  # --strict 中止，没写
+RC_CRASH = 70         # 未处理的异常
+
+# build() 结果里的 outcome 取值。前四个表示**文件确实是本次写出来的**；其余
+# 全部表示这份报表没有产出。run_reports 的退出码就按这条线划：前者最多是 1
+# （要看一眼），后者是 2（报表没出来）。
+WRITTEN_OUTCOMES = ("ok", "data_incomplete", "checks_failed", "formula_errors")
+OUTCOME_LABELS = {
+    "ok": "成功",
+    "data_incomplete": "数据不全⚠",        # 已写出；平台声明 Ventas 导出不完整
+    "checks_failed": "有校验未过",          # 已写出；有 error 级校验没通过
+    "formula_errors": "公式错误",           # 已写出；重算后文件里有公式报错
+    "strict_aborted": "严格模式未写出",     # --strict 下校验未过，按要求不写
+    "no_usable_store": "无可用数据",        # 每家店的数据都用不了
+    "stale": "写入失败",                    # 旧文件还在，本次没写进去
+    "crashed": "生成出错",                  # report_build 抛了异常
+    "timeout": "超时",
+    "not_written": "未写出",                # 其他原因没有产出文件
+    "skipped": "跳过",                      # 根本没启动（缺脚本 / 没有店铺）
+}
 
 # 报表必需的输入。缺 Ventas 或账单就算不出损益表，这样的目录不能用 —— 光取"最新
 # 目录"是不够的：一次只跑了 --only ventas 的运行会留下一个看着很新、其实缺账单的
@@ -216,18 +246,105 @@ def latest_run(store, base=None, month=None):
         len(runs), "、".join(_usable(os.path.join(d, runs[0]))[1]))
 
 
+def classify(r):
+    """把一次 build 的结果归成一个 outcome（取值见 OUTCOME_LABELS）。
+
+    单独成函数、只看传进来的 dict，是为了让"什么算写出来了"只有一处定义：
+    build() 用它，run_reports 的汇总和退出码也用它，测试可以不起子进程直接喂。
+
+    顺序有讲究 —— 先排除"没产出"，再谈校验：
+    * 崩溃排在最前。report_build 可能在写完 xlsx 之后才抛异常（重算、导指标），
+      那时文件在、修改时间也新，但这次生成并没有走完，不能算写出来了。
+    * `wrote` 为假的一律是没产出，不管 checks_failed 是不是真 —— --strict 中止
+      时两者同时成立，以前汇总里会显示成"有校验未过"，配一个并不存在的文件。
+    """
+    if r.get("skipped"):
+        return "skipped"
+    rc = r.get("returncode")
+    if r.get("timed_out"):
+        return "timeout"
+    # 报表正被 Excel/WPS 打开时，report_build 是以 PermissionError 崩掉的。这
+    # 种情况说"写入失败"比说"生成出错"有用得多 —— 关掉文件重跑就行。
+    if r.get("stale") and "PermissionError" in (r.get("output") or ""):
+        return "stale"
+    if r.get("crashed") or rc == RC_CRASH:
+        return "crashed"
+    if r.get("stale"):
+        return "stale"
+    if not r.get("wrote"):
+        if rc == RC_STRICT_ABORT:
+            return "strict_aborted"
+        if rc == RC_NO_STORE:
+            return "no_usable_store"
+        return "not_written"
+    if r.get("formula_errors"):
+        return "formula_errors"
+    if r.get("checks_failed") or rc == RC_CHECKS:
+        return "checks_failed"
+    if rc not in (None, RC_OK):
+        # 文件是新的，但退出码不是任何一种"写完了"的码。宁可报没产出。
+        return "not_written"
+    if r.get("data_incomplete"):
+        return "data_incomplete"
+    return "ok"
+
+
+def written(r):
+    """这份报表本次是否确实写出来了（不论校验过没过）。"""
+    return (r.get("outcome") or classify(r)) in WRITTEN_OUTCOMES
+
+
+def _write_diag(out, month, pairs, rc, secs, output):
+    """把一次没产出报表的 build 的完整输出存进 logs/report_diag/。
+
+    返回 (路径, 错误)。只在没写出报表时调用：成功的 build 其输出已经在控制台
+    和月度日志里，再存一份只是重复。写不进去不算事 —— 返回错误文字让调用方
+    提一句即可，不能因为记日志失败再丢一个异常出去。
+    """
+    try:
+        if not os.path.isdir(DIAG_DIR):
+            os.makedirs(DIAG_DIR)
+        stem = os.path.splitext(os.path.basename(out))[0]
+        path = os.path.join(DIAG_DIR, "%s.%s.log" % (
+            stem, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write("会计月：%s\n输出：%s\nPython：%s\n退出码：%s\n用时：%ds\n" % (
+                month, os.path.abspath(out), sys.executable, rc, secs))
+            for name, folder in pairs:
+                fh.write("输入：%s = %s\n" % (name, os.path.abspath(folder)))
+            fh.write("\n" + output)
+        return path, None
+    except (OSError, IOError) as e:
+        return None, str(e)
+
+
 def build(pairs, month, out, metrics_out=None, strict=False,
           no_recalc=None, timeout=3600, echo=True):
     """生成一份报表。pairs 是 [(店铺名, 下载目录), ...]。
 
     一份报表可以覆盖多家店 —— 汇总报表就是把 12 家一起传进来。
-    返回 dict：ok / returncode / seconds / out / output。绝不抛异常。
+    绝不抛异常。返回 dict，调用方该看的是：
+
+        outcome         这次的结局，取值见 OUTCOME_LABELS；由 classify() 得出
+        wrote           文件是否**本次**写出（存在且修改时间变新）
+        ok              wrote 且 report_build 退出码为 0
+        checks          report_build 给出的全部校验（[REPORT_CHECKS_JSON]）
+        checks_failed   是否有 error 级校验未过
+        data_incomplete 平台是否声明 Ventas 导出不完整（warn 级）
+        formula_errors  重算后文件里是否有公式报错
+        returncode      report_build 的退出码（见 RC_*）；没跑起来或超时为 None
+        diagnostic_log  没写出报表时保存的完整输出的路径，否则为 None
+
+    "写没写出来"和"校验过没过"是两件事：checks_failed 为真时文件多半仍已写出
+    （除非 --strict），所以不要用 checks_failed 判断有没有文件，看 outcome。
     """
     if not available():
         return {"ok": False, "skipped": "找不到 report_build.py",
+                "outcome": "skipped", "wrote": False,
                 "returncode": None, "seconds": 0, "out": out, "output": ""}
     if not pairs:
         return {"ok": False, "skipped": "没有可用的店铺", "returncode": None,
+                "outcome": "skipped", "wrote": False,
                 "seconds": 0, "out": out, "output": ""}
 
     if no_recalc is None:
@@ -257,6 +374,7 @@ def build(pairs, month, out, metrics_out=None, strict=False,
     before_mtime = os.path.getmtime(out) if os.path.isfile(out) else None
 
     began = time.time()
+    timed_out = False
     try:
         p = subprocess.run(cmd, cwd=ROOT, env=env, timeout=timeout,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -267,6 +385,7 @@ def build(pairs, month, out, metrics_out=None, strict=False,
         if isinstance(partial, bytes):
             partial = partial.decode("utf-8", errors="replace")
         output, rc = partial + "\n[错误] 超时（%d 秒）" % timeout, None
+        timed_out = True
     except Exception as e:
         output, rc = "%s: %s" % (e.__class__.__name__, e), None
 
@@ -278,33 +397,14 @@ def build(pairs, month, out, metrics_out=None, strict=False,
                 checks = json.loads(line.split(" ", 1)[1])
             except (ValueError, TypeError):
                 pass
-    diagnostic_log = None
-    log_error = None
-    try:
-        log_dir = os.path.join(d, "diagnostics")
-        os.makedirs(log_dir, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
-                dir=log_dir, prefix=os.path.basename(out) + "." +
-                datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".", suffix=".log") as fh:
-            diagnostic_log = fh.name
-            fh.write("会计月：%s\n输出：%s\nPython：%s\n退出码：%s\n用时：%ds\n" % (
-                month, os.path.abspath(out), sys.executable, rc, secs))
-            for name, folder in pairs:
-                fh.write("输入：%s = %s\n" % (name, os.path.abspath(folder)))
-            fh.write("\n" + output)
-    except OSError as e:
-        log_error = str(e)
     if echo and output.strip():
         for line in output.rstrip().splitlines():
             if not line.startswith("[REPORT_CHECKS_JSON] "):
                 print("    %s" % line)
-    if diagnostic_log:
-        print("    [诊断日志] %s" % diagnostic_log)
-    if log_error:
-        print("    [日志写入失败] %s" % log_error)
 
-    # report_build 的退出码：0 = 全通过；1 = 有 error 级校验未通过（文件通常仍已
-    # 写出，除非 --strict）。所以"文件在不在"和"校验过没过"是两件事，分别报。
+    # "文件在不在"和"校验过没过"是两件事，分别报。退出码见文件头的 RC_*：
+    # 0 / 1 都表示写出来了；其余每一种都表示没写出来。但退出码只是 report_build
+    # 自己的说法，这里还要拿磁盘上的文件对一遍（见上面 before_mtime 的注释）。
     exists = os.path.isfile(out)
     wrote = exists and (before_mtime is None
                         or os.path.getmtime(out) > before_mtime)
@@ -316,11 +416,23 @@ def build(pairs, month, out, metrics_out=None, strict=False,
         if "PermissionError" in output:
             print("           原因：文件正被 Excel/WPS 打开，请关闭后重跑。")
 
-    return {"ok": rc == 0 and wrote, "skipped": None, "returncode": rc,
-            "seconds": secs, "out": out, "wrote": wrote, "stale": stale,
-            "checks_failed": any(not c["ok"] and c["severity"] == "error" for c in checks),
-            "data_incomplete": any(c["key"] == "ventas_incomplete" and not c["ok"]
-                                   for c in checks),
-            "checks": checks, "diagnostic_log": diagnostic_log,
-            "formula_errors": "[警告] 文件里存在公式错误" in output,
-            "output": output[-6000:]}
+    r = {"ok": rc == RC_OK and wrote, "skipped": None, "returncode": rc,
+         "seconds": secs, "out": out, "wrote": wrote, "stale": stale,
+         "timed_out": timed_out,
+         # rc 为 None 且不是超时：子进程根本没起来，和崩溃一样没有产出。
+         "crashed": rc == RC_CRASH or (rc is None and not timed_out),
+         "checks_failed": any(not c["ok"] and c["severity"] == "error" for c in checks),
+         "data_incomplete": any(c["key"] == "ventas_incomplete" and not c["ok"]
+                                for c in checks),
+         "checks": checks, "diagnostic_log": None,
+         "formula_errors": "[警告] 文件里存在公式错误" in output,
+         "output": output[-6000:]}
+    r["outcome"] = classify(r)
+
+    # 只有没产出报表时才留现场。路径在这里不打印 —— run_reports 的汇总里会在
+    # 那份报表的那一行下面给出，一次就够。
+    if r["outcome"] not in WRITTEN_OUTCOMES:
+        r["diagnostic_log"], log_error = _write_diag(out, month, pairs, rc, secs, output)
+        if log_error:
+            print("    [日志写入失败] %s" % log_error)
+    return r

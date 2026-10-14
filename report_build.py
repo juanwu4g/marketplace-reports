@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 import warnings
 
 import pandas as pd
@@ -52,6 +53,20 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 warnings.filterwarnings("ignore")
+
+# ════════════════════════════════════════════════════════════════════════
+# 退出码
+# ════════════════════════════════════════════════════════════════════════
+# 调用方（financial_report.build）要分得清"报表写出来了但有校验没过"和"报表
+# 根本没写出来"，所以每一种没写出文件的结局都有自己的码，不和 1 混用。以前
+# --strict 中止、公式错误、校验未过全是 1，Python 报错也是 1（解释器对未捕获
+# 异常的默认退出码），上层只能靠"文件在不在"去猜。
+# financial_report.py 里照抄了一份（它刻意不 import 本文件），改这里要同步改那边。
+EXIT_OK = 0             # 报表已写出，error 级校验全部通过
+EXIT_CHECKS = 1         # 报表已写出，但有 error 级校验未过，或文件里有公式错误
+EXIT_NO_STORE = 2       # 没有一家店铺的数据可用，没写文件
+EXIT_STRICT_ABORT = 10  # --strict 且有校验未过：按要求不写文件
+EXIT_CRASH = 70         # 未处理的异常（traceback 已打印）。70 = sysexits 的 EX_SOFTWARE
 
 # ════════════════════════════════════════════════════════════════════════
 # 常量：原始报表的结构
@@ -149,6 +164,12 @@ FEE_CATALOG = [
     ("Cargo por stock antiguo en Full",                "Full 长龄库存费 (库龄4个月+)", "fulfillment", False),
     ("Cargo por incumplimiento en Envíos Full",        "Full 发货违规罚金 (库存差异)", "penalty",     False),
     ("Cargo por mantenimiento de Mi página",           "官方店页面维护费",           "subscription", False),
+    # 2026-10 登记。注意平台这里的 Publicidad 是大写 P，匹配是逐字的。
+    ("Cargo por campaña de Publicidad de Seguidores",  "粉丝推广广告费 (Seguidores)", "ads",         False),
+    # 自成一类 "misc"：不是 Full 的费用（放进 penalty 会被算进 Full 合计、把
+    # "Full 费用报表 vs 账单"打破），也不是广告。归属待会计确认。
+    ("Cargo debitado del dinero en garantía del Programa Beneficio de Reputación",
+                                                       "信誉保障计划保证金扣款",      "misc",         False),
 ]
 FEE_BY_ES = {es: (zh, bucket, order_level) for es, zh, bucket, order_level in FEE_CATALOG}
 
@@ -281,6 +302,37 @@ RETURN_RESULT_ZH = {
 MONEY_REFUNDED = "Reembolsamos el dinero al comprador"
 MONEY_KEPT = "Te dimos el dinero"
 
+# Returns（Triages）导出现在是英文的：表头和取值都换成了英文，而且不随账号界面
+# 语言变（2026-10 全部 11 家店都是英文，其余报表都是西语）。下面所有分析都按
+# 西语写的，所以读进来先翻回西语 —— 只翻我们见过、核对过的取值，没见过的原样
+# 保留（宁可显示英文，也不猜一个错的西语）。
+RETURNS_EN_COLUMNS = {
+    "Order": "Número de orden",
+    "Review date": "Fecha de revisión",
+    "Product status": "Estado del producto",
+    "Review result": "Resultado de la revisión",
+    "Money status": "Estado del dinero",
+}
+RETURNS_EN_VALUES = {
+    "Estado del producto": {
+        "Damaged seal": "Sello dañado",
+        "Damaged product": "Producto dañado",
+        "Product with signs of misuse": "Producto con marcas de mal uso",
+        "It does not work correctly": "No funciona correctamente",
+        "Product missing, destroyed or damaged": "Producto ausente, destruido o ultrajado",
+    },
+    "Resultado de la revisión": {
+        "Product is once again available for sale": "Producto quedó nuevamente para la venta",
+        "Product to be picked up at distribution center": "Producto para retirar en centro de distribución",
+        "Product returned to the buyer": "Producto devuelto al comprador",
+        "Product archived in distribution center": "Producto archivado en centro de distribución",
+    },
+    "Estado del dinero": {
+        "We refunded the buyer": MONEY_REFUNDED,
+        "We gave you the money": MONEY_KEPT,
+    },
+}
+
 # 代扣代缴税金的预期费率区间（占含税成交额）。落在区间外说明税制或账号状态变了。
 TAX_RATE_MIN, TAX_RATE_MAX = 0.085, 0.095
 TAX_RATE_NOMINAL_GROSS = 0.0905     # 占含税价
@@ -334,6 +386,9 @@ PL_BILL_NOTES = {
     "Cargo por stock antiguo en Full": "库龄 4 个月以上加收",
     "Cargo por incumplimiento en Envíos Full": "库存差异等履约违规罚金",
     "Cargo por mantenimiento de Mi página": "Mi página 月费",
+    "Cargo por campaña de Publicidad de Seguidores": "粉丝推广广告（Seguidores）；已扣除当月冲销",
+    "Cargo debitado del dinero en garantía del Programa Beneficio de Reputación":
+        "信誉保障计划（Programa Beneficio de Reputación）从保证金里扣的钱；科目归属待会计确认",
 }
 PL_TAIL = [
     ("unc_bill_neg", "减：账单级未登记科目 ⚠",     "(未在 FEE_CATALOG 登记)",           "d",
@@ -721,6 +776,11 @@ def load_returns(folder):
     except Exception:
         return path, pd.DataFrame()
     r = r.dropna(how="all")
+    if "Order" in r.columns and "Número de orden" not in r.columns:
+        r = r.rename(columns=RETURNS_EN_COLUMNS)
+        for col, table in RETURNS_EN_VALUES.items():
+            if col in r.columns:
+                r[col] = r[col].map(lambda v, t=table: t.get(v, v) if isinstance(v, str) else v)
     if "Fecha de revisión" in r.columns:
         r["fr"] = pd.to_datetime(r["Fecha de revisión"], format="%d-%m-%Y", errors="coerce")
         if len(r) and not r["fr"].notna().any():
@@ -949,6 +1009,88 @@ def load_settlement(folder, p0, p1):
         "%s %s" % (t, fmt(v)) for t, v in
         zip(ref["TRANSACTION_TYPE"], ref["REAL_AMOUNT"])) or "无"
     return path, out
+
+
+def mp_by_order(A, B, folder):
+    """MercadoPago 逐单交叉验证：每个订单的销售报表 Total 对它自己那笔收款的净额。
+
+    以前是"本月按交易日的流水合计"对"本月按下单日的销售合计"，两边不是同一批
+    钱（9 月的订单常在 10 月到账，8 月订单的退款落在 9 月），11 家店差 3 万到
+    79 万，永远不过。逐单比就对得上：2026-10-14 在 10 家店的真实数据上，3,977
+    个订单里 3,976 个能对上收款号，96.5% 分毫不差。
+
+    关联链：销售报表订单（# de venta / Orden de compra）→ 账单行（Número de
+    venta / Número de paquete，键规则见下面的 credit_note_audit）→ 账单的 Pago
+    （收款号）→ 结算流水的 SOURCE_ID。收款的净额取该收款号**所有日期**的
+    REAL_AMOUNT 之和（结算、退款、争议都算），所以跨月到账也能对上。
+
+    返回 None 表示没有结算流水；否则 dict：
+      linked / agree / unlinked / no_cash 计数，sum_v / sum_mp（可比订单的
+      两边合计），differ（[(订单号, 销售报表 Total, MercadoPago 净额)]，按差额
+      绝对值从大到小），span（流水覆盖的日期）。
+    """
+    p = _first(["settlement_v2*.csv"], folder)
+    if not p:
+        return None
+    try:
+        s = pd.read_csv(p, sep=";")
+        dt = pd.to_datetime(s["TRANSACTION_DATE"], errors="coerce", utc=True)
+    except Exception:
+        return None
+    cash = {}
+    for a, b in zip(s["SOURCE_ID"].map(_srcid), pd.to_numeric(
+            s["REAL_AMOUNT"], errors="coerce").fillna(0.0)):
+        if a:
+            cash[a] = cash.get(a, 0.0) + float(b)
+    out = {"linked": 0, "agree": 0, "unlinked": 0, "no_cash": 0,
+           "sum_v": 0.0, "sum_mp": 0.0, "differ": [],
+           "span": "%s ~ %s" % (str(dt.min())[:10], str(dt.max())[:10])}
+    if not len(A) or "Pago" not in B.columns:
+        out["unlinked"] = int(len(A))
+        return out
+    ids = {}
+    for i, oid, pid in zip(A.index, A["oid"], A["pid"]):
+        for k in (str(oid), str(pid)):
+            if k not in ("", "nan"):
+                ids[k] = i
+    link = {}
+    for ks, kp, pago in zip(B["k_sale"], B["k_pack"], B["Pago"]):
+        pg = _srcid(pago)
+        if not pg:
+            continue
+        for k in (str(ks).strip(), str(kp).strip()):
+            if k in ids:
+                link.setdefault(ids[k], set()).add(pg)
+    out["unlinked"] = int(len(A) - len(link))
+    tot = num(A, V_TOTAL)
+    # 一次买了几件（Paquete de varios productos = Sí）：销售报表把钱全记在包裹那
+    # 一行（# de venta 是 2000014… 号段），每件商品自己那一行金额全是 0；而平台
+    # 是按件收款的。2026-10-14 实测 12 家店"销售报表 0、平台有到账"的 67 单，
+    # 就是这些子行：BOCINA_TA02 包裹行 336.00 = 两件的收款 206.00 + 130.00。
+    # 包裹行已经和同一批收款对上了，子行再比一次只会凭空多出差额，所以跳过。
+    child = set()
+    if V_PACK_FLAG in A.columns:
+        flag = A[V_PACK_FLAG].astype(str).str.strip().str.lower().isin(("sí", "si"))
+        child = set(A.index[flag & (tot.abs() <= CN_TOL)
+                            & (num(A, V_REVENUE).abs() <= CN_TOL)])
+    out["pack_children"] = len([i for i in link if i in child])
+    for i, pagos in link.items():
+        if i in child:
+            continue
+        got = [cash[x] for x in pagos if x in cash]
+        if not got:
+            out["no_cash"] += 1
+            continue
+        vt, mp = float(tot.loc[i]), float(sum(got))
+        out["linked"] += 1
+        out["sum_v"] += vt
+        out["sum_mp"] += mp
+        if abs(mp - vt) <= CN_TOL:
+            out["agree"] += 1
+        else:
+            out["differ"].append((str(A.at[i, "oid"]), vt, mp))
+    out["differ"].sort(key=lambda x: -abs(x[2] - x[1]))
+    return out
 
 
 # ── 贷记明细 × 销售报表 逐单交叉比对 ────────────────────────────────
@@ -1272,10 +1414,19 @@ def derive(store, folder, p0, p1):
     S["pagos"] = P
     if len(P) and "Tipo de pago" in P.columns:
         tp = P["Tipo de pago"].astype(str)
-        m["pay_auto"] = float(P[tp.str.contains("Cobro", na=False)]["Importe total"].sum())
-        m["pay_nc"] = float(P[tp.str.contains("Nota", na=False)]["Importe total"].sum())
+        # 实际付款 = 除贷记单以外的所有支付行。以前只认类型里带 "Cobro" 的行，
+        # 而平台实际写的是 "Pago con débito automático"（自动扣款）或 "Pago
+        # voluntario"（主动付款）—— 于是实扣永远是 0，桥B 每家店每个月都不过。
+        # 2026-10-14 用 11 家店 9 月的真实数据核对：9 家的付款行金额与应付分毫
+        # 不差；另两家的差额是真实的（TOOL_TA03 少付 5,181.17，UNIT_TA04 多付
+        # 1.90）。贷记单另算：它冲的是订单级费用，不是这张账单的付款。
+        nota = tp.str.contains("Nota", na=False)
+        paid = ~nota & tp.str.strip().ne("") & tp.ne("nan")
+        m["pay_auto"] = float(P[paid]["Importe total"].sum())
+        m["pay_nc"] = float(P[nota]["Importe total"].sum())
+        m["pay_types"] = sorted(set(tp[paid]))
         pd_col = "Fecha de pago / Emisión de NC"
-        dts = pd.to_datetime(P[tp.str.contains("Cobro", na=False)].get(pd_col), errors="coerce").dropna()
+        dts = pd.to_datetime(P[paid].get(pd_col), errors="coerce").dropna()
         m["pay_date"] = dts.max().strftime("%Y-%m-%d") if len(dts) else ""
     else:
         m["pay_auto"] = m["pay_nc"] = 0.0
@@ -1293,6 +1444,8 @@ def derive(store, folder, p0, p1):
     m["ads_net"] = float(sum(v for es, v in per_fee.items() if FEE_BY_ES[es][1] == "ads"))
     m["subscription_net"] = float(sum(v for es, v in per_fee.items()
                                       if FEE_BY_ES[es][1] == "subscription"))
+    m["misc_net"] = float(sum(v for es, v in per_fee.items()
+                              if FEE_BY_ES[es][1] == "misc"))
 
     # ---- 仓储费报表 ----
     spath, accrual, srange = load_storage(folder, p0, p1)
@@ -1321,6 +1474,11 @@ def derive(store, folder, p0, p1):
     mpath, MP = load_settlement(folder, p0, p1)
     S["files"]["settlement"] = mpath
     S["mp"] = MP
+    try:
+        S["mp_orders"] = mp_by_order(A, S["billing_all"], folder)
+    except Exception as e:                          # 验证本身坏了不能拖垮报表
+        S["mp_orders"] = None
+        S["anomalies"].append("MercadoPago 逐单验证没能完成：%s" % str(e)[:120])
 
     # ---- 组合单 / 多件单 / 换货单 ----
     m["pack_flag_yes"] = int((A[V_PACK_FLAG] == "Sí").sum()) if V_PACK_FLAG in A.columns else 0
@@ -1354,6 +1512,32 @@ def derive(store, folder, p0, p1):
 def _chk(key, store, name, ok, detail, severity="error", skipped=False):
     return {"key": key, "store": store, "name": name, "ok": bool(ok),
             "detail": detail, "severity": severity, "skipped": skipped}
+
+
+def check_hints(c, S):
+    """一条未通过的校验该从哪儿查起。返回若干行文字；没有可说的返回 []。
+
+    只是给人看的排查线索，不参与任何计算。S 是这条校验所属店铺的数据，被剔除
+    的店铺（store_usable）没有，传 None。
+    """
+    key, files = c["key"], (S or {}).get("files", {})
+    if key == "bridge_b" and S is not None:
+        P = S["pagos"]
+        types = sorted(set(P["Tipo de pago"].dropna().astype(str))) if "Tipo de pago" in P else []
+        return ["支付源文件：%s；行数 %d；支付类型：%s" % (
+                    files.get("pagos"), len(P), "、".join(types) or "（无可识别支付类型）"),
+                "排查提示：实付 = 除贷记单以外的所有支付行（自动扣款、主动付款）。差额为正"
+                "多半是账单还没付清（或付款落在下载之后），为负是多付；对照平台账单页的付款记录。"]
+    if key == "mp_settlement":
+        return ["结算源文件：%s" % files.get("settlement"),
+                "排查提示：逐单比的是销售报表 Total 和该订单收款在 MercadoPago 的净到账（不限日期）。"
+                "一次买几件的子行（金额为 0）已跳过，钱记在包裹行上。剩下的差额原因还没有逐类查明，"
+                "请按订单号在卖家后台核对退款、争议和运费；清单见【%s】。" % SHEET_NAMES[9]]
+    if key in ("billing_present", "sales_window", "tax_rate"):
+        return ["排查提示：先核对本期账单及销售窗口是否完整；税率异常可能由缺账单、关联失败或税务状态变化引起。"]
+    if key.startswith("cn_"):
+        return ["排查提示：见报表⑩逐单异常清单；核对订单/包裹关联、冲销及现金凭证，推定调整不等于现金已证实。"]
+    return []
 
 
 def validate(stores, tol=0.05):
@@ -1410,13 +1594,24 @@ def validate(stores, tol=0.05):
             out.append(_chk("cargos_full", name, "Full 费用报表 vs 账单", True,
                             "本期没有 Reporte_Cargos_Full 文件，跳过", skipped=True))
 
-        MP = S.get("mp")
-        if MP:
-            d = MP["real_all"] - m["total"]
-            out.append(_chk("mp_settlement", name, "MercadoPago 流水交叉验证",
-                            abs(d) <= 0.05,
-                            "结算净额 %s vs 销售报表 Total %s，差 %s"
-                            % (fmt(MP["real_all"]), fmt(m["total"]), fmt(d))))
+        MO = S.get("mp_orders")
+        if MO and MO["linked"]:
+            # 提醒级：个别订单对不上是要人看的事，不说明报表口径错了。
+            k = len(MO["differ"])
+            out.append(_chk("mp_settlement", name, "MercadoPago 逐单交叉验证",
+                            k == 0,
+                            "%d 单能对上收款：%d 单分毫不差%s%s。流水覆盖 %s"
+                            % (MO["linked"], MO["agree"],
+                               "，%d 单不一致（合计差 %s，见 ⑩ 页）"
+                               % (k, fmt(MO["sum_mp"] - MO["sum_v"])) if k else "",
+                               "；另有 %d 单对不上收款号" % (MO["unlinked"] + MO["no_cash"])
+                               if MO["unlinked"] + MO["no_cash"] else "",
+                               MO["span"]),
+                            severity="warn"))
+        elif MO is not None:
+            out.append(_chk("mp_settlement", name, "MercadoPago 逐单交叉验证", True,
+                            "有结算流水，但没有一个订单能对上收款号（账单里缺 Pago 列？），跳过",
+                            skipped=True))
         else:
             out.append(_chk("mp_settlement", name, "MercadoPago 流水交叉验证", True,
                             "本店没有 settlement 流水（多为该登录账号无报表权限），跳过",
@@ -1706,14 +1901,17 @@ def sheet_readme(wb, stores, ctx):
                      fmt(-S["m"]["invoice_internal_reversal"]),
                      fmt(S["m"]["payable"]), fmt(S["m"]["pay_auto"]),
                      "✓" if chk[(S["store"], "bridge_b")]["ok"] else "⚠"))))
-    if mp_stores:
-        s0 = mp_stores[0]
-        MP = s0["mp"]
+    mo = [S for S in stores if (S.get("mp_orders") or {}).get("linked")]
+    if mo:
+        n = sum(S["mp_orders"]["linked"] for S in mo)
+        ok = sum(S["mp_orders"]["agree"] for S in mo)
+        # 以前这里无论校验过没过都写"逐项一致，证明本报表口径正确"。现在按实际结果说。
         rows.append(("", "等式 3（第三方交叉验证）",
-                     "%s 的 MercadoPago 结算流水：交易额 %s、手续费 %s、代扣税 %s、净额 %s，"
-                     "与销售报表推算值逐项一致，证明本报表口径正确。"
-                     % (s0["store"], fmt(MP["trans"]), fmt(-MP["fee"]),
-                        fmt(-MP["tax"]), fmt(MP["real_all"]))))
+                     "用 MercadoPago 结算流水逐单核对 %d 家店：%d 个订单里 %d 个（%s）的销售报表"
+                     "到账金额与平台实际收款分毫不差%s。"
+                     % (len(mo), n, ok, pct(ok / n if n else 0, 1),
+                        "；其余 %d 个不一致的订单列在【%s】" % (n - ok, SHEET_NAMES[9])
+                        if n - ok else "，本报表口径得到独立凭证的证实")))
     else:
         rows.append(("", "等式 3（第三方交叉验证）",
                      "本期没有任何一家店下载到 MercadoPago 结算流水，因此缺少独立的第三方凭证。"
@@ -2004,9 +2202,10 @@ def sheet_pl(wb, stores, ctx):
         ("口径尾差（应为 0）", "",
          lambda S: S["m"]["resid"], None,
          "上表的收入与费用逐项加总后与销售报表 Total 列的差额。为 0 表示无任何未解释差额。"),
-        ("本期账单实际自动扣款", "Cobro automático por factura",
+        ("本期账单实际支付", "Pago con débito automático / Pago voluntario",
          lambda S: S["m"]["pay_auto"], None,
-         "月底从 MercadoPago 余额扣走的金额，与上表“月度账单费用小计”的勾稽见【%s】桥 B。" % SHEET_NAMES[2]),
+         "这张账单实际付掉的金额（自动扣款或主动付款，不含贷记单），与上表“月度账单费用小计”"
+         "的勾稽见【%s】桥 B。" % SHEET_NAMES[2]),
         ("本期贷记单（平台退还）", "Notas de crédito",
          lambda S: S["m"]["pay_nc"], None,
          "针对取消/退货订单退还的佣金与运费，已在“退款与取消（净）”中抵减。"),
@@ -2183,12 +2382,13 @@ def _bridge_head(wb, stores, ctx):
          kind="chk")
 
     # ───────── 桥 A′ MercadoPago 交叉验证 ─────────
-    for S in [s for s in stores if s.get("mp")]:
+    for S in [s for s in stores if (s.get("mp_orders") or {}).get("linked")]:
         gap()
-        MP, sm = S["mp"], S["m"]
-        block("桥 A′　第三方交叉验证：%s 的 MercadoPago 结算流水" % S["store"],
-              "用平台自己的结算明细(settlement_v2)反向验证桥 A 的口径是否正确。"
-              "这是唯一独立于销售报表和账单的第三方凭证。")
+        MO = S["mp_orders"]
+        block("桥 A′　第三方交叉验证：%s 的 MercadoPago 结算流水（逐单）" % S["store"],
+              "每个订单的销售报表 Total 对它自己那笔收款在 MercadoPago 的净到账（结算、退款、"
+              "争议全算，不限日期）。这是唯一独立于销售报表和账单的第三方凭证。流水覆盖 %s。"
+              % MO["span"])
         r = state["r"]
         for i, t in enumerate(("#", "项目", "销售报表推算", "MercadoPago 实际流水", "差异", "说明"), 1):
             c = ws.cell(row=r, column=i, value=t)
@@ -2197,20 +2397,19 @@ def _bridge_head(wb, stores, ctx):
             c.alignment = Alignment(horizontal="center")
             c.border = BOX
         state["r"] = r + 1
-        cross = [
-            ("V1", "交易总额（含运费收入）", sm["ing"] + sm["env_ing"], MP["trans"],
-             "TRANSACTION_AMOUNT（仅 SETTLEMENT 类）"),
-            ("V2", "平台手续费（佣金＋配送费）", -(sm["com_gross"] + sm["env_cost"]), MP["fee"],
-             "FEE_AMOUNT（SETTLEMENT 类）＝ 账单中 Descontado=Si 的 %s ＋ 取消订单原计费 %s"
-             % (fmt(sm["bill_by_channel"][CH_SI]),
-                fmt(-MP["fee"] - sm["bill_by_channel"][CH_SI]))),
-            ("V3", "平台代扣代缴税金", -sm["tax_ret"], MP["tax"],
-             "TAXES_AMOUNT —— 证实“代扣税”确实独立存在，与手续费分开列示"),
-            ("V4", "退款与取消（争议＋退货）", -sm["refund"], MP["refund_real"],
-             "REFUND / DISPUTE 类：%s" % MP["refund_detail"]),
-            ("V5", "净到账金额", sm["total"], MP["real_all"],
-             "REAL_AMOUNT 合计，与销售报表 Total 对比"),
-        ]
+        cross = [("V1", "能对上收款的订单：到账合计（%d 单）" % MO["linked"],
+                  MO["sum_v"], MO["sum_mp"],
+                  "%d 单分毫不差；差额全部来自下面列出的 %d 单"
+                  % (MO["agree"], len(MO["differ"])))]
+        for i, (oid, vt, mp) in enumerate(MO["differ"][:15], 1):
+            cross.append(("V1.%d" % i, "订单 %s" % oid, vt, mp,
+                          "销售报表把它记成 0，平台却有到账 —— 可能是退款/争议后来按卖家有利结案"
+                          if abs(vt) <= CN_TOL and mp > 0 else "逐单核对"))
+        if len(MO["differ"]) > 15:
+            cross.append(("…", "另有 %d 单不一致，全部清单见【%s】"
+                          % (len(MO["differ"]) - 15, SHEET_NAMES[9]),
+                          sum(v for _, v, _ in MO["differ"][15:]),
+                          sum(m_ for _, _, m_ in MO["differ"][15:]), ""))
         for no, lab, calc, act, note in cross:
             r = state["r"]
             ws.cell(row=r, column=1, value=no).alignment = Alignment(horizontal="center")
@@ -2221,9 +2420,10 @@ def _bridge_head(wb, stores, ctx):
             c = ws.cell(row=r, column=6, value=note)
             c.font = F(9, False, "404040")
             c.alignment = wrap()
+            same = abs(money(calc) - money(act)) <= CN_TOL
             for k in range(1, 7):
                 ws.cell(row=r, column=k).border = BOX
-                ws.cell(row=r, column=k).fill = fill(C_OK)
+                ws.cell(row=r, column=k).fill = fill(C_OK if same else C_WARN)
             state["r"] = r + 1
 
     # ───────── 桥 B ─────────
@@ -2248,9 +2448,10 @@ def _bridge_head(wb, stores, ctx):
     b6 = line("B6", "＝ 应付账单金额",
               lambda c, j: "=%s%d+%s%d" % (c, b4, c, b5),
               "这才是真正要掏钱的部分", kind="t")
-    b7 = line("B7", "实际自动扣款金额", V(lambda S: S["m"]["pay_auto"]),
-              "Pagos 报表 → Cobro automático por factura vencida（%s 从 MercadoPago 余额扣走）"
-              % (mm["pay_date"] or "结算日"), kind="s")
+    b7 = line("B7", "实际支付金额", V(lambda S: S["m"]["pay_auto"]),
+              "Pagos 报表里除贷记单以外的支付行：自动扣款（Pago con débito automático）或"
+              "主动付款（Pago voluntario），最近一笔在 %s" % (mm["pay_date"] or "结算日"),
+              kind="s")
     ok_b = all(abs(S["m"]["payable"] - S["m"]["pay_auto"]) <= 0.01
                for S in stores if S["files"].get("pagos"))
     line("B8", "差异检验（B7 − B6）",
@@ -2343,7 +2544,7 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
          "预缴给税局的钱，能抵扣就不是成本，所以算利润时要加回来（若不能抵扣，见【%s】敏感性行）" % SHEET_NAMES[1])
     line("D3", "− 退货处理费", V(lambda S: -S["m"]["dev_net"]),
          "Cargo por devolución，在退款交易里单独扣，不在 Total 内")
-    line("D4", "− 广告费（Product Ads ＋ Display Ads，净）", V(lambda S: -S["m"]["ads_net"]),
+    line("D4", "− 广告费（Product Ads ＋ Display Ads ＋ 粉丝推广，净）", V(lambda S: -S["m"]["ads_net"]),
          "★ 完全不在销售报表里。账单 Descontado=No，月底自动扣款")
     line("D5", "− Full 仓相关费用（仓储/揽收/仓位/罚金等）", V(lambda S: -S["m"]["full_bill_total"]),
          "★ 同样不在销售报表里。%s"
@@ -2351,6 +2552,9 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
             % fmt(mm["cargos_full_report_total"] - mm["full_bill_total"])
             if M["files"].get("cargos_full") else "本期未下载到 Full 费用明细报表，无法交叉核对"))
     line("D6", "− 官方店页面维护费", V(lambda S: -S["m"]["subscription_net"]), "Mi página 月费")
+    # 新增的 "misc" 大类必须在桥 D 里有一行，否则 D7 的合计会和损益表对不上。
+    line("D6a", "− 其他账单费用（信誉保障计划等）", V(lambda S: -S["m"]["misc_net"]),
+         "已登记、但不属于广告 / Full / 页面维护的账单级费用")
     d6b = line("D6b", "− 未登记科目（订单级＋账单级）",
                V(lambda S: -(S["m"]["unc_order"] + S["m"]["unc_bill"])),
                "字典外的费用。为 0 说明本期所有科目都已登记；不为 0 时见【%s】。" % SHEET_NAMES[9])
@@ -3920,8 +4124,11 @@ def trend_notes(stores, ctx):
                    % (S["store"], pct(cur["净额"] / cur["GMV"] if cur["GMV"] else 0, 1),
                       fmt(cur["净额"] / cur["GMV"] * 100 if cur["GMV"] else 0, 0)))
     if len(stores) > 1:
-        rates = sorted(((S["m"]["com_imp"] + S["m"]["env_cost"]) / S["m"]["ing"] if S["m"]["ing"] else 0, S)
-                       for S in stores)
+        # key 不能省：两家店的比率完全相等时（最常见的是两家当月都没有销售，
+        # 比率都是 0），元组比较会接着去比第二个元素 —— 两个 dict，直接
+        # TypeError，整份汇总报表跟着没了。只按比率排，相等时保持传入顺序。
+        rates = sorted((((S["m"]["com_imp"] + S["m"]["env_cost"]) / S["m"]["ing"] if S["m"]["ing"] else 0, S)
+                        for S in stores), key=lambda t: t[0])
         lo, hi = rates[0], rates[-1]
         if hi[0] - lo[0] > 0.02:
             aov = lambda S: S["m"]["ing"] / S["m"]["rows"] if S["m"]["rows"] else 0
@@ -4369,6 +4576,23 @@ def sheet_gaps(wb, stores, ctx):
                       "缺少独立凭证时，到账金额只能按销售报表推算，无法验证平台是否少付。"))
 
     for S in stores:
+        MO = S.get("mp_orders") or {}
+        dif = MO.get("differ") or []
+        if not dif:
+            continue
+        zero = [x for x in dif if abs(x[1]) <= CN_TOL and x[2] > 0]
+        items.append(("中", "MercadoPago 逐单不一致：%s" % S["store"],
+                      "%d 个订单的销售报表到账与平台实际收款不一致，合计差 %s（平台 − 销售报表）。"
+                      "其中 %d 单销售报表记为 0、平台却有到账（合计 %s）。逐单（订单号：销售报表 → "
+                      "平台）：%s%s"
+                      % (len(dif), fmt(sum(x[2] - x[1] for x in dif)), len(zero),
+                         fmt(sum(x[2] for x in zero)),
+                         "；".join("%s：%s → %s" % (o, fmt(v), fmt(mp)) for o, v, mp in dif[:40]),
+                         "；…另 %d 单" % (len(dif) - 40) if len(dif) > 40 else ""),
+                      "在卖家后台按订单号查这些订单的退款 / 争议处理结果，确认哪一边是对的。",
+                      "销售报表若漏记了这些到账，本店的到账和毛利偏低；反之则偏高。"))
+
+    for S in stores:
         m = S["m"]
         if m["ing"] and m["ads_net"] / m["ing"] > 0.04:
             share = m["ads_net"] / ctx["contrib"][S["store"]] if ctx["contrib"][S["store"]] else 0
@@ -4738,7 +4962,8 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="输出 xlsx 路径")
     ap.add_argument("--metrics-out", default=None, help="同时导出月度指标 JSON（用于累积指标库）")
     ap.add_argument("--strict", action="store_true",
-                    help="任一校验未通过就不写出文件，退出码 1")
+                    help="任一 error 级校验未通过、或平台声明 Ventas 导出不完整，"
+                         "就不写出文件，退出码 %d" % EXIT_STRICT_ABORT)
     ap.add_argument("--no-recalc", action="store_true", help="跳过 LibreOffice 重算")
     ap.add_argument("--tol", type=float, default=0.05, help="桥A 残差容差，默认 0.05")
     ap.add_argument("--build-date", default=None, help="覆盖编制日期（用于可复现测试）")
@@ -4778,7 +5003,7 @@ def main(argv=None):
         print("[剔除] %s —— %s" % (name, why))
     if not stores:
         print("\n[中止] 没有一家店铺的数据可用。")
-        return 2
+        return EXIT_NO_STORE
 
     ctx = build_context(stores, a.month, a.build_date)
     checks = validate(stores, tol=a.tol)
@@ -4788,37 +5013,22 @@ def main(argv=None):
               for name, why in unusable] + checks
     ctx["checks"] = checks
 
+    # 每条校验只在这里打印一次。未通过的那几条，排查提示就跟在它下面 —— 以前
+    # 另有一个 [诊断] 段把未通过的校验原样再打一遍，同一句话在一份报表的输出
+    # 里出现两次，汇总里还有第三次。
+    by_store = {S["store"]: S for S in stores}
     print("\n[校验]")
     for c in checks:
         mark = "跳过" if c["skipped"] else ("  ✓" if c["ok"] else "  ✗")
         print("  %s  %-12s %-22s %s" % (mark, c["store"][:12], c["name"], c["detail"]))
+        if not c["ok"] and not c["skipped"]:
+            for line in check_hints(c, by_store.get(c["store"])):
+                print("        %s" % line)
     failed = [c for c in checks if not c["ok"] and c["severity"] == "error"]
+    print("  —— error 级未通过 %d 项；warn 级未通过 %d 项" % (
+        len(failed), sum(not c["ok"] and c["severity"] == "warn" for c in checks)))
     # 稳定的机器可读记录供调用方汇总；不能只靠退出码 1 判断是哪一项失败。
     print("[REPORT_CHECKS_JSON] " + json.dumps(checks, ensure_ascii=False))
-    print("\n[诊断] error 级未通过 %d 项；warn 级未通过 %d 项" % (
-        len(failed), sum(not c["ok"] and c["severity"] == "warn" for c in checks)))
-    for S in stores:
-        issues = [c for c in checks if c["store"] == S["store"] and not c["ok"]]
-        if not issues:
-            continue
-        print("  店铺 %s，输入目录：%s" % (S["store"], os.path.abspath(S["folder"])))
-        for c in issues:
-            print("  [%s][%s] %s：%s" % (c["severity"], c["key"], c["name"], c["detail"]))
-            if c["key"] == "bridge_b":
-                P = S["pagos"]
-                types = sorted(set(P["Tipo de pago"].dropna().astype(str))) if "Tipo de pago" in P else []
-                print("    支付源文件：%s；行数 %d；支付类型：%s" % (
-                    S["files"].get("pagos"), len(P), "、".join(types) or "（无可识别支付类型）"))
-                print("    排查提示：当前实扣只识别类型含 Cobro 的行。Pago con débito automático 等标签可能被漏算；"
-                      "只有贷记单不代表已证实实扣为零。检查付款状态、跨月分配列和下载截止日。")
-            elif c["key"] == "mp_settlement":
-                print("    结算源文件：%s" % S["files"].get("settlement"))
-                print("    排查提示：流水按 TRANSACTION_DATE（UTC）筛选，销售按下单日筛选；"
-                      "跨月结算/退款、时区或流水窗口不完整都可能造成差异。应逐单核对，不能仅据此认定平台少付。")
-            elif c["key"] in ("billing_present", "sales_window", "tax_rate"):
-                print("    排查提示：先核对本期账单及销售窗口是否完整；税率异常可能由缺账单、关联失败或税务状态变化引起。")
-            elif c["key"].startswith("cn_"):
-                print("    排查提示：见报表⑩逐单异常清单；核对订单/包裹关联、冲销及现金凭证，推定调整不等于现金已证实。")
 
     print("\n[结果]")
     for S in stores:
@@ -4829,9 +5039,16 @@ def main(argv=None):
           % ("合计", fmt(sum(S["m"]["ing"] for S in stores)),
              fmt(sum(S["m"]["total"] for S in stores)), fmt(sum(ctx["contrib"].values()))))
 
-    if failed and a.strict:
-        print("\n[中止] %d 项校验未通过，--strict 模式下不生成报表。" % len(failed))
-        return 1
+    # --strict 的承诺是"数据有问题就不出文件"。ventas_incomplete 是 warn 级的
+    # （不 strict 时照常出报表、只做标记，这一点不动），但它的意思是**平台自己
+    # 承认这份导出缺数据** —— strict 下放它过去，就等于出了一份明知偏低的报表。
+    # 所以只在 strict 这一处把它和 error 级校验同等对待，别处的级别不变。
+    blocking = failed + [c for c in checks
+                         if c["key"] == "ventas_incomplete" and not c["ok"]]
+    if blocking and a.strict:
+        print("\n[中止] %d 项校验未通过，--strict 模式下不生成报表：%s"
+              % (len(blocking), "、".join(sorted(set(c["key"] for c in blocking)))))
+        return EXIT_STRICT_ABORT
 
     out = a.out or os.path.join("reports", "MercadoLibre_月度财务报表_%s.xlsx" % ctx["period_cn"])
     build_workbook(stores, ctx, out)
@@ -4847,7 +5064,7 @@ def main(argv=None):
                 print("       %s" % b)
             if ne:
                 print("[警告] 文件里存在公式错误，请勿直接发出。")
-                return 1
+                return EXIT_CHECKS
 
     if a.metrics_out:
         recs = [metrics_record(S, ctx) for S in stores]
@@ -4858,8 +5075,27 @@ def main(argv=None):
             f.write(json.dumps(recs, ensure_ascii=False, indent=1))
         print("[指标] %s" % a.metrics_out)
 
-    return 1 if failed else 0
+    return EXIT_CHECKS if failed else EXIT_OK
+
+
+def run(argv=None):
+    """命令行入口：main() 之外再包一层，把未处理的异常变成一个专用退出码。
+
+    不包的话，任何一处 KeyError / PermissionError 都以解释器默认的退出码 1 结束，
+    和"有校验未过"是同一个数，调用方只能把"报表炸了"当成"报表出了、有点小问
+    题"。traceback 照常打印 —— 这里换的是退出码，不是把错误藏起来。
+    argparse 的参数错误（SystemExit 2）和 Ctrl+C 原样放行。
+    """
+    try:
+        return main(argv)
+    except Exception:
+        # 打到 stdout：调用方把两路合并读，但直接在终端跑并把 stdout 重定向到
+        # 文件时，traceback 也应该跟着其余输出一起留下来。
+        print("\n[崩溃] 报表生成中途出错，文件未写出或不完整：")
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+        return EXIT_CRASH
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

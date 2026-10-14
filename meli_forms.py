@@ -35,6 +35,9 @@ import os
 import calendar
 import time
 
+import site_time
+import download_diag
+
 BILLING_BASE = "https://vendedores.mercadolibre.com.mx"
 BILLING_RESUME = BILLING_BASE + "/billing/resume"
 VENTAS_LISTADO = "https://vendedores.mercadolibre.com.mx/ventas/omni/listado"
@@ -128,7 +131,22 @@ def click(driver, el):
 def snapshot_dir(path):
     if not os.path.isdir(path):
         return {}
-    return {f: os.path.getsize(os.path.join(path, f)) for f in os.listdir(path)}
+    # _diag 是诊断证据的子目录，不是下载。不跳过的话，等待下载的途中它被建
+    # 出来，就会被当成"新到的文件"。
+    return {f: os.path.getsize(os.path.join(path, f)) for f in os.listdir(path)
+            if f != download_diag.DIAG_DIR}
+
+
+def checked_report_ids(state, select_all_id=None):
+    """JS_DEEP_CHECKBOX_STATE 的结果 -> 已勾选的报表 id，去重、保持顺序。
+
+    那段 JS 把每个 root 里的复选框都收一遍，同一个框会被收到两次：日志里
+    4 张报表显示"已勾选 8"，min_files=8 永远凑不齐，于是每一期都要等满
+    settle*3 而不是 settle，还次次报"勾选了 8 张，实际得到 4 个文件"。
+    """
+    return download_diag.dedupe(
+        c["id"] for c in (state or [])
+        if c.get("checked") and c.get("id") and c["id"] != select_all_id)
 
 
 def set_download_dir(driver, path):
@@ -337,16 +355,31 @@ def billing_periods(driver, months=2, skip_current=False):
 
 
 def download_billing_reports(driver, download_dir, months=2, timeout=240,
-                             skip_current=False):
+                             skip_current=False, diag=None):
     """Facturación -> newest `months` periods -> all reports -> Descargar.
 
     Returns {period: [filenames]}.
+
+    `diag`（可选）是这家店的 download_diag.Collector。常规路线事先不知道账期
+    的月份名，所以报表 id 按新旧次序编号：billing/1 是最新一期。
     """
     results = {}
     picked = billing_periods(driver, months=months, skip_current=skip_current)
     print("  本次下载的账期：%s" % ", ".join(m for _, m in picked))
+    # 要 N 期、页面只给得出更少：缺的那几期得有个说法。一期都没有多半是页面
+    # 没渲染出来或被顶掉了，和"这家店只有一期账单"不是一回事。
+    for slot in range(len(picked) + 1, months + 1):
+        if picked:
+            download_diag.give_up(
+                diag, driver, "billing/%d" % slot, "not-offered", shot=False,
+                step="resume 页只有 %d 个可下的账期" % len(picked))
+        else:
+            download_diag.give_up(
+                diag, driver, "billing/%d" % slot, "ui-missing",
+                step="resume 页上没有任何 'Ir al detalle' 按钮")
 
-    for idx, _month in picked:
+    for slot, (idx, _month) in enumerate(picked, 1):
+        form = "billing/%d" % slot
         driver.get(BILLING_RESUME)
         time.sleep(8)
 
@@ -354,6 +387,12 @@ def download_billing_reports(driver, download_dir, months=2, timeout=240,
             "xpath", "//button[normalize-space()='Ir al detalle']")
         if idx >= len(buttons):
             print("  [警告] 只有 %d 个账期可选" % len(buttons))
+            for later in range(slot, len(picked) + 1):
+                download_diag.give_up(
+                    diag, driver, "billing/%d" % later, "ui-missing",
+                    step="重新打开 resume 页后只剩 %d 个 'Ir al detalle'，"
+                         "要点第 %d 个" % (len(buttons), idx + 1),
+                    buttons=len(buttons))
             break
 
         month = driver.execute_script("""
@@ -374,8 +413,22 @@ def download_billing_reports(driver, download_dir, months=2, timeout=240,
         period = driver.current_url.rstrip("/").split("/")[-1].split("?")[0]
         print("    明细页：%s" % driver.current_url)
 
-        files = _download_detail_reports(driver, download_dir, month, timeout)
-        results["%s (%s)" % (month, period)] = files
+        key = "%s (%s)" % (month, period)
+        try:
+            files = _download_detail_reports(driver, download_dir, month, timeout,
+                                             diag=diag, form=form, period=key)
+        except RuntimeError as e:
+            if diag is None:
+                raise                    # 老调用方：行为不变，交给 _guard
+            # 一期失败不该连累其余各期，更不该让已经下好的那几期从结果里
+            # 消失 —— 以前异常一路冒到 _guard，整个 billing 结果变成 {}，
+            # 文件明明在目录里，汇总却说一张都没有。
+            print("    [警告] %s：%s" % (key, e))
+            download_diag.give_up(diag, driver, form, "exception", period=key,
+                                  exception_class=e.__class__.__name__,
+                                  exception=str(e), step="明细页 Reportes 面板")
+            files = []
+        results[key] = files
 
     return results
 
@@ -399,7 +452,7 @@ def billing_detail_url(year, month):
 
 
 def download_billing_for_months(driver, download_dir, year, month,
-                                extra=2, timeout=240):
+                                extra=2, timeout=240, diag=None):
     """下载目标会计月**以及随后 extra 期**的账单。
 
     为什么不能只下目标月：订单级费用按**计费日**入账，月末几天的订单，佣金常常
@@ -416,14 +469,29 @@ def download_billing_for_months(driver, download_dir, year, month,
     """
     out = {}
     y, mo = year, month
-    today = datetime.date.today()
-    for i in range(max(1, extra + 1)):
+    today = site_time.site_today()
+    n = max(1, extra + 1)
+    for i in range(n):
         if datetime.date(y, mo, 1) > today:
             print("    跳过 %04d-%02d 的账单：账期还没开始" % (y, mo))
             break
-        got = download_billing_for_period(driver, download_dir, y, mo, timeout)
+        form = "billing/%04d-%02d" % (y, mo)
+        # 只有目标月是"必须有"的：它拿不到，这一趟就白跑了。
+        got = download_billing_for_period(driver, download_dir, y, mo, timeout,
+                                          diag=diag, form=form, required=(i == 0))
         if not got and i > 0:
-            break            # 后续期拿不到很正常（还没到/已关闭），不算失败
+            # 后续期拿不到很正常（还没到/已关闭），不算失败。但再往后那几期
+            # 是因为这里停了才没去试的，得记一笔，否则它们看起来像凭空少了。
+            yy, mm = y, mo
+            for _ in range(i + 1, n):
+                mm += 1
+                if mm > 12:
+                    yy, mm = yy + 1, 1
+                if datetime.date(yy, mm, 1) > today:
+                    break
+                download_diag.give_up(diag, None, "billing/%04d-%02d" % (yy, mm),
+                                      "not-attempted", after=form, shot=False)
+            break
         out.update(got)
         mo += 1
         if mo > 12:
@@ -431,7 +499,8 @@ def download_billing_for_months(driver, download_dir, year, month,
     return out
 
 
-def download_billing_for_period(driver, download_dir, year, month, timeout=240):
+def download_billing_for_period(driver, download_dir, year, month, timeout=240,
+                                diag=None, form=None, required=True):
     """下载**指定会计月**的全部账单报表，不管它还在不在 resume 页的卡片里。
 
     返回 {期间: [文件名]}；该账期不存在或页面打不开时返回 {}（不抛异常 ——
@@ -452,24 +521,38 @@ def download_billing_for_period(driver, download_dir, year, month, timeout=240):
         return m ? m[1] : null;
     """)
     want = SPANISH_MONTH_NAMES[month - 1]
+    form = form or "billing/%04d-%02d" % (year, month)
     if shown and shown.lower() != want.lower():
         print("    [警告] 页面显示的是 %s，不是 %s —— 该账期可能已不可访问，跳过"
               % (shown, want))
+        download_diag.give_up(diag, driver, form, "wrong-period-page",
+                              period=label, required=required,
+                              shown=shown, want=want, asked_url=url)
         return {}
     if not shown:
         print("    [警告] 页面没有可识别的月份，跳过")
+        download_diag.give_up(diag, driver, form, "no-month-on-page",
+                              period=label, required=required, asked_url=url)
         return {}
 
     period = url.rstrip("/").split("/")[-1]
+    key = "%s (%s)" % (want, period)
     try:
-        files = _download_detail_reports(driver, download_dir, want, timeout)
+        files = _download_detail_reports(driver, download_dir, want, timeout,
+                                         diag=diag, form=form, period=key,
+                                         required=required)
     except RuntimeError as e:
         print("    [警告] %s：%s" % (label, e))
+        download_diag.give_up(diag, driver, form, "exception", period=label,
+                              required=required,
+                              exception_class=e.__class__.__name__,
+                              exception=str(e), step="明细页 Reportes 面板")
         return {}
-    return {"%s (%s)" % (want, period): files}
+    return {key: files}
 
 
-def _download_detail_reports(driver, download_dir, month, timeout=240):
+def _download_detail_reports(driver, download_dir, month, timeout=240,
+                             diag=None, form=None, period=None, required=None):
     """已经站在某个账期的明细页上：勾选全部报表并下载。返回文件名列表。
 
     从 download_billing_reports 里抽出来，好让"按指定账期下载"能走同一段代码 ——
@@ -477,20 +560,30 @@ def _download_detail_reports(driver, download_dir, month, timeout=240):
     """
     _open_reports_tab(driver)
 
-    cb = deep_checkbox(driver, "seleccionar todos los reportes")
-    if cb is None:
-        raise RuntimeError("select-all checkbox not found for %s" % month)
-    # The select-all id is React-generated ("«r2»") and changes between
-    # renders, so remember this element's own id rather than pattern
-    # matching it out of the list below.
-    select_all_id = cb.get_attribute("id")
-    if not cb.is_selected():
-        click(driver, cb)
-        time.sleep(2)
-
-    state = driver.execute_script(JS_DEEP_CHECKBOX_STATE)
-    checked = [c["id"] for c in state
-               if c["checked"] and c["id"] and c["id"] != select_all_id]
+    # 勾"全选"要确认真的勾上了。2026-10-14 TRQWH_TA01 的 9 月账单：页面、
+    # 标签页都对，点了全选却一个都没勾上（截图里四个框全空），Descargar 一直
+    # 是灰的，这一期账单就没下到。同一家店 10 月那一期紧接着就正常 —— 是点得
+    # 太早、表格还没就绪，不是页面变了。所以没勾上就重新找、重新点。
+    checked, select_all_id = [], None
+    for attempt in range(3):
+        cb = deep_checkbox(driver, "seleccionar todos los reportes")
+        if cb is None:
+            raise RuntimeError("select-all checkbox not found for %s" % month)
+        # The select-all id is React-generated ("«r2»") and changes between
+        # renders, so remember this element's own id rather than pattern
+        # matching it out of the list below.
+        select_all_id = cb.get_attribute("id")
+        if not cb.is_selected():
+            click(driver, cb)
+            time.sleep(2)
+        state = driver.execute_script(JS_DEEP_CHECKBOX_STATE)
+        checked = checked_report_ids(state, select_all_id)
+        if checked:
+            break
+        print("    全选没有生效（第 %d 次），等一下再点" % (attempt + 1))
+        if cb.is_selected():
+            click(driver, cb)          # 框是勾上的、报表却没跟着勾：先取消再来
+        time.sleep(4)
     expected = len(checked)
     print("    已勾选报表（%d）：%s" % (expected, checked or "（无）"))
 
@@ -512,9 +605,27 @@ def _download_detail_reports(driver, download_dir, month, timeout=240):
                                timeout=timeout, label="billing %s" % month)
     for f in files:
         print("      + %s" % f)
+    form = form or "billing/%s" % month
+    if not files:
+        # 点了 Descargar，一个文件都没到
+        download_diag.give_up(
+            diag, driver, form, "download-not-landed", period=period,
+            required=required, checked=checked,
+            **download_diag.folder_delta(before, snapshot_dir(download_dir)))
+        return files
+    download_diag.delivered(diag, form, files, period)
     if expected and len(files) != expected:
-        print("    [警告] %s：勾选了 %d 张报表，实际得到 %d 个文件"
-              % (month, expected, len(files)))
+        _got, missing, unknown = download_diag.match_billing_files(checked, files)
+        print("    [警告] %s：勾选了 %d 张报表，实际得到 %d 个文件%s"
+              % (month, expected, len(files),
+                 "，缺的是：%s" % "、".join(missing) if missing else ""))
+        # 这一期算到了，缺的那一张单独记：billing/<期>/<报表 id>
+        if len(files) < expected:
+            for cid in (missing or unknown or ["unidentified"]):
+                download_diag.give_up(
+                    diag, driver, "%s/%s" % (form, cid), "short-download",
+                    period=period, checked=checked, files=files,
+                    missing_reports=missing, unrecognised_ids=unknown)
     return files
 
 
@@ -626,7 +737,7 @@ def set_sales_period(driver, months=6, timeout=45):
 SALES_PERIOD_ACTUAL = {"months": None}
 
 
-def request_sales_excel(driver, period_months=6):
+def request_sales_excel(driver, period_months=6, diag=None):
     """PHASE 1 - ask MercadoLibre to build the sales Excel, do not wait.
 
     Generation is server-side (~25-30s) and the file appears in the corner
@@ -672,6 +783,9 @@ def request_sales_excel(driver, period_months=6):
     if period_months and actual != period_months:
         print("    [警告] 请求 %s 个月，实际生效 %s 个月 —— 导出会少一段数据"
               % (period_months, actual))
+        download_diag.flag(diag, "range_clamped", {
+            "ventas": {"requested_months": period_months,
+                       "actual_months": actual}})
     SALES_PERIOD_ACTUAL["months"] = actual
 
     btn = None
@@ -702,6 +816,13 @@ def request_sales_excel(driver, period_months=6):
         reason = ("未找到按钮" if not candidates else
                   "找到 %d 个按钮，但都不可点击：%s" % (len(candidates), candidates))
         print("    [警告] 'Descargar Excel de ventas' 在 180 秒内不可点击（%s）" % reason)
+        download_diag.give_up(
+            diag, driver, "ventas",
+            "ui-disabled" if candidates else "ui-missing",
+            step="'Descargar Excel de ventas' 在 180 秒内不可点击（%s）"
+                 % ("按钮在但被禁用" if candidates else "没有这个按钮"),
+            candidates=candidates, today_filter_still_applied=bool(today_filter),
+            period_months_actual=actual)
         return None
 
     rows_before = len(driver.execute_script(JS_WIDGET_ROWS))
@@ -711,7 +832,8 @@ def request_sales_excel(driver, period_months=6):
             "requested_at": time.time()}
 
 
-def collect_sales_excel(driver, pending, download_dir, timeout=600, poll=15):
+def collect_sales_excel(driver, pending, download_dir, timeout=600, poll=15,
+                        diag=None):
     """PHASE 3 - return to Ventas and download the generated Excel.
 
     Polls up to `timeout` seconds printing status. Not-ready is reported, not
@@ -757,6 +879,9 @@ def collect_sales_excel(driver, pending, download_dir, timeout=600, poll=15):
     """)
     if clicked is None:
         print("    [警告] 最新一条通知里没有 Descargar 链接")
+        download_diag.give_up(diag, driver, "ventas", "ui-missing",
+                              step="最新一条通知里没有 Descargar 链接",
+                              ready=ready)
         return []
     print("    已在第 %s 条记录上点击 Descargar" % clicked)
 
@@ -764,19 +889,25 @@ def collect_sales_excel(driver, pending, download_dir, timeout=600, poll=15):
                                timeout=180, settle=8, label="ventas excel")
     for f in files:
         print("      + %s" % f)
+    if not files:
+        download_diag.give_up(
+            diag, driver, "ventas", "download-not-landed",
+            **download_diag.folder_delta(before, snapshot_dir(download_dir)))
     return files
 
 
-def download_sales_excel(driver, download_dir, timeout=300, period_months=6):
+def download_sales_excel(driver, download_dir, timeout=300, period_months=6,
+                         diag=None):
     """Request and collect in one call - for running the Ventas route alone.
 
     The split version above is what a full run uses, so the generation wait
     overlaps with the other routes.
     """
-    pending = request_sales_excel(driver, period_months=period_months)
+    pending = request_sales_excel(driver, period_months=period_months, diag=diag)
     if not pending:
         return []
-    return collect_sales_excel(driver, pending, download_dir, timeout=timeout)
+    return collect_sales_excel(driver, pending, download_dir, timeout=timeout,
+                               diag=diag)
 
 
 
@@ -996,7 +1127,7 @@ def _cal_goto(driver, year, month, tries=18):
     return False
 
 
-def _select_date_range(driver, months_back=2):
+def _select_date_range(driver, months_back=2, diag=None):
     """Select (today - months_back) .. today in the range picker.
 
     The picker enforces its own floor - on 2026-08-29 every day before 1 July
@@ -1004,7 +1135,7 @@ def _select_date_range(driver, months_back=2):
     to the earliest day the calendar actually offers, rather than failing or
     silently selecting only one end of the range.
     """
-    today = datetime.date.today()
+    today = site_time.site_today()
     m, y = today.month - months_back, today.year
     while m <= 0:
         m += 12
@@ -1040,6 +1171,10 @@ def _select_date_range(driver, months_back=2):
                 JS_CAL_PICK, first, ES_MONTHS[mm], yy) == "ok":
             picked_start = "%04d-%02d-%02d" % (yy, mm, first)
             print("      起始日期收敛为 %s（更早的日期不可选）" % picked_start)
+            download_diag.flag(diag, "range_clamped", {
+                "stock/consolidado": {
+                    "requested_start": "%04d-%02d-%02d" % (y, m, start_day),
+                    "actual_start": picked_start}})
             break
     if not picked_start:
         print("      [警告] 没有可选的起始日期")
@@ -1078,7 +1213,8 @@ def _open_stock_menu(driver, timeout=60):
     return False
 
 
-def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240):
+def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240,
+                            diag=None):
     """Report (a), once per billing period, newest first.
 
     The modal only holds one period at a time, so this reopens it per period
@@ -1091,11 +1227,22 @@ def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240)
         time.sleep(12)
         before = snapshot_dir(download_dir)
 
+        form = "stock/costos/%d" % (i + 1)
+        rest = ["stock/costos/%d" % (j + 1) for j in range(i, periods)]
         if not _open_stock_menu(driver):
             print("      [警告] 库存报表菜单始终为空")
+            for f in rest:           # break：这一期和之后的都不会再试
+                download_diag.give_up(diag, driver, f, "ui-missing",
+                                      step="库存报表菜单始终为空", menu_items=[])
             break
         if not driver.execute_script(JS_CLICK_STOCK_ITEM, label):
             print("      [警告] 未找到该菜单项")
+            if diag is not None:
+                items = driver.execute_script(JS_STOCK_ITEMS)
+                for f in rest:
+                    download_diag.give_up(diag, driver, f, "ui-missing",
+                                          step="菜单里没有 %r" % label,
+                                          menu_items=items)
             break
         time.sleep(5)
 
@@ -1107,11 +1254,28 @@ def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240)
             print("      可选账期：%d 个 -> %s" % (len(known), known))
         if i >= len(available):
             print("      仅有 %d 个账期可选，停止" % len(available))
+            for f in rest:
+                if available:
+                    # 平台就只给这么多期，不是谁的错
+                    download_diag.give_up(
+                        diag, driver, f, "not-offered", shot=False,
+                        step="仓储费只有 %d 个账期可选" % len(available),
+                        available=available)
+                else:
+                    # 一期都没有：分不清是下拉框没打开还是这家店没有仓储费，
+                    # 留现场给人看
+                    download_diag.give_up(
+                        diag, driver, f, "ui-missing",
+                        step="仓储费弹窗的 Periodo 下拉框里没有任何账期",
+                        available=available)
             break
 
         want = available[i]
         if not driver.execute_script(JS_PICK_PERIOD, want):
             print("      [警告] 无法选中 %r" % want)
+            download_diag.give_up(diag, driver, form, "ui-missing", period=want,
+                                  step="无法选中账期 %r" % want,
+                                  available=available)
             continue
         print("      [%d/%d] %s" % (i + 1, min(periods, len(available)), want))
         time.sleep(2)
@@ -1119,6 +1283,10 @@ def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240)
         st = driver.execute_script(JS_MODAL_BUTTON, "almacenamiento")
         if not st["found"] or st["disabled"]:
             print("      [警告] 该账期的 Descargar 不可用")
+            download_diag.give_up(
+                diag, driver, form,
+                "ui-disabled" if st["found"] else "ui-missing", period=want,
+                step="仓储费弹窗的 Descargar 不可用", modal_button=st)
             continue
         driver.execute_script(JS_CLICK_MODAL_BUTTON, "almacenamiento")
 
@@ -1129,11 +1297,22 @@ def _download_storage_costs(driver, download_dir, label, periods=2, timeout=240)
         for f in files:
             print("        + %s" % f)
         out.extend(files)
+        if files:
+            download_diag.delivered(diag, form, files, want)
+        else:
+            download_diag.give_up(
+                diag, driver, form, "download-not-landed", period=want,
+                step="已点击弹窗的 Descargar",
+                **download_diag.folder_delta(before, snapshot_dir(download_dir)))
     return out
 
 
+# 这几项点一下菜单就直接下载（没有弹窗要填）：没有下载开始时值得重点一次。
+STOCK_RETRY_ON_NO_START = ("general", "devoluciones")
+
+
 def download_stock_reports(driver, download_dir, months_back=2, timeout=240,
-                           only=None, storage_periods=2):
+                           only=None, storage_periods=2, diag=None):
     """Download the four stock reports. Returns {key: [filenames]}.
 
     `storage_periods` - how many billing periods to pull for report (a),
@@ -1150,8 +1329,10 @@ def download_stock_reports(driver, download_dir, months_back=2, timeout=240,
             print("    [costos] %s" % label)
             results[key] = _download_storage_costs(
                 driver, download_dir, label,
-                periods=storage_periods, timeout=timeout)
+                periods=storage_periods, timeout=timeout, diag=diag)
             continue
+
+        form = "stock/%s" % key
 
         driver.get(SPACE_MANAGEMENT)
         time.sleep(12)
@@ -1159,26 +1340,36 @@ def download_stock_reports(driver, download_dir, months_back=2, timeout=240,
 
         if not _open_stock_menu(driver):
             print("    [警告] 库存报表菜单始终为空，跳过 %s" % key)
+            download_diag.give_up(diag, driver, form, "ui-missing",
+                                  step="库存报表菜单始终为空", menu_items=[])
             results[key] = []
             continue
 
         if not driver.execute_script(JS_CLICK_STOCK_ITEM, label):
-            print("    [警告] 未找到菜单项 %r，当前菜单为：%s"
-                  % (label, driver.execute_script(JS_STOCK_ITEMS)))
+            items = driver.execute_script(JS_STOCK_ITEMS)
+            print("    [警告] 未找到菜单项 %r，当前菜单为：%s" % (label, items))
+            download_diag.give_up(diag, driver, form, "ui-missing",
+                                  step="菜单里没有 %r" % label, menu_items=items)
             results[key] = []
             continue
         print("    [%s] %s" % (key, label))
         time.sleep(5)
 
+        # 没有文件时该怪谁：下面任何一步没成，之后"没有下载开始"只是它的后果。
+        why = None
         if key == "consolidado":
-            _select_date_range(driver, months_back=months_back)
+            if not _select_date_range(driver, months_back=months_back, diag=diag):
+                why = ("ui-missing", "日期区间没有选上")
             # only (c) still needs its modal's Descargar; (b) and (d) download
             # on click, and (a) is handled by _download_storage_costs above
             st = driver.execute_script(JS_MODAL_BUTTON, "consolidado")
             if not st["found"]:
                 print("      [警告] 弹窗里没有 Descargar 按钮")
+                why = why or ("ui-missing", "弹窗里没有 Descargar 按钮")
             elif st["disabled"]:
                 print("      [警告] Descargar 仍不可点击，账期未被接受")
+                why = why or ("ui-disabled",
+                              "弹窗的 Descargar 仍不可点击，账期未被接受")
             else:
                 driver.execute_script(JS_CLICK_MODAL_BUTTON, "consolidado")
 
@@ -1186,9 +1377,31 @@ def download_stock_reports(driver, download_dir, months_back=2, timeout=240,
                                    timeout=timeout, settle=6,
                                    label="stock/%s" % key,
                                    start_timeout=STOCK_START_TIMEOUT)
+        if not files and not why and key in STOCK_RETRY_ON_NO_START:
+            # 点了菜单项，一个下载都没开始。2026-10-14 那轮库存总表有 3 家店这样
+            # （TRQWH_TA01、EWXON_EW、DAREU_TA，前后半小时内），同一批店 10-09
+            # 都下到了 —— 平台一时没响应，不是页面变了。重开页面再点一次；
+            # `before` 不变，第一次点击的文件晚到也照样算数。
+            print("      没有下载开始，重开页面再点一次")
+            driver.get(SPACE_MANAGEMENT)
+            time.sleep(12)
+            if _open_stock_menu(driver) and driver.execute_script(
+                    JS_CLICK_STOCK_ITEM, label):
+                time.sleep(5)
+                files = wait_for_downloads(download_dir, before, min_files=1,
+                                           timeout=timeout, settle=6,
+                                           label="stock/%s（重试）" % key,
+                                           start_timeout=STOCK_START_TIMEOUT)
         for f in files:
             print("      + %s" % f)
         results[key] = files
+        if files:
+            download_diag.delivered(diag, form, files)
+        else:
+            download_diag.give_up(
+                diag, driver, form, why[0] if why else "download-not-landed",
+                step=why[1] if why else "点击菜单项后没有下载开始",
+                **download_diag.folder_delta(before, snapshot_dir(download_dir)))
 
     return results
 
@@ -1202,6 +1415,13 @@ def probe_sales_excel(driver, pending, settle=10):
         driver.refresh()
         time.sleep(settle)
     rows = driver.execute_script(JS_WIDGET_ROWS)
+    # 这一眼看到了什么，留给诊断用。写在条目上而不是模块变量里 —— 条目是
+    # 这家店、这张报表自己的。带下划线：调用方读完就弹掉，不进 pending.json。
+    pending["_probe"] = {
+        "row_state": "ventas-widget", "widget_rows": len(rows or []),
+        "rows_before": pending.get("rows_before", 0),
+        "top_sub": rows[0]["sub"] if rows else "",
+        "top_has_dl": bool(rows and rows[0]["hasDl"])}
     return bool(rows
                 and len(rows) > pending.get("rows_before", 0)
                 and rows[0]["hasDl"]
@@ -1222,7 +1442,9 @@ def fetch_sales_excel(driver, pending, download_dir):
     """)
     if clicked is None:
         print("      [警告] 最新一条通知里没有 Descargar 链接")
+        pending["_fetch"] = "no-click-target"
         return []
+    pending["_fetch"] = "clicked"
     files = wait_for_downloads(download_dir, before, min_files=1,
                                timeout=180, settle=8, label="ventas excel")
     for f in files:

@@ -152,15 +152,27 @@ class ZiniaoClient(object):
 
     def _require_ok(self, resp, what):
         if resp is None:
-            raise ZiniaoError("%s: no response from client" % what)
+            raise self._error("%s: no response from client" % what, what, None)
         code = resp.get("statusCode")
         if code == 0:
             return resp
+        text = json.dumps(resp, ensure_ascii=False)[:300]
         if code == -10003:
-            raise ZiniaoError("%s: login/permission error: %s"
-                              % (what, json.dumps(resp, ensure_ascii=False)[:300]))
-        raise ZiniaoError("%s failed: %s"
-                          % (what, json.dumps(resp, ensure_ascii=False)[:300]))
+            raise self._error("%s: login/permission error: %s" % (what, text),
+                              what, text)
+        raise self._error("%s failed: %s" % (what, text), what, text)
+
+    @staticmethod
+    def _error(message, step, response):
+        """ZiniaoError，外加卡在哪一步、紫鸟原话是什么。
+
+        店铺打不开时没有浏览器可以截图，这两样就是全部的现场 —— 诊断那一步
+        （download_diag）靠它们回答"为什么这家店一张报表都没有"。
+        """
+        e = ZiniaoError(message)
+        e.ziniao_step = step
+        e.ziniao_response = response or ""
+        return e
 
     # ---------------- lifecycle ----------------
 
@@ -326,12 +338,39 @@ class ZiniaoClient(object):
         except OSError:
             return False
 
+    # startBrowser 回 -10000「发生未知错误」时，隔这么多秒再试，一共试这么多次
+    # （合计约 5 分钟）。
+    START_RETRY_WAITS = (15, 30, 45, 60, 60, 90)
+
+    def _start_browser(self, request):
+        """让紫鸟打开店铺。内核还在下载时它回 -10000，等一等再试。
+
+        一家店第一次在这台机器上打开、或它的内核版本这台机器还没有时，紫鸟
+        要先下内核（几百 MB）。这期间 startBrowser 不是等着，而是**一秒之内**
+        回一个 statusCode -10000「发生未知错误」。实测两次都是这样：
+        2026-10-12 BOCINA_TA02（内核 137）、2026-10-13 EWTTO_SM（内核 142），
+        隔几十秒重跑就好了。12 家店用着至少三个内核版本，不重试的话新机器上
+        第一轮会有好几家店白白失败。
+
+        只对 -10000 重试：-10003（登录/权限）等别的错误再试也没用，照旧立刻抛。
+        重试用尽还是 -10000，就按原来的方式抛出最后那次的错误。
+        """
+        waits = list(self.START_RETRY_WAITS)
+        while True:
+            resp = self.send(dict(request), timeout=300)
+            if (resp is None or resp.get("statusCode") != -10000 or not waits):
+                return self._require_ok(resp, "startBrowser")
+            wait = waits.pop(0)
+            print("  紫鸟回了「未知错误」(-10000) —— 多半是这家店的内核还在下载，"
+                  "%d 秒后再试（还可再试 %d 次）" % (wait, len(waits) + 1))
+            time.sleep(wait)
+
     @contextmanager
     def open_store(self, store, headless=False, close_when_done=True):
         oauth = store["browserOauth"] if isinstance(store, dict) else store
         name = store.get("browserName", oauth) if isinstance(store, dict) else oauth
         print("打开店铺：%s" % name)
-        info = self._require_ok(self.send({
+        info = self._start_browser({
             "action": "startBrowser",
             "browserOauth": oauth,
             "isWaitPluginUpdate": 0,
@@ -343,15 +382,32 @@ class ZiniaoClient(object):
             "isLoadUserPlugin": False,
             "pluginIdType": 1,
             "privacyMode": 0,
-        }, timeout=300), "startBrowser")
+        })
 
-        drv_path = self._resolve_driver(info)
-        opts = webdriver.ChromeOptions()
-        opts.add_argument("--log-level=3")
-        opts.add_experimental_option(
-            "debuggerAddress", "127.0.0.1:%s" % info.get("debuggingPort"))
-        driver = webdriver.Chrome(service=Service(drv_path), options=opts)
-        driver.implicitly_wait(20)
+        # startBrowser 一成功，店铺浏览器就已经开着、占着它的代理了。下面
+        # 找驱动、挂 webdriver 任何一步失败，都还没走到后面的 try/finally ——
+        # 以前就这么把浏览器留在那里：内核没下完时每家店漏一个，批次后面的
+        # 店铺接着在一堆没人管的窗口旁边开。所以这里自己关，再把异常放出去。
+        step = "resolve_driver"
+        try:
+            drv_path = self._resolve_driver(info)
+            opts = webdriver.ChromeOptions()
+            opts.add_argument("--log-level=3")
+            opts.add_experimental_option(
+                "debuggerAddress", "127.0.0.1:%s" % info.get("debuggingPort"))
+            step = "attach_webdriver"
+            driver = webdriver.Chrome(service=Service(drv_path), options=opts)
+            driver.implicitly_wait(20)
+        except BaseException as e:
+            try:
+                if not getattr(e, "ziniao_step", None):
+                    e.ziniao_step = step
+            except Exception:
+                pass
+            print("  [失败] 店铺已启动但接不上（%s），关闭它" % step)
+            self.close_store(info.get("browserOauth") or info.get("browserId")
+                             or oauth)
+            raise
 
         session = StoreSession(self, info, driver)
         self._opened.append(session)
@@ -361,6 +417,32 @@ class ZiniaoClient(object):
             # never quit() - that would kill the browser we attached to.
             if close_when_done:
                 self.close_store(session)
+            self._stop_driver_service(driver)
+
+    @staticmethod
+    def _stop_driver_service(driver):
+        """结束这家店的 chromedriver 进程。永不抛异常。
+
+        因为不能 quit()，chromedriver 以前只靠 selenium 的 Service.__del__ 在
+        解释器退出时收尸，而那一步在 Windows 上会以 WinError 6（句柄无效）失
+        败，chromedriver 就留了下来。它继承了本进程的 stdout：上层（run_monthly、
+        界面）读我们的输出要读到管道关闭为止，留一个 chromedriver 管道就永远
+        不关，整条链卡死在"下载已经结束"之后。
+
+        直接杀进程而不是 service.stop()：后者会先给 chromedriver 发 /shutdown，
+        对一个 debuggerAddress 接上去的浏览器会做什么没有验证过；杀进程只是
+        断开，浏览器（--keep-open 时还要留给人看）不受影响。
+        """
+        try:
+            service = driver.service
+            proc = service.process
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            # 已经收拾干净，别让 Service.__del__ 在退出时再对着旧句柄报一屏错。
+            service.process = None
+        except Exception:
+            pass
 
     def close_store(self, session):
         oauth = session.oauth if isinstance(session, StoreSession) else session

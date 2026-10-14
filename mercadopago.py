@@ -37,6 +37,9 @@ import datetime
 import re
 import time
 
+import site_time
+import download_diag
+
 _BASE = "https://www.mercadopago.com.mx/balance/reports/"
 
 # Every report type under /balance/reports shares one UI: the same list table,
@@ -456,7 +459,7 @@ def _month_key(period_label):
     return " ".join(parts[-2:]) if len(parts) >= 2 else (period_label or "").lower()
 
 
-def _request_account_statement(driver, spec, fmt="csv"):
+def _request_account_statement(driver, spec, fmt="csv", diag=None):
     """Toolbar Generar -> newest Período -> chosen Formato -> Generar."""
     # This page finishes rendering later than the table-based ones, so poll for
     # the toolbar button rather than trusting a fixed sleep.
@@ -467,8 +470,11 @@ def _request_account_statement(driver, spec, fmt="csv"):
         if opened:
             break
         time.sleep(3)
+    form = "mercadopago/account_statement"
     if not opened:
         print("    [警告] 'Generar' 和 'Generar nuevo estado' 都没找到")
+        download_diag.give_up(diag, driver, form, "ui-missing",
+                              step="'Generar' 和 'Generar nuevo estado' 都没找到")
         return None
     print("      通过 %r 打开" % opened)
     time.sleep(8)
@@ -481,6 +487,9 @@ def _request_account_statement(driver, spec, fmt="csv"):
               if "personalizado" not in o.lower()]
     if not months:
         print("    [警告] 没有可选的 período")
+        download_diag.give_up(diag, driver, form, "ui-missing",
+                              step="Período 下拉框里没有可选的月份",
+                              opened_via=opened)
         return None
     period = months[0]
     print("      período：%s（共 %d 个可选）" % (period, len(months)))
@@ -492,8 +501,11 @@ def _request_account_statement(driver, spec, fmt="csv"):
     time.sleep(3)
     want = "." + fmt
     if not driver.execute_script(JS_ACCT_PICK_OPTION, want):
-        print("    [警告] 不提供 %s 格式，可选：%s"
-              % (want, driver.execute_script(JS_ACCT_OPTIONS)))
+        options = driver.execute_script(JS_ACCT_OPTIONS)
+        print("    [警告] 不提供 %s 格式，可选：%s" % (want, options))
+        download_diag.give_up(diag, driver, form, "ui-missing", period=period,
+                              step="Formato 下拉框里没有 %s" % want,
+                              menu_items=options)
         return None
     print("      formato：%s" % want)
     time.sleep(3)
@@ -501,6 +513,10 @@ def _request_account_statement(driver, spec, fmt="csv"):
     st = driver.execute_script(JS_ACCT_MODAL_GENERAR, False)
     if not st or st.get("disabled"):
         print("    [警告] 弹窗里的 Generar 不可点击")
+        download_diag.give_up(diag, driver, form,
+                              "ui-disabled" if st else "ui-missing",
+                              period=period, step="弹窗里的 Generar 不可点击",
+                              modal_button=st)
         return None
     driver.execute_script(JS_ACCT_MODAL_GENERAR, True)
     print("    已点击 Generar，MercadoPago 端继续生成")
@@ -512,7 +528,8 @@ def _request_account_statement(driver, spec, fmt="csv"):
             "requested_at": time.time(), "already_ready": False}
 
 
-def _collect_account_statement(driver, pending, download_dir, timeout, poll):
+def _collect_account_statement(driver, pending, download_dir, timeout, poll,
+                               diag=None):
     import meli_forms as mf
 
     month_key = pending.get("month_key") or _month_key(pending.get("range"))
@@ -523,6 +540,7 @@ def _collect_account_statement(driver, pending, download_dir, timeout, poll):
 
     deadline = time.time() + timeout
     ready = False
+    st = None
     while time.time() < deadline:
         st = driver.execute_script(JS_ACCT_FORMAT_STATE, month_key, want)
         left = int(deadline - time.time())
@@ -545,6 +563,10 @@ def _collect_account_statement(driver, pending, download_dir, timeout, poll):
     if not ready:
         print("    [警告] %d 秒后仍未就绪，留到后续运行再取"
               % timeout)
+        download_diag.give_up(
+            diag, driver, "mercadopago/account_statement", "not-ready",
+            period=pending.get("range"), row_state="accordion",
+            action=(st or {}).get("action"), head=(st or {}).get("head"))
         return []
 
     print("    %s" % driver.execute_script(JS_ACCT_CLICK_FORMAT, month_key, want))
@@ -693,22 +715,43 @@ return false;
 AC_OPERATIONS = ["Reclamos", "Contracargos", "Devoluciones"]
 
 
-def _request_after_collection(driver, spec, days=60, fmt="csv"):
+def range_start(today, days, cover_from=None):
+    """申请区间的起始日：默认往前 days 天；给了 cover_from（目标月的 1 号）就
+    再往前放到它，保证整个目标月都在区间里。
+
+    以前一律"今天往前 60 天"，和要做的是哪个月无关：15 号跑上个月没问题，但补做
+    更早的月份、或者月底才跑，结算流水就盖不住整月，逐单验证只能对上一部分订单。
+    """
+    start = today - datetime.timedelta(days=days)
+    if cover_from and cover_from < start:
+        start = cover_from
+    return start
+
+
+def _request_after_collection(driver, spec, days=60, fmt="csv", diag=None,
+                              cover_from=None):
     """Poscobro: Crear -> range -> operation types -> Aplicar -> Siguiente
     -> Todos everywhere -> Generar."""
+    form = "mercadopago/after_collection"
     if not driver.execute_script(JS_OPEN_CREATE_MENU):
         print("    [警告] 未找到 'Crear reporte'")
+        download_diag.give_up(diag, driver, form, "ui-missing",
+                              step="未找到 'Crear reporte'")
         return None
     time.sleep(4)
     if not driver.execute_script(JS_CLICK_CREATE_ITEM,
                                  spec.get("create_item", "crear")):
         print("    [警告] 新建菜单里没有 'Crear'")
+        download_diag.give_up(diag, driver, form, "ui-missing",
+                              step="新建菜单里没有 'Crear'")
         return None
     time.sleep(9)
 
-    today = datetime.date.today()
-    chosen = _select_range(driver, today - datetime.timedelta(days=days), today)
+    today = site_time.site_today()
+    chosen = _select_range(driver, range_start(today, days, cover_from), today)
     if not chosen:
+        download_diag.give_up(diag, driver, form, "ui-missing",
+                              step="日期区间没有选上（见上面的 [警告]）")
         return None
 
     # --- step 1: operation types, then that dropdown's own Aplicar ---
@@ -730,6 +773,9 @@ def _request_after_collection(driver, spec, days=60, fmt="csv"):
 
     if not driver.execute_script(JS_AC_CLICK_TEXT, "siguiente"):
         print("    [警告] 'Siguiente' 不可点击，第一步未完成")
+        download_diag.give_up(diag, driver, form, "ui-disabled",
+                              step="'Siguiente' 不可点击，向导第一步未完成",
+                              operations=states)
         return None
     time.sleep(9)
 
@@ -747,21 +793,30 @@ def _request_after_collection(driver, spec, days=60, fmt="csv"):
     before_top = driver.execute_script(JS_AC_TOP_PERIOD)
     if not driver.execute_script(JS_AC_CLICK_TEXT, "generar"):
         print("    [警告] 'Generar' 不可点击")
+        download_diag.give_up(diag, driver, form, "ui-disabled",
+                              step="向导第二步的 'Generar' 不可点击")
         return None
     print("    已点击 Generar，MercadoPago 端继续生成")
     time.sleep(10)
 
     period = driver.execute_script(JS_AC_TOP_PERIOD)
+    out = {"kind": "mercadopago", "report": "after_collection",
+           "url": spec["url"], "label": spec["label"], "flavor": "wizard",
+           "range": period, "fmt": fmt,
+           "requested_at": time.time(), "already_ready": False}
     if not period or period == before_top:
         print("      [警告] 没有出现新行，将按 %r 匹配" % period)
+        # 流程不变（同一天早些时候申请过同样区间时，这条路每天都在正常工作），
+        # 只是把这件事记下来：顶行没变，按它匹配取回的可能是**更早**那张报表。
+        # 申请的和采用的都写上，对不上时一眼能看出来。
+        out["adopted_existing_row"] = {
+            "requested": "%s .. %s" % (chosen[0], chosen[1]),
+            "adopted": period,
+            "reason": "点 Generar 后列表顶行没有变化"}
     print("      该行期间：%s" % period)
+    return out
 
-    return {"kind": "mercadopago", "report": "after_collection",
-            "url": spec["url"], "label": spec["label"], "flavor": "wizard",
-            "range": period, "fmt": fmt,
-            "requested_at": time.time(), "already_ready": False}
-
-def _confirm_row_period(driver, want_range, tries=4, pause=4):
+def _confirm_row_period(driver, want_range, tries=4, pause=4, note=None):
     """Match on the period MercadoPago actually recorded, not the one we picked.
 
     The two are usually identical, but not always - Poscobro records an end date
@@ -777,6 +832,10 @@ def _confirm_row_period(driver, want_range, tries=4, pause=4):
 
     The wizard flavour has always done this (it has no choice - its period text
     is unlike any other page). This extends it to the rest.
+
+    `note`（可选的 dict）：采用了站点顶行的期间时，往里写一条
+    adopted_existing_row。这里无从知道顶行是这次新建的还是以前就有的 —— 采用
+    它可能取回一张更早的报表 —— 所以不改流程，只把"申请的"和"采用的"都留下。
     """
     for _ in range(tries):
         if driver.execute_script(JS_FIND_ROW, want_range, "csv"):
@@ -786,6 +845,10 @@ def _confirm_row_period(driver, want_range, tries=4, pause=4):
     if top and top != want_range:
         print("      [提示] 站点记录的期间是 %r，不是 %r "
               "- matching on the site's" % (top, want_range))
+        if note is not None:
+            note["adopted_existing_row"] = {
+                "requested": want_range, "adopted": top,
+                "reason": "列表里没有按所选区间出现的行，改按顶行匹配"}
         return top
     return want_range
 
@@ -974,7 +1037,8 @@ def _check_language(driver):
         print("  页面语言：%s ✓" % lang)
 
 
-def request_report(driver, report="settlement", days=60, fmt="csv"):
+def request_report(driver, report="settlement", days=60, fmt="csv", diag=None,
+                   cover_from=None):
     """PHASE 1 - kick off generation. Returns a pending dict, or None.
 
     The dict identifies the row to collect later:
@@ -994,12 +1058,15 @@ def request_report(driver, report="settlement", days=60, fmt="csv"):
     _require_access(driver, label)
 
     if flavor == "accordion":
-        return _request_account_statement(driver, spec, fmt=fmt)
+        return _request_account_statement(driver, spec, fmt=fmt, diag=diag)
 
     if flavor == "wizard":
-        return _request_after_collection(driver, spec, days=days, fmt=fmt)
+        return _request_after_collection(driver, spec, days=days, fmt=fmt,
+                                         diag=diag, cover_from=cover_from)
 
-    today = datetime.date.today()
+    form = "mercadopago/%s" % report
+
+    today = site_time.site_today()
 
     # The simple flavour has no "Tipo de reporte" filter, so there is no
     # automatic report to prefer - it always creates one.
@@ -1016,21 +1083,27 @@ def request_report(driver, report="settlement", days=60, fmt="csv"):
         driver.get(url)
         time.sleep(12)
 
-    start = today - datetime.timedelta(days=days)
+    start = range_start(today, days, cover_from)
     want_range = _fmt_range(start, today)
-    print("    手动申请 %s（%d 天），格式 %s" % (want_range, days, fmt))
+    print("    手动申请 %s（%d 天），格式 %s" % (want_range, (today - start).days, fmt))
 
     if not driver.execute_script(JS_OPEN_CREATE_MENU):
         print("    [警告] 未找到 'Crear reporte'")
+        download_diag.give_up(diag, driver, form, "ui-missing", period=want_range,
+                              step="未找到 'Crear reporte'")
         return None
     time.sleep(4)
     if not driver.execute_script(JS_CLICK_CREATE_ITEM, create_item):
         print("    [警告] 新建菜单里没有 %r 选项" % create_item)
+        download_diag.give_up(diag, driver, form, "ui-missing", period=want_range,
+                              step="新建菜单里没有 %r 选项" % create_item)
         return None
     time.sleep(8)
 
     chosen = _select_range(driver, start, today)
     if not chosen:
+        download_diag.give_up(diag, driver, form, "ui-missing", period=want_range,
+                              step="日期区间没有选上（见上面的 [警告]）")
         return None
     start, end = chosen
     want_range = _fmt_range(start, end)      # rebuild: end may have been clamped
@@ -1060,19 +1133,28 @@ def request_report(driver, report="settlement", days=60, fmt="csv"):
     st = driver.execute_script(JS_GENERAR_STATE)
     if not st or st["disabled"]:
         print("    [警告] Generar 仍不可点击，期间未被接受")
+        download_diag.give_up(diag, driver, form,
+                              "ui-disabled" if st else "ui-missing",
+                              period=want_range,
+                              step="弹窗的 Generar 仍不可点击，期间未被接受",
+                              modal_button=st)
         return None
     driver.execute_script(JS_CLICK_GENERAR)
     print("    已点击 Generar，MercadoPago 端继续生成")
     time.sleep(6)
 
     print("    实际选中的区间：%s" % want_range)
-    want_range = _confirm_row_period(driver, want_range)
-    return {"kind": "mercadopago", "report": report, "url": url, "label": label,
-            "range": want_range, "fmt": fmt, "flavor": flavor,
-            "requested_at": time.time(), "already_ready": False}
+    note = {}
+    want_range = _confirm_row_period(driver, want_range, note=note)
+    out = {"kind": "mercadopago", "report": report, "url": url, "label": label,
+           "range": want_range, "fmt": fmt, "flavor": flavor,
+           "requested_at": time.time(), "already_ready": False}
+    out.update(note)
+    return out
 
 
-def collect_report(driver, pending, download_dir, timeout=600, poll=20):
+def collect_report(driver, pending, download_dir, timeout=600, poll=20,
+                   diag=None):
     """PHASE 3 - return to the page, wait for the row, download it.
 
     Polls up to `timeout` seconds (default 10 min) printing status each time.
@@ -1092,6 +1174,7 @@ def collect_report(driver, pending, download_dir, timeout=600, poll=20):
         driver.get(pending["url"])
         time.sleep(14)
         deadline = time.time() + timeout
+        row = None
         while time.time() < deadline:
             row = driver.execute_script(JS_AC_FIND_ROW, pending["range"],
                                         pending.get("fmt", "csv"))
@@ -1107,6 +1190,9 @@ def collect_report(driver, pending, download_dir, timeout=600, poll=20):
             driver.refresh()
             time.sleep(9)
         print("    [警告] %d 秒后仍未就绪" % timeout)
+        download_diag.give_up(
+            diag, driver, "mercadopago/%s" % pending.get("report", "?"),
+            "not-ready", period=pending.get("range"), **_row_info(row))
         return []
 
     if pending.get("flavor") == "accordion":
@@ -1116,7 +1202,7 @@ def collect_report(driver, pending, download_dir, timeout=600, poll=20):
                  pending.get("fmt", "csv")))
         print("    距提交申请已过去 %.0f 秒" % waited)
         return _collect_account_statement(driver, pending, download_dir,
-                                          timeout, poll)
+                                          timeout, poll, diag=diag)
 
     want_range, fmt = pending["range"], pending.get("fmt", "csv")
     url = pending.get("url", REPORTS_URL)
@@ -1145,9 +1231,12 @@ def collect_report(driver, pending, download_dir, timeout=600, poll=20):
         driver.refresh()
         time.sleep(9)
 
+    form = "mercadopago/%s" % pending.get("report", "?")
     if not row or not row["ready"]:
         print("    [警告] %d 秒后仍未就绪，留到后续运行再取"
               % timeout)
+        download_diag.give_up(diag, driver, form, "not-ready", period=want_range,
+                              **_row_info(row))
         return []
 
     clicked = driver.execute_script(JS_CLICK_ROW, want_range, fmt)
@@ -1156,6 +1245,10 @@ def collect_report(driver, pending, download_dir, timeout=600, poll=20):
                                   timeout=120, settle=5, label="mercadopago")
     for f in files:
         print("      + %s" % f)
+    if not files:
+        download_diag.give_up(
+            diag, driver, form, "download-not-landed", period=want_range,
+            **download_diag.folder_delta(before, mf.snapshot_dir(download_dir)))
     return files
 
 
@@ -1179,6 +1272,30 @@ def collect_transactions_report(driver, pending, download_dir, timeout=600,
 # six pending reports gave each 100s, and nothing that takes 2.6-6.5 minutes
 # could ever finish in that. probe()/fetch() exist so the caller can cycle
 # cheaply: probe navigates and looks once, fetch downloads what probe found.
+
+def _row_info(row):
+    """JS_FIND_ROW / JS_AC_FIND_ROW 的一行 -> 诊断用的几个字段。
+
+    纯函数。row_state 是这几种之一：
+        absent      列表里没有这一行
+        ready       有可下载的格式（哪怕不是我们要的那种）
+        empty       平台说该区间没有流水
+        delayed     平台说数据还在处理
+        generating  行在，但还没有下载按钮
+    """
+    if not row:
+        return {"row_state": "absent"}
+    fmts = [f for f in (row.get("formats") or []) if f in (".csv", ".xlsx")]
+    if row.get("ready") or fmts:
+        state = "ready"
+    elif row.get("state") in (EMPTY, DELAYED):
+        state = row["state"]
+    else:
+        state = "generating"
+    return {"row_state": state, "status_text": row.get("status") or "",
+            "formats": list(row.get("formats") or []),
+            "cells": list(row.get("cells") or [])[:6]}
+
 
 def probe(driver, pending, settle=12):
     """Navigate to the report's page and check state once. No waiting.
@@ -1204,11 +1321,18 @@ def probe(driver, pending, settle=12):
             if st and st.get("action") == "expanding":
                 time.sleep(4)
                 continue
+            # 这一眼看到了什么，留给诊断：写在条目上（带下划线，调用方读完
+            # 就弹掉，不进 pending.json），返回值不变。
+            pending["_probe"] = {"row_state": "accordion",
+                                 "action": (st or {}).get("action"),
+                                 "head": (st or {}).get("head")}
             return READY if (st and st.get("action") == "abrir") else WAITING
+        pending["_probe"] = {"row_state": "accordion", "action": "expanding"}
         return WAITING
 
     js = JS_AC_FIND_ROW if pending.get("flavor") == "wizard" else JS_FIND_ROW
     row = driver.execute_script(js, pending["range"], pending.get("fmt", "csv"))
+    pending["_probe"] = _row_info(row)
     if not row:
         return WAITING
     if row.get("ready"):
@@ -1247,7 +1371,9 @@ def fetch(driver, pending, download_dir):
         res = driver.execute_script(JS_CLICK_ROW, pending["range"], fmt)
     if not res:
         print("      [警告] %s 没有可点击的下载入口" % pending.get("label"))
+        pending["_fetch"] = "no-click-target"
         return []
+    pending["_fetch"] = "clicked"
 
     files = mf.wait_for_downloads(download_dir, before, min_files=1,
                                   timeout=150, settle=5,

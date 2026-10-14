@@ -19,6 +19,7 @@ Two decisions worth keeping:
   every store from the batch; running it per store would do the same work N
   times over.
 """
+import json
 import os
 import subprocess
 import sys
@@ -30,6 +31,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # package resolves without needing to be pip-installed.
 PIPELINE_ROOT = os.path.join(ROOT, "downloads")
 PIPELINE_PKG = os.path.join(PIPELINE_ROOT, "mx_sales")
+
+# build 打印的那一行机器可读结果（见 downloads/mx_sales/__main__.py 的
+# BUILD_RESULT_MARKER，两边必须一致）。给程序看的，不回显给人。
+BUILD_RESULT_MARKER = "[BUILD_RESULT_JSON] "
 
 
 def available():
@@ -50,7 +55,7 @@ def _echo(out):
     order = []
     for line in out.rstrip().splitlines():
         line = line.rstrip()
-        if not line:
+        if not line or line.startswith(BUILD_RESULT_MARKER):
             continue
         if line not in seen:
             seen[line] = 0
@@ -61,18 +66,34 @@ def _echo(out):
         print("    %s%s" % (line, "   (x%d)" % n if n > 1 else ""))
 
 
-def _invoke(subcmd, label, timeout, echo):
+def _build_detail(out):
+    """从 build 的输出里取出那一行机器可读结果。没有或读不懂时返回 None。"""
+    detail = None
+    for line in out.splitlines():
+        if line.startswith(BUILD_RESULT_MARKER):
+            try:
+                detail = json.loads(line[len(BUILD_RESULT_MARKER):])
+            except (ValueError, TypeError):
+                detail = None
+    return detail if isinstance(detail, dict) else None
+
+
+def _invoke(subcmd, label, timeout, echo, current_runs=None):
     """Run one `python -m mx_sales <subcmd>` and describe what happened.
 
-    Returns a dict: ok / partial / skipped / returncode / seconds / output.
+    Returns a dict: ok / partial / skipped / returncode / seconds / output,
+    plus, for build: files_ok / files_failed / failed_current / failed_older /
+    older_only (see build()).
     `partial` means some files failed and the rest were written - a state the
     caller must not report as "failed".
     Never raises - the downloads are already on disk and safe either way.
     """
+    extra = {"files_ok": None, "files_failed": 0, "failed_current": [],
+             "failed_older": [], "older_only": False}
     if not available():
-        return {"ok": True, "partial": False,
-                "skipped": "downloads/ 下没有 mx_sales 包",
-                "returncode": None, "seconds": 0, "output": ""}
+        return dict({"ok": True, "partial": False,
+                     "skipped": "downloads/ 下没有 mx_sales 包",
+                     "returncode": None, "seconds": 0, "output": ""}, **extra)
 
     # sys.executable, so the transform runs in the same venv as the downloader.
     # pyarrow and duckdb are pinned in requirements.txt for exactly this.
@@ -91,13 +112,13 @@ def _invoke(subcmd, label, timeout, echo):
                            encoding="utf-8", errors="replace")
         out, rc = p.stdout or "", p.returncode
     except subprocess.TimeoutExpired:
-        return {"ok": False, "partial": False, "skipped": None,
-                "returncode": None, "seconds": int(time.time() - began),
-                "output": "超时（%d 秒）" % timeout}
+        return dict({"ok": False, "partial": False, "skipped": None,
+                     "returncode": None, "seconds": int(time.time() - began),
+                     "output": "超时（%d 秒）" % timeout}, **extra)
     except Exception as e:
-        return {"ok": False, "partial": False, "skipped": None,
-                "returncode": None, "seconds": int(time.time() - began),
-                "output": "%s: %s" % (e.__class__.__name__, e)}
+        return dict({"ok": False, "partial": False, "skipped": None,
+                     "returncode": None, "seconds": int(time.time() - began),
+                     "output": "%s: %s" % (e.__class__.__name__, e)}, **extra)
 
     secs = int(time.time() - began)
     if echo and out.strip():
@@ -106,21 +127,73 @@ def _invoke(subcmd, label, timeout, echo):
     # 0 全部成功 / 1 部分文件失败但其余已写入 / 2 什么都没产出。以前这里只分
     # 零与非零，于是 55 个文件里坏 1 个也被一路报成"清洗失败"，读的人会以为
     # 整批数据都没清洗。validate 的 1 是别的意思，所以只认 build。
-    partial = rc == 1 and bool(subcmd) and subcmd[0] == "build"
-    if rc == 0:
+    is_build = bool(subcmd) and subcmd[0] == "build"
+    partial = rc == 1 and is_build
+    ok = rc == 0
+
+    if is_build:
+        detail = _build_detail(out)
+        if detail is not None:
+            failed = [f for f in detail.get("failed", []) if isinstance(f, dict)]
+            extra["files_ok"] = detail.get("written")
+            extra["files_failed"] = len(failed)
+            extra["failed_current"] = [f for f in failed if f.get("current", True)]
+            extra["failed_older"] = [f for f in failed if not f.get("current", True)]
+        # build 每次都把整棵下载树重扫一遍，所以一个洗不动的旧文件会让之后
+        # **每一次**清洗都退出 1，整批任务跟着每个月都"需要关注"，而本次下
+        # 载的东西其实一点问题没有。调用方说清了哪些目录是本次的（current_runs），
+        # 且失败的全在别的目录里，这次清洗就算成功 —— 旧文件另记在
+        # failed_older 里，不丢，但不再冒充本次的失败。
+        # 读不到那行机器可读结果时不做这个判断：分不清就按原来的算。
+        if (partial and current_runs is not None and detail is not None
+                and extra["failed_older"] and not extra["failed_current"]):
+            extra["older_only"] = True
+            ok, partial = True, False
+
+    if extra["older_only"]:
+        state = "成功（另有 %d 个以前的文件仍洗不动，不属于本次，见上面的 note）" \
+                % len(extra["failed_older"])
+    elif ok:
         state = "成功"
     elif partial:
         state = "部分文件失败（其余已写入）"
+        if extra["failed_older"]:
+            state += "：本次 %d 个，以前的 %d 个" % (
+                len(extra["failed_current"]), len(extra["failed_older"]))
     else:
         state = "失败（退出码 %d）" % rc
     print("    %s %s，用时 %d 分 %02d 秒" % (label, state, secs // 60, secs % 60))
-    return {"ok": rc == 0, "partial": partial, "skipped": None,
-            "returncode": rc, "seconds": secs, "output": out[-4000:]}
+    return dict({"ok": ok, "partial": partial, "skipped": None,
+                 "returncode": rc, "seconds": secs, "output": out[-4000:]}, **extra)
 
 
-def build(args=(), timeout=3600, echo=True):
-    """Clean every download in the tree to Parquet and refresh the DuckDB views."""
-    return _invoke(["build"] + list(args), "清洗", timeout, echo)
+def build(args=(), timeout=3600, echo=True, current_runs=None):
+    """Clean every download in the tree to Parquet and refresh the DuckDB views.
+
+    `current_runs`：本次下载用的运行目录名（如 "20261013_090000_m202609"，给
+    完整路径也行，只取最后一段），可以是一个字符串或一组。给了之后，结果里
+    把洗不动的文件分成两堆：
+
+        failed_current   本次目录里的 —— 这才是这次要管的
+        failed_older     别的目录里的 —— 老问题，每次重扫都会再撞上
+        older_only       True 表示失败的**全是**老文件；此时 ok=True、partial=False
+
+    每一项是 {"report", "file"（相对 downloads/ 的路径）, "error", "current"}。
+    另有 files_ok / files_failed 两个计数。
+
+    不给（默认 None）就和以前完全一样：所有失败都算本次的，ok / partial /
+    returncode 的含义不变，failed_older 恒为空。处理哪些文件也不变 —— 这个
+    参数只影响"怎么报"，不影响"洗什么"。
+    """
+    cmd = ["build"] + list(args)
+    runs = None
+    if current_runs is not None:
+        if isinstance(current_runs, str):
+            current_runs = [current_runs]
+        runs = [os.path.basename(os.path.normpath(str(r))) for r in current_runs if r]
+        for r in runs:
+            cmd += ["--current-run", r]
+    return _invoke(cmd, "清洗", timeout, echo, current_runs=runs)
 
 
 def validate(export, excel_out, timeout=1800, echo=True):

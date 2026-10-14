@@ -34,6 +34,54 @@ def find_header_row(frame: pd.DataFrame, *, min_columns: int = 3, search_rows: i
     return -negative_index
 
 
+#: How far down the sheet the header is looked for. ML's title block is under ten rows;
+#: a banner or two on top of that still leaves plenty of slack.
+HEADER_SEARCH_ROWS = 20
+
+
+def find_anchor_row(
+    frame: pd.DataFrame, anchors: tuple[str, ...] | list[str], *, search_rows: int = HEADER_SEARCH_ROWS
+) -> int | None:
+    """Return the first row in the top of the sheet that holds every anchor column name.
+
+    ML does not keep the header on a fixed row: it inserts a banner above the table when
+    it has something to say ("No pudimos mostrar algunos datos...") and every row below
+    moves down by one. A fixed offset then reads the group row as the header and the
+    whole file fails on "expected columns missing". Anchoring on names the report cannot
+    work without finds the header wherever it landed.
+
+    Names are compared slugified, the same way the columns are named afterwards, so
+    accents, case and stray whitespace in the export do not matter. ``None`` means no
+    row matched -- the caller decides whether that is fatal.
+    """
+    wanted = {slugify(a) for a in anchors}
+    if not wanted:
+        return None
+    for position in range(min(search_rows, len(frame))):
+        present = {slugify(v) for v in frame.iloc[position] if pd.notna(v)}
+        if wanted <= present:
+            return position
+    return None
+
+
+def locate_header_row(
+    path: Path | str,
+    sheet_name: str | int,
+    anchors: tuple[str, ...] | list[str],
+    *,
+    default: int,
+    search_rows: int = HEADER_SEARCH_ROWS,
+) -> int:
+    """Header row of a sheet on disk, by anchor, falling back to ``default``.
+
+    For callers that hand the row to ``pd.read_excel(header=...)`` themselves. Only the
+    top of the sheet is read, so this costs little next to the full read that follows.
+    """
+    top = pd.read_excel(path, sheet_name=sheet_name, header=None, nrows=search_rows, dtype=object)
+    found = find_anchor_row(top, anchors, search_rows=search_rows)
+    return default if found is None else found
+
+
 def _drop_empty_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """Drop fully empty columns (several reports start at column B).
 
@@ -50,13 +98,22 @@ def read_sheet(
     sheet_name: str | int = 0,
     *,
     header_row: int | None = None,
+    anchors: tuple[str, ...] | list[str] | None = None,
     trim_empty: bool = True,
 ) -> pd.DataFrame:
-    """Read one sheet with a single header row, auto-detecting the offset when unset."""
+    """Read one sheet with a single header row, auto-detecting the offset when unset.
+
+    With ``anchors`` the header is the first row carrying all of those column names, and
+    ``header_row`` is only the fallback for a sheet where none does.
+    """
     raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
     if trim_empty:
         raw = _drop_empty_columns(raw)
 
+    if anchors:
+        found = find_anchor_row(raw, anchors)
+        if found is not None:
+            header_row = found
     if header_row is None:
         header_row = find_header_row(raw)
 
@@ -72,16 +129,29 @@ def read_grouped_sheet(
     *,
     group_row: int,
     header_row: int,
+    anchors: tuple[str, ...] | list[str] | None = None,
     trim_empty: bool = True,
 ) -> pd.DataFrame:
     """Read a sheet whose header spans two rows, naming columns ``<group>__<header>``.
 
     The group row is forward-filled because ML writes each group label only above its
     first column.
+
+    With ``anchors`` the header is the first row carrying all of those names (matched on
+    the lower, un-grouped name) and the group row keeps its distance above it: a banner
+    pushes both down together. ``group_row`` / ``header_row`` are then the usual
+    positions, used as given when no row matches.
     """
     raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
     if trim_empty:
         raw = _drop_empty_columns(raw)
+
+    if anchors:
+        found = find_anchor_row(raw, anchors)
+        # A header on the very first rows would leave no room for its group row; that
+        # is not this layout, so the usual positions stand.
+        if found is not None and found - (header_row - group_row) >= 0:
+            group_row, header_row = found - (header_row - group_row), found
 
     groups = raw.iloc[group_row].ffill()
     headers = raw.iloc[header_row]
