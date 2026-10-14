@@ -558,10 +558,10 @@ MercadoPago 的报表经常当晚生成不完）**不告警**：这是常态，�
 ```json
 "stores": {
   "default": "BOCINA_SM",
-  "allowed": ["BOCINA_SM", "Tecnohub_CL"],
+  "allowed": ["BOCINA_SM", "Tecnohub_CL (个人店)"],
   "batch":   ["BOCINA_SM"],
-  "regions": {"Tecnohub_CL": "CL"},
-  "batches": {"CL": ["Tecnohub_CL"]}
+  "regions": {"Tecnohub_CL (个人店)": "CL"},
+  "batches": {"CL": ["Tecnohub_CL (个人店)"]}
 }
 ```
 
@@ -602,6 +602,26 @@ python run_reports.py --region CL --dry-run
 `run_batch.py` 打一行「清洗目前只支持墨西哥，智利店铺跳过这一步；不影响报表」，批次
 汇总里记 `"transform": {"skipped": true, "reason": "region"}` —— 不算失败，报表读的是
 原始导出。
+
+**店名要和紫鸟里一字不差**：智利那家店在紫鸟里叫 `Tecnohub_CL (个人店)`，不是
+`Tecnohub_CL`。写错了这家店会被当成"不在白名单"跳过。
+
+#### 智利报表和墨西哥的区别
+
+十张子表、排列和读法都一样（姊妹报表），按国家不同的地方：
+
+| | 墨西哥 | 智利 |
+|---|---|---|
+| 卖家中心 / MercadoPago | `.com.mx` | `vendedores.mercadolibre.cl` / `mercadopago.cl`，界面语言 es_CL |
+| 币种 | MXN，两位小数 | CLP，**没有小数**，容差 1 比索 |
+| 销售导出 | 表 "Ventas MX"，列名带 (MXN) | 表 "Ventas CL"，列名带 (CLP) |
+| 税 | IVA 16%，平台代扣 IVA / ISR（桥 E） | IVA 19%，**平台不代扣**；桥 E 换成"无代扣"核对，损益表底下有 IVA 备注 |
+| 月度账单 | 按自然月 | 按截账日：每家店不同（DAB 每月 8 日→次月 7 日，Tecnohub 24 日→23 日）。报表把账单里的每笔费用**按扣款日**归到所属月份，截账日从账单自己推断 |
+| 退货库存菜单 | "Reporte de devoluciones a la bodega" | "Reporte de devoluciones al centro de distribución"（两种都认） |
+| 清洗 | 有 | 跳过（见上） |
+
+已知还没做的：智利的账户对账单（account statement）页面找不到"Generar"按钮——报表不用它，
+不影响出数；`BILL_MP_V3`（账单页第五个报表）要先选格式，脚本不答，所以不下载，也不算缺失。
 
 ---
 

@@ -319,6 +319,21 @@ def test_describe_batch_tolerates_missing_or_broken_summary(tmp_path):
     assert a == []
 
 
+def test_billing_summary_error_about_bill_mp_v3_is_harmless(tmp_path):
+    # 2026-10-15 智利 DAB_CL：账单路线报错是一行汇总，报表名在中间；缺的全是
+    # 报表不读的（BILL_MP_V3、account statement），不该算"部分报表没下成"
+    s = _summary(tmp_path, stores=[{
+        "store": "D", "status": "partial", "pending": [],
+        "errors": ["mercadopago/account_statement/request: requested nothing",
+                   "billing: 2 张未下载 —— billing/2026-09/BILL_MP_V3 "
+                   "[UI_NOT_FOUND]；billing/2026-10/BILL_MP_V3 [UI_NOT_FOUND]"],
+        "missing": [{"form": "mercadopago/account_statement", "cause": "UI_NOT_FOUND"},
+                    {"form": "billing/2026-09/BILL_MP_V3", "cause": "UI_NOT_FOUND"},
+                    {"form": "billing/2026-10/BILL_MP_V3", "cause": "UI_NOT_FOUND"}]}])
+    u, a = run_monthly.describe_batch(s)
+    assert u == [] and "3 张不影响报表的文件" in a[0]
+
+
 def test_report_exit_1_does_not_alert_but_exit_2_does(env):
     assert env.run(["--step", "report"], plan(("report", child(1)))) == 1
     assert not os.path.exists(env.alert)

@@ -594,12 +594,14 @@ def describe_batch(path):
     def only_waiting(r):
         """这家店缺的全是不影响报表的：平台还在生成的，或者报表不读的那几种。
 
-        路线报错（errors）只要说的都是这些报表，也一样不算。"""
+        路线报错（errors）只要说的都是这些报表，也一样不算。账单路线的报错是
+        一行汇总（"billing: 2 张未下载 —— billing/2026-09/BILL_MP_V3 …"），
+        报表名在中间，所以按"提到了"算，不按开头算。"""
         ms = missing(r)
         if not ms or not all(harmless(m) for m in ms):
             return False
         forms = [m.get("form") or "" for m in ms]
-        return all(any(str(e).startswith(f) for f in forms if f)
+        return all(any(f in str(e) for f in forms if f)
                    for e in r.get("errors") or [])
 
     failed = [r for r in rows if r.get("status") not in ("ok", "partial")]
