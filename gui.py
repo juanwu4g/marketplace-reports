@@ -42,6 +42,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
+import region_choice
 import runlog
 import site_time
 from log_view import LogView, fit_to_screen
@@ -101,8 +102,13 @@ def recent_months(n=15):
     return out
 
 
-def store_list():
-    """店铺白名单。读不到就返回空 —— 界面照常能开，按钮会提示配置有问题。"""
+def store_list(region=None):
+    """店铺白名单。读不到就返回空 —— 界面照常能开，按钮会提示配置有问题。
+
+    给了 region 就是那个国家的"全部店铺"（store_config.stores_for_region）。
+    """
+    if region:
+        return region_choice.stores(region)
     try:
         sys.path.insert(0, ROOT)
         import store_config
@@ -121,7 +127,9 @@ class App(object):
         self.human = {"month": None, "actions": []}
         self.human_told = None        # 已经为哪一轮弹过"需要人工处理"
         self.human_at = 0.0
-        root.title("meli-mx-pipeline —— 墨西哥店铺报表")
+        # 选的是哪个国家。店铺清单、"全部店铺"、预览、起的每一轮都跟着它走。
+        self.region = region_choice.remembered(load_settings())
+        root.title(region_choice.window_title(self.region))
         fit_to_screen(root, 1680, 900)
         root.minsize(1000, 600)
 
@@ -152,50 +160,83 @@ class App(object):
         f = ttk.LabelFrame(self.left, text=" 参数 ", padding=10)
         f.pack(fill="x", padx=(12, 6), pady=(12, 6))
 
-        ttk.Label(f, text="会计月份").grid(row=0, column=0, sticky="w")
-        self.month = ttk.Combobox(f, values=recent_months(), width=12,
-                                  state="readonly")
-        self.month.set(recent_months()[0])
-        self.month.grid(row=0, column=1, sticky="w", padx=(6, 18))
-        ttk.Label(f, text="默认是上一个完整月份。当月还没过完，做月报没有意义。",
+        # 国家放在最上面：下面的店铺清单、"全部店铺"指哪几家都由它决定。
+        ttk.Label(f, text="国家").grid(row=0, column=0, sticky="w")
+        self.region_box = ttk.Combobox(f, values=region_choice.labels(), width=12,
+                                       state="readonly")
+        self.region_box.set(region_choice.label(self.region))
+        self.region_box.grid(row=0, column=1, sticky="w", padx=(6, 18))
+        self.region_box.bind("<<ComboboxSelected>>", lambda e: self._pick_region())
+        ttk.Label(f, text="一次只跑一个国家；两国共用一个紫鸟，不能同时跑。",
                   foreground="#666", wraplength=WRAP - 130, justify="left"
                   ).grid(row=0, column=2, columnspan=3, sticky="w")
 
-        ttk.Label(f, text="店铺").grid(row=1, column=0, sticky="nw", pady=(10, 0))
+        ttk.Label(f, text="会计月份").grid(row=1, column=0, sticky="w",
+                                       pady=(10, 0))
+        self.month = ttk.Combobox(f, values=recent_months(), width=12,
+                                  state="readonly")
+        self.month.set(recent_months()[0])
+        self.month.grid(row=1, column=1, sticky="w", padx=(6, 18), pady=(10, 0))
+        ttk.Label(f, text="默认是上一个完整月份。当月还没过完，做月报没有意义。",
+                  foreground="#666", wraplength=WRAP - 130, justify="left"
+                  ).grid(row=1, column=2, columnspan=3, sticky="w", pady=(10, 0))
+
+        ttk.Label(f, text="店铺").grid(row=2, column=0, sticky="nw", pady=(10, 0))
         box = ttk.Frame(f)
-        box.grid(row=1, column=1, columnspan=4, sticky="w", pady=(10, 0))
+        box.grid(row=2, column=1, columnspan=4, sticky="w", pady=(10, 0))
         self.all_stores = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="全部店铺", variable=self.all_stores,
                         command=self._toggle_stores).pack(anchor="w")
-        self.stores = store_list()
+        self.stores = []
         self.lb = tk.Listbox(box, selectmode="extended", height=4,
                              exportselection=False, width=24)
-        for s in self.stores:
-            self.lb.insert("end", s)
         self.lb.pack(side="left", pady=(4, 0))
-        self.lb.configure(state="disabled")
-        hint = ("取消勾选“全部店铺”后，可按住 Ctrl 多选。\n"
-                "白名单来自 config.json，共 %d 家。\n"
-                "只选部分店铺时不会出全店汇总表（避免覆盖真正的那份）。"
-                % len(self.stores))
-        ttk.Label(box, text=hint, foreground="#666", justify="left",
-                  wraplength=WRAP - 190).pack(
+        self.store_hint = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.store_hint, foreground="#666",
+                  justify="left", wraplength=WRAP - 190).pack(
             side="left", anchor="n", padx=12, pady=(4, 0))
+        self._fill_stores()
 
-        ttk.Label(f, text="报表输出到").grid(row=2, column=0, sticky="w",
+        ttk.Label(f, text="报表输出到").grid(row=3, column=0, sticky="w",
                                         pady=(12, 0))
         self.outdir = tk.StringVar(
             value=load_settings().get("out_dir") or DEFAULT_REPORT_DIR)
         ttk.Entry(f, textvariable=self.outdir, width=34).grid(
-            row=2, column=1, columnspan=2, sticky="w", padx=(6, 6), pady=(12, 0))
+            row=3, column=1, columnspan=2, sticky="w", padx=(6, 6), pady=(12, 0))
         ttk.Button(f, text="浏览…", command=self._pick_outdir, width=8).grid(
-            row=2, column=3, sticky="w", pady=(12, 0))
+            row=3, column=3, sticky="w", pady=(12, 0))
         ttk.Button(f, text="恢复默认", command=self._reset_outdir, width=10).grid(
-            row=2, column=4, sticky="w", padx=(6, 0), pady=(12, 0))
+            row=3, column=4, sticky="w", padx=(6, 0), pady=(12, 0))
         ttk.Label(f, text="可以直接指向共享盘，财务就不用等人拷贝。目录不存在会自动建。"
                           "定时任务也写到这里。",
                   foreground="#666", wraplength=WRAP - 60, justify="left"
-                  ).grid(row=3, column=1, columnspan=4, sticky="w", pady=(2, 0))
+                  ).grid(row=4, column=1, columnspan=4, sticky="w", pady=(2, 0))
+
+    def _fill_stores(self):
+        """按所选国家重填店铺清单。换国家时选中的店全部作废 —— 不能把墨西哥
+        的店带进智利那一轮。"""
+        self.stores = store_list(self.region)
+        self.lb.configure(state="normal")
+        self.lb.delete(0, "end")
+        for s in self.stores:
+            self.lb.insert("end", s)
+        self._toggle_stores()
+        self.store_hint.set(
+            "取消勾选“全部店铺”后，可按住 Ctrl 多选。\n"
+            "%s的店铺来自 config.json，共 %d 家。\n"
+            "只选部分店铺时不会出全店汇总表（避免覆盖真正的那份）。"
+            % (region_choice.label(self.region), len(self.stores)))
+
+    def _pick_region(self):
+        region = region_choice.from_label(self.region_box.get())
+        if region == self.region:
+            return
+        self.region = region
+        save_settings(dict(load_settings(), region=region))
+        self.root.title(region_choice.window_title(region))
+        self._fill_stores()
+        self._say("已切换到%s：%d 家店铺" % (region_choice.label(region),
+                                        len(self.stores)))
 
     def _pick_outdir(self):
         d = filedialog.askdirectory(title="选择报表输出目录",
@@ -231,8 +272,8 @@ class App(object):
              "用已下载的数据，生成【上面所选店铺】的财务报表。约 1 分钟，"
              "不联网、不开浏览器，可以随便重跑。", True),
             ("补取欠的报表", self.do_collect,
-             "MercadoPago 有些报表要生成几十分钟。这个只打开确实欠着报表的店，"
-             "不重新下载，与上面的店铺选择无关。", True),
+             "MercadoPago 有些报表要生成几十分钟。这个只打开【上面所选国家】里"
+             "确实欠着报表的店，不重新下载，与上面勾的店铺无关。", True),
             ("先看用哪批数据", self.do_dry_run,
              "不生成任何文件，只列出每家店会用哪个下载目录、缺不缺该月账单。"
              "秒出，任何时候都能点。", False),
@@ -304,9 +345,9 @@ class App(object):
         keep = set(self.human_lb.get(i) for i in self.human_lb.curselection())
         self.human_lb.delete(0, "end")
         for a in acts:
-            self.human_lb.insert("end", "%s —— %s" % (a["store"], a["title"]))
+            self.human_lb.insert("end", region_choice.action_line(a))
         for i, a in enumerate(acts):
-            if not keep or "%s —— %s" % (a["store"], a["title"]) in keep:
+            if not keep or region_choice.action_line(a) in keep:
                 self.human_lb.selection_set(i)
         stores = sorted(set(a["store"] for a in acts))
         if acts:
@@ -404,14 +445,20 @@ class App(object):
                       "重出全部报表」。" % "、".join(stores), "warn")
 
     def do_rerun_human(self):
-        """只重新下载这几家店，然后给**全部**店铺重出报表（含全店汇总）。"""
-        picked = self._picked_human()
-        stores, useless = [], []
-        for a in picked:
-            if not a["rerun"]:
-                useless.append("%s（%s）" % (a["store"], a["title"]))
-            elif a["store"] not in stores:
-                stores.append(a["store"])
+        """只重新下载这几家店，然后给**全部**店铺重出报表（含全店汇总）。
+
+        "全部店铺"是这几家店所在国家的全部店铺：区域按店铺算，和上面选的
+        国家无关 —— 清单里两国的店都会出现。
+        """
+        plan = region_choice.rerun_plan(self._picked_human())
+        stores, useless = plan["stores"], plan["useless"]
+        if stores and not plan["region"]:
+            messagebox.showinfo(
+                "重跑", "所选的店铺分属不同的国家，一轮只能跑一个国家：\n\n%s\n\n"
+                        "请只选同一个国家的店铺，分两次点。" % "\n".join(
+                            "%s：%s" % (region_choice.label(r), "、".join(ss))
+                            for r, ss in plan["groups"]))
+            return
         if not stores:
             messagebox.showinfo(
                 "重跑", "所选的店铺都是重跑解决不了的问题：\n%s"
@@ -424,11 +471,12 @@ class App(object):
         if not messagebox.askokcancel(
                 "重跑并重出报表",
                 "会重新下载 %s 的 %s 数据（每家约 15 分钟），\n"
-                "下完给全部店铺重出报表，并重出全店汇总表。%s\n\n开始？"
-                % ("、".join(stores), month, note)):
+                "下完给%s全部店铺重出报表，并重出全店汇总表。%s\n\n开始？"
+                % ("、".join(stores), month,
+                   region_choice.label(plan["region"]), note)):
             return
         self.start("both", "重跑 %s 并重出全部报表" % "、".join(stores), stores,
-                   month=month, reports_for="all")
+                   month=month, reports_for="all", region=plan["region"])
 
     def _build_log(self):
         f = ttk.LabelFrame(self.right, text=" 运行日志（手动、定时共用） ", padding=6)
@@ -496,7 +544,8 @@ class App(object):
         ok, stores = self._picked_stores()
         if not ok or not self._confirm_month():
             return
-        who = ("全部 %d 家店铺" % len(self.stores) if stores is None
+        who = ("%s全部 %d 家店铺" % (region_choice.label(self.region),
+                                    len(self.stores)) if stores is None
                else "所选的 %d 家店铺" % len(stores))
         if not messagebox.askokcancel(
                 "一次跑完",
@@ -512,8 +561,13 @@ class App(object):
     def do_collect(self):
         self.start("collect", "补取欠的报表", None)
 
-    def start(self, step, title, stores, month=None, reports_for=None):
-        """起一轮：run_monthly.py --entrance manual ...，独立的后台进程。"""
+    def start(self, step, title, stores, month=None, reports_for=None,
+              region=None):
+        """起一轮：run_monthly.py --entrance manual ...，独立的后台进程。
+
+        region 不给就是上面选的国家；补跑「需要人工处理」的店时按店铺的国家传。
+        """
+        region = region or self.region
         cur = runlog.active_run()
         if cur or self.launch:
             messagebox.showwarning(
@@ -525,13 +579,15 @@ class App(object):
         save_settings(dict(load_settings(), out_dir=self._out_dir()))
         argv = [interpreter(), "-u", RUNNER] + runlog.runner_argv(
             "manual", step, month or self.month.get(), stores, self._out_dir(),
-            reports_for=reports_for)
+            reports_for=reports_for, region=region)
         try:
             proc = runlog.spawn_detached(
                 argv, cwd=ROOT, stderr_path=runlog.launch_error_path("manual"))
         except Exception as e:
             self._say("✗ 启动失败：%s" % e, "bad")
             return
+        if region != region_choice.DEFAULT:
+            title = "%s：%s" % (region_choice.label(region), title)
         self.launch = {"proc": proc, "at": datetime.datetime.now(),
                        "title": title}
         self.view.follow_current()
@@ -564,10 +620,9 @@ class App(object):
         ok, stores = self._picked_stores()
         if not ok:
             return
-        cmd = [interpreter(), os.path.join(ROOT, "run_reports.py"),
-               "--month", self.month.get(), "--dry-run"]
-        if stores:
-            cmd += ["--stores"] + stores
+        cmd = region_choice.preview_cmd(
+            interpreter(), os.path.join(ROOT, "run_reports.py"),
+            self.month.get(), stores, self.region)
         box = {}
 
         def body():
@@ -591,7 +646,9 @@ class App(object):
                 self.root.after(150, wait)
                 return
             self.preview_btn.configure(state="normal")
-            self._show_preview("先看用哪批数据 —— %s" % self.month.get(),
+            self._show_preview("先看用哪批数据 —— %s %s"
+                               % (region_choice.label(self.region),
+                                  self.month.get()),
                                box["out"])
 
         self.preview_btn.configure(state="disabled")
@@ -683,8 +740,8 @@ class App(object):
         """
         if not st:
             return
-        who = "%s，%s" % (runlog.ENTRANCE_ZH.get(st.get("entrance"), "?"),
-                         st.get("month") or "")
+        who = "%s，%s%s" % (runlog.ENTRANCE_ZH.get(st.get("entrance"), "?"),
+                           runlog.region_tag(st), st.get("month") or "")
         if st["state"] == "running" and st.get("stalled"):
             self._say("▲ 这一轮（%s）%s" % (who, st["text"]), "bad")
         elif st["state"] == "running":
@@ -708,7 +765,8 @@ class App(object):
 
     def _on_close(self):
         # 手输（而非"浏览…"选）的目录也记下来
-        save_settings(dict(load_settings(), out_dir=self._out_dir()))
+        save_settings(dict(load_settings(), out_dir=self._out_dir(),
+                           region=self.region))
         if (self.launch or runlog.active_run()) and not messagebox.askokcancel(
                 "还在运行",
                 "有一轮还在跑。关掉这个窗口**不会**停它，它会在后台跑完，\n"

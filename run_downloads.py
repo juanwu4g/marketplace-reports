@@ -33,6 +33,7 @@ from ziniao_client import ZiniaoClient, ZiniaoError, StoreNotAllowed
 from store_config import StoreConfigError
 import console  # noqa: F401  中文输出编码保护
 import store_config
+import meli_site
 import meli_forms
 import mercadopago
 import run_report
@@ -478,6 +479,16 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     store = client.find_store(store_name)
     print("店铺：%s（%s）" % (store.get("browserName"), store.get("platform_name")))
 
+    # 站点决定域名、界面语言和币种。必须排在任何路线之前：模块级 URL 在批量
+    # 跑时会带着上一家店的站点进来，墨西哥店之后跑智利店就会开错域名。
+    site_code = meli_site.of_store(store_name, store.get("platform_name"))
+    meli_forms.set_site(site_code)
+    mercadopago.set_site(site_code)
+    _facts = meli_site.get(site_code)
+    site_time.set_site(_facts["tz"], _facts["utc_offset"])
+    result["site"] = site_code
+    print("站点：%s（%s）" % (site_code, meli_site.get(site_code)["name"]))
+
     with client.open_store(store, close_when_done=close_when_done) as session:
         print("调试端口：%s | 内核 %s"
               % (session.info.get("debuggingPort"), session.info.get("core_version")))
@@ -513,8 +524,9 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                 diag.flag("locale", was)
                 if changed:
                     result["errors"].append(
-                        "language: 界面语言原本是 %s，已改回 es_MX。"
-                        "请查清是谁改的 —— 期间导出的报表列名可能是错的。" % was)
+                        "language: 界面语言原本是 %s，已改回 %s。"
+                        "请查清是谁改的 —— 期间导出的报表列名可能是错的。"
+                        % (was, meli_forms.WANT_LOCALE))
 
         # ---------------- PHASE 1: request everything that generates slowly ---
         # These sit in a server-side queue while phase 2 does real work, so the
@@ -716,6 +728,9 @@ def write_run_meta(out_dir, result, began):
             meta = {}
     meta["downloaded_at"] = datetime.datetime.fromtimestamp(began).isoformat(timespec="seconds")
     meta["month"] = result.get("month")
+    # 报表端靠它决定用哪个国家的口径（币种、税制、列名后缀）。
+    if result.get("site"):
+        meta["site"] = result["site"]
     # 这一趟没跑销售路线就别把上一趟记下的窗口抹掉 —— --only billing 补下账单
     # 到同一目录时会走到这里，覆盖式写入会把 6 改成 null，校验就从"通过"
     # 变成"跳过"，白白丢掉一条能救命的检查。

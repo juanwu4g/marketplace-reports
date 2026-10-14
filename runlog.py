@@ -735,7 +735,7 @@ EXIT_MEANING = {
     0: ("全部正常", "good"),
     1: ("跑完了，但有需要关注的项 —— 看日志里标黄标红的行，或报表的 ⑩ 页", "warn"),
     2: ("没跑成：紫鸟客户端出错 / 没有一家店下到数据 / 有报表没生成", "bad"),
-    3: ("没跑成：店铺不在 config.json 的白名单里", "bad"),
+    3: ("没跑成：店铺不在 config.json 的白名单里，或不属于所选的国家", "bad"),
     4: ("没跑成：config.json 读不了或格式不对", "bad"),
     5: ("没跑：另一轮还在跑，这次被跳过了", "warn"),
     6: ("被人中止了", "warn"),
@@ -779,6 +779,7 @@ def run_state(run_id, log_dir=None):
     parsed = parse_run_id(run_id)
     entrance = summary.get("entrance") or (parsed[1] if parsed else "")
     out = {"run_id": run_id, "entrance": entrance,
+           "region": summary.get("region") or "MX",
            "month": summary.get("month"), "exit": summary.get("exit"),
            "pid": summary.get("pid"), "summary": summary}
     status = summary.get("status")
@@ -831,13 +832,25 @@ def list_runs(log_dir=None, limit=60):
     return out[:limit]
 
 
+def region_tag(st):
+    """"智利 " 这样的前缀，加在月份前面。墨西哥（和区域出现之前的旧记录）是
+    空串：两国并存之前的运行记录一行都不变。"""
+    r = (st or {}).get("region") or "MX"
+    if r == "MX":
+        return ""
+    import store_config                 # 不带 selenium / tkinter
+    return store_config.region_name(r) + " "
+
+
 def run_label(run, log_dir=None):
-    """下拉框里的一行：`10-13 14:05  定时  2026-09  全部正常`。"""
+    """下拉框里的一行：`10-13 14:05  定时  2026-09  全部正常`。
+
+    非墨西哥的那一轮在月份前面带国家：`10-13 14:05  定时  智利 2026-09  …`。"""
     st = run_state(run["run_id"], log_dir)
-    return "%s  %s  %s  %s" % (
+    return "%s  %s  %s%s  %s" % (
         run["when"].strftime("%m-%d %H:%M"),
         ENTRANCE_ZH.get(run["entrance"], run["entrance"]),
-        st.get("month") or "",
+        region_tag(st), st.get("month") or "",
         st["text"].split(" —— ")[0].split("：")[0])
 
 
@@ -987,6 +1000,7 @@ def human_actions_for_run(run_id, log_dir=None):
         return None
     import download_diag                # 纯 Python，不带 selenium / tkinter
     return {"run_id": run_id, "month": summary.get("month"),
+            "region": summary.get("region") or "MX",
             "stores": [r.get("store") for r in batch.get("stores") or []
                        if isinstance(r, dict)],
             "actions": download_diag.human_actions(batch.get("stores"))}
@@ -998,34 +1012,45 @@ def pending_human_actions(log_dir=None, look_back=30):
     重跑了一家店（子集）之后，这家店以重跑那轮为准，其余的店仍以之前那一轮
     为准 —— 所以重跑好了的店会从清单里消失，没重跑的不会被漏掉。往回看到
     一轮全店下载（或 look_back 轮）为止。返回 {"month", "actions"}。
+
+    区域：「一轮全店下载」只让**同一个国家**更早的记录过时。以前看到一轮全店
+    就停；现在墨西哥跑完一整轮，往前那轮智利的待办不能跟着消失。每条待办带
+    region（那一轮的区域），界面补跑时按它传 --region。
     """
     seen, actions, month = set(), [], None
+    full = set()                        # 已经见过一轮全店下载的区域
     for run in list_runs(log_dir, limit=look_back):
-        if read_json(run_paths(run["run_id"], log_dir)["json"]) is None:
+        summary = read_json(run_paths(run["run_id"], log_dir)["json"])
+        if summary is None:
             continue
+        region = summary.get("region") or "MX"
+        if region in full:
+            continue                    # 这个国家更晚有过一轮全店：这轮过时了
         got = human_actions_for_run(run["run_id"], log_dir)
         if got is None:
             continue
         fresh = [s for s in got["stores"] if s not in seen]
         for a in got["actions"]:
             if a["store"] in fresh:
-                actions.append(dict(a, run_id=got["run_id"]))
+                actions.append(dict(a, run_id=got["run_id"], region=region))
                 month = month or got["month"]
         seen.update(got["stores"])
-        summary = read_json(run_paths(run["run_id"], log_dir)["json"]) or {}
         if summary.get("stores") in ("all", None):
-            break                       # 一轮全店下载：再往前的都过时了
+            full.add(region)            # 一轮全店下载：这个国家再往前的都过时了
     return {"month": month, "actions": actions}
 
 
 def runner_argv(entrance, step="both", month=None, stores=None, out_dir=None,
-                reports_for=None):
+                reports_for=None, region=None):
     """给 run_monthly.py 的参数。两个窗口都用它拼，区别只有 entrance。
 
     month / stores / out_dir 不给就不写 —— 由 run_monthly 自己取默认值（上个
-    月、全部店铺、主界面里选的输出目录）。定时任务就是这样：只带 --entrance。
+    月、全部店铺、主界面里选的输出目录）。定时任务就是这样：只带 --entrance
+    和 --region。region 不给也不写，run_monthly 按墨西哥跑（旧任务就是这样）。
     """
     a = ["--entrance", entrance]
+    if region:
+        a += ["--region", region]
     if step and step != "both":
         a += ["--step", step]
     if month:

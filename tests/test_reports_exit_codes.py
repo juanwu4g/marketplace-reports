@@ -81,7 +81,8 @@ def reports(monkeypatch, tmp_path):
             raise spec
         return result(out=out, **spec)
 
-    monkeypatch.setattr(run_reports.store_config, "batch_stores", lambda: ["A", "B"])
+    monkeypatch.setattr(run_reports.store_config, "stores_for_region",
+                        lambda region="MX": ["A", "B"])
     monkeypatch.setattr(run_reports, "resolve", resolve)
     monkeypatch.setattr(run_reports.financial_report, "has_libreoffice", lambda: True)
     monkeypatch.setattr(run_reports.financial_report, "build", build)

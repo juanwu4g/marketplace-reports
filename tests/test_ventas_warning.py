@@ -101,7 +101,8 @@ def test_strict_refuses_the_banner_export_but_plain_run_writes_it(tmp_path, caps
 def test_run_summary_marks_generated_report_as_incomplete(monkeypatch, capsys, tmp_path):
     check = {"key": "ventas_incomplete", "store": "TEST", "name": "Ventas 导出数据不完整",
              "ok": False, "severity": "warn", "detail": "平台提示数据不完整"}
-    monkeypatch.setattr(run_reports.store_config, "batch_stores", lambda: ["TEST"])
+    monkeypatch.setattr(run_reports.store_config, "stores_for_region",
+                        lambda region="MX": ["TEST"])
     monkeypatch.setattr(run_reports, "resolve", lambda names, month: ([("TEST", str(tmp_path))], []))
     monkeypatch.setattr(run_reports.financial_report, "has_libreoffice", lambda: False)
     monkeypatch.setattr(run_reports.financial_report, "build", lambda *args, **kwargs: {

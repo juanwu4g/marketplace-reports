@@ -7,10 +7,15 @@
     python run_reports.py --stores BOCINA_TA02 UNIT_TA04
     python run_reports.py --no-per-store         # 只出汇总
     python run_reports.py --dry-run              # 只列出会用哪个下载目录
+    python run_reports.py --region CL            # 智利店铺（默认 MX 墨西哥）
 
 店铺清单来自 config.json 的白名单，和下载流程同一个来源，不在这里另写一份。
 每家店用它**最近一个文件齐全**的下载目录 —— 不是无脑取最新，因为一次
 `--only ventas` 的运行会留下缺账单的目录。
+
+区域（--region，默认 MX）只决定两件事：不给 --stores 时"全部店铺"是哪几家
+（store_config.stores_for_region），以及全店汇总表的文件名（combined_name）。
+报表内容一个字不因它而变。
 
 退出码
 ------
@@ -46,6 +51,24 @@ def prev_month(today=None):
     first = today.replace(day=1)
     last_prev = first - datetime.timedelta(days=1)
     return "%04d-%02d" % (last_prev.year, last_prev.month)
+
+
+def combined_name(month, region="MX"):
+    """全店汇总表的文件名。
+
+    墨西哥的叫 MX_ML_全店汇总_<月>.xlsx —— 财务和生产上的脚本都认这个名字，
+    不能改。别的国家换掉前缀：两国的汇总写在同一个输出目录里，同名就会互相
+    覆盖，而且一份"全店汇总"只能是一个国家的（币种都不一样）。
+    """
+    return "%s_ML_全店汇总_%s.xlsx" % (str(region or "MX").upper(), month)
+
+
+def store_names(stores=None, region="MX"):
+    """这一次出哪几家店：给了 --stores 就是它们（过白名单），否则是这个区域
+    的全部店铺。"""
+    if stores:
+        return [store_config.require_allowed(n) for n in stores]
+    return store_config.stores_for_region(region)
 
 
 def resolve(names, month=None):
@@ -138,6 +161,10 @@ def main():
                     help="会计期间，如 2026-08；默认为上一个完整月份")
     ap.add_argument("--stores", nargs="+", default=None,
                     help="店铺名；默认取 config.json 白名单里的全部")
+    ap.add_argument("--region", type=str.upper, choices=["MX", "CL"],
+                    default="MX",
+                    help="哪个国家：MX 墨西哥（默认）/ CL 智利。决定不给 --stores 时"
+                         "出哪些店、汇总表叫什么")
     ap.add_argument("--out-dir", default=OUT_DIR, help="报表输出目录")
     ap.add_argument("--no-per-store", action="store_true", help="不出单店报表")
     ap.add_argument("--no-combined", action="store_true", help="不出汇总报表")
@@ -151,13 +178,18 @@ def main():
     args = ap.parse_args()
 
     month = args.month or prev_month()
-    names = ([store_config.require_allowed(n) for n in args.stores]
-             if args.stores else store_config.batch_stores())
+    names = store_names(args.stores, args.region)
     if not names:
-        raise StoreConfigError("config.json 的白名单为空，没有店铺可出报表。")
+        raise StoreConfigError("config.json 里没有%s的店铺（白名单为空，或没有"
+                               "标成 %s 的店），没有店铺可出报表。"
+                               % (store_config.region_name(args.region),
+                                  args.region))
 
     print("=" * 62)
-    print("月度财务报表 —— %s，%d 家店铺" % (month, len(names)))
+    print("月度财务报表 —— %s%s，%d 家店铺"
+          % ("" if args.region == "MX"
+             else store_config.region_name(args.region) + " ",
+             month, len(names)))
     print("=" * 62)
     usable, unusable = resolve(names, month=month)
 
@@ -193,7 +225,7 @@ def main():
 
     # ---- 汇总报表：12 家店传进同一次调用 ----
     if not args.no_combined:
-        out = os.path.join(args.out_dir, "MX_ML_全店汇总_%s.xlsx" % month)
+        out = os.path.join(args.out_dir, combined_name(month, args.region))
         print("\n" + "-" * 62)
         print("汇总报表：%d 家店铺" % len(usable))
         print("-" * 62)

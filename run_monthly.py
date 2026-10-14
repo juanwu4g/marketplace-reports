@@ -6,6 +6,7 @@
     python run_monthly.py --step report      # 只重出报表，不重新下载
     python run_monthly.py --step collect     # 只补取欠着的报表
     python run_monthly.py --stores A B       # 只跑这几家（不出全店汇总）
+    python run_monthly.py --region CL        # 智利店铺（默认 MX 墨西哥）
     python run_monthly.py --dry-run          # 只打印会执行什么
 
 文件名还叫 run_monthly 是因为生产机器上已经登记的计划任务调的是
@@ -58,11 +59,25 @@ run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一
     0  全部成功
     1  完成，但有需要关注的项（个别店铺失败，或报表有校验未过）
     2  硬失败：紫鸟客户端出错 / 没有一家店下到数据 / 有报表没生成
-    3  店铺不在白名单
+    3  店铺不在白名单，或 --stores 里有不属于 --region 的店
     4  配置错误
     5  另一轮还在跑（锁没释放）
     6  被人中止
     7  下载超过时限被掐断（报表已按现有数据出）
+
+区域（国家）
+------------
+--region MX|CL，默认 MX。一轮只跑一个区域：两国共用一个紫鸟客户端，锁是全局
+的，墨西哥和智利不能同时跑。
+
+* MX：子进程命令和区域出现之前**一字不差**（测试钉死了）。生产上的计划任务、
+  告警文件名 `！报表异常_<年月>.txt`、全店汇总表名都不变。
+* 其他区域：run_batch **永远**带显式的 --stores（这个区域的全部店铺，或者
+  --stores 给的子集）。run_batch 不带店铺时走的是 config 里墨西哥那一批，
+  智利一轮要是漏传了店铺，就会去下载墨西哥的 12 家店 —— 不能让这种事靠
+  "别忘了传"来保证。run_reports 带 --region，汇总表叫 CL_ML_全店汇总_<月>.xlsx，
+  告警文件叫 `！报表异常_CL_<年月>.txt`。
+* --stores 里有不属于这个区域的店：退出码 3，什么都不跑。
 """
 import argparse
 import datetime
@@ -143,6 +158,69 @@ def config():
         return {}
 
 
+def region_stores(region):
+    """非墨西哥区域的"全部店铺"。墨西哥不走这里（见文件头「区域」）。"""
+    import store_config
+    return list(store_config.stores_for_region(region))
+
+
+def wrong_region(region, stores):
+    """--stores 里不属于 region 的店：[(店名, 它的区域)]。"""
+    import store_config
+    return [(s, store_config.region_of(s)) for s in stores or []
+            if store_config.region_of(s) != region]
+
+
+def region_label(region):
+    import store_config
+    return "%s（%s）" % (store_config.region_name(region), region)
+
+
+def alert_name(month, region="MX"):
+    """告警文件名。墨西哥的名字生产上有人（和脚本）在认，不能改。"""
+    ym = month.replace("-", "")
+    return ("！报表异常_%s.txt" % ym if region == "MX"
+            else "！报表异常_%s_%s.txt" % (region, ym))
+
+
+def check_region(region, stores):
+    """这一轮的店铺和区域对不对得上。返回 (区域全部店铺或 None, 问题或 None)。
+
+    问题是 (退出码, 一句话)：--stores 里有别的区域的店 -> 3（和"不在白名单"
+    同一类：店铺名单不对）；非墨西哥区域一家店都没配、或 config 读不了 -> 4。
+
+    墨西哥不给 --stores 时这里什么都不读，和区域出现之前一样。墨西哥给了
+    --stores 但 config 读不了：不在这里拦，交给 run_batch 按原来的方式报 4。
+    """
+    import store_config
+    try:
+        if stores:
+            wrong = wrong_region(region, stores)
+            if wrong:
+                return None, (3, "这些店铺不属于%s，不能放在这一轮里：%s。"
+                                 "一轮只跑一个国家；换个区域再跑，或者检查 "
+                                 "config.json 的 stores.regions。"
+                              % (region_label(region), "、".join(
+                                  "%s（%s）" % (s, region_label(r))
+                                  for s, r in wrong)))
+            return None, None
+        if region == "MX":
+            return None, None
+        names = region_stores(region)
+        if not names:
+            return None, (4, "config.json 里没有%s的店铺（stores.batches.%s 为空，"
+                             "stores.regions 里也没有标成 %s 的店）。"
+                          % (region_label(region), region, region))
+        return names, None
+    except store_config.StoreConfigError as e:
+        if region == "MX":
+            return None, None
+        return None, (4, "config.json 有问题，定不了%s有哪些店铺：%s"
+                      % (region_label(region), e))
+    except store_config.StoreNotAllowed as e:
+        return None, (3, "店铺不在白名单：%s" % e)
+
+
 def known_stores():
     """白名单里的店名，只用来帮日志认出"这一行说的是哪家店"。读不到就算了。"""
     try:
@@ -154,7 +232,8 @@ def known_stores():
 
 # ---------------------------------------------------------------- 命令行
 
-def build_plan(step, month, stores, out_dir, py=None, reports_all=False):
+def build_plan(step, month, stores, out_dir, py=None, reports_all=False,
+               region="MX", all_stores=None):
     """这一轮要依次跑哪些子进程：[{"key", "label", "cmd"}]。
 
     纯函数，入口（手动 / 定时 / 命令行）**不是**它的参数 —— 这就是"两个入口
@@ -168,15 +247,25 @@ def build_plan(step, month, stores, out_dir, py=None, reports_all=False):
     * reports_all：只**下载**这几家店，报表却给**全部**店铺重出、并重出汇总
       表。给"有几家店要人登录，登录完补跑"用：别的店用它们最近一批数据，
       补跑的店用刚下的，汇总表才是完整的 12 家。
+    * region 不是 MX 时，all_stores 是这个区域的全部店铺：没给 stores 就把它
+      当成下载的店铺清单显式传下去（见文件头「区域」），run_reports 加
+      --region。一家都没有直接报错，绝不退回"不带店铺"。MX 什么都不加。
     """
     py = py or sys.executable
     sub = (["--stores"] + list(stores)) if stores else []
+    dsub = sub
+    if region != "MX" and not stores:
+        if not all_stores:
+            raise ValueError("区域 %s 没有店铺，不能不带 --stores 起 run_batch"
+                             % region)
+        dsub = ["--stores"] + list(all_stores)
+    reg = ["--region", region] if region != "MX" else []
     batch = [py, "-u", os.path.join(ROOT, "run_batch.py")]
-    dl = batch + ["--month", month] + sub
-    co = batch + ["--collect-only", "--month", month] + sub
+    dl = batch + ["--month", month] + dsub
+    co = batch + ["--collect-only", "--month", month] + dsub
     rsub = [] if reports_all else sub
     rp = ([py, "-u", os.path.join(ROOT, "run_reports.py"), "--month", month]
-          + rsub + (["--no-combined"] if rsub else [])
+          + reg + rsub + (["--no-combined"] if rsub else [])
           + ["--out-dir", out_dir])
     plan = []
     if step in ("both", "download"):
@@ -561,7 +650,8 @@ def _cause_text(code):
         return "原因见日志"
 
 
-def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None):
+def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
+          region="MX"):
     """把失败摆到财务看得见的地方。
 
     计划任务会把 stdout 丢掉，没人会主动去翻 logs/。报表输出目录是财务每个月
@@ -580,7 +670,9 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None):
         else:
             print(text)
 
-    body = ["%s 月报生成异常" % month, "时间：%s" % now(),
+    body = ["%s%s 月报生成异常" % ("" if region == "MX"
+                                  else region_label(region) + " ", month),
+            "时间：%s" % now(),
             "这一轮是：%s（%s）" % (runlog.ENTRANCE_ZH.get(entrance, entrance),
                                  runlog.ENTRANCE_WHAT.get(entrance, "")), ""]
     body += lines
@@ -592,7 +684,7 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None):
     try:
         if not os.path.isdir(out_dir):
             os.makedirs(out_dir)
-        p = os.path.join(out_dir, "！报表异常_%s.txt" % month.replace("-", ""))
+        p = os.path.join(out_dir, alert_name(month, region))
         with io.open(p, "w", encoding="utf-8") as f:
             f.write(text)
         tell(runlog.WARN, "已写出告警文件：%s" % p)
@@ -622,6 +714,10 @@ def parse_args(argv=None):
                     help="只跑其中一步。collect = 只补取欠着的报表")
     ap.add_argument("--stores", nargs="+", default=None, metavar="NAME",
                     help="只跑这几家店。给了就不出全店汇总表（避免覆盖真正的那份）")
+    ap.add_argument("--region", type=str.upper, choices=["MX", "CL"],
+                    default="MX",
+                    help="哪个国家的店铺：MX 墨西哥（默认）/ CL 智利。"
+                         "一轮只跑一个国家")
     ap.add_argument("--reports-for", choices=["stores", "all"], default="stores",
                     help="和 --stores 一起用：all = 只下载这几家店，报表给全部"
                          "店铺重出（含全店汇总）。给人工处理完补跑用")
@@ -650,12 +746,15 @@ def header(log, args, month, run_id, plan, out_dir, out_src):
                                     runlog.ENTRANCE_WHAT[e]))
     log.info(S, "运行编号：%s" % run_id)
     log.info(S, "目标月份：%s" % month)
+    log.info(S, "区域　　：%s" % region_label(args.region))
     if args.stores and args.reports_for == "all":
         what = "、".join(args.stores) + "（只下载这几家；报表给全部店铺重出，含全店汇总）"
     elif args.stores:
         what = "、".join(args.stores) + "（子集，不出全店汇总）"
     else:
-        what = "全部（config.json 白名单）"
+        what = ("全部（config.json 白名单）" if args.region == "MX" else
+                "全部（config.json 里%s的店铺）"
+                % region_label(args.region))
     log.info(S, "店铺　　：%s" % what)
     log.info(S, "步骤　　：%s" % " → ".join(s["label"] for s in plan))
     for i, s in enumerate(plan, 1):
@@ -679,13 +778,23 @@ def execute(args, plan=None):
     """跑一轮。plan 给测试用：换掉真正的子进程命令，流程本身不变。"""
     month = args.month or prev_month()
     out_dir, out_src = resolve_out_dir(args.out_dir)
-    real = build_plan(args.step, month, args.stores, out_dir,
-                      reports_all=args.reports_for == "all")
+    region = args.region
+    all_stores, problem = check_region(region, args.stores)
+    if problem:
+        real = []
+    else:
+        real = build_plan(args.step, month, args.stores, out_dir,
+                          reports_all=args.reports_for == "all",
+                          region=region, all_stores=all_stores)
     plan = real if plan is None else plan
 
     if args.dry_run:
         print("入口　　：%s" % runlog.ENTRANCE_ZH[args.entrance])
+        print("区域　　：%s" % region_label(region))
         print("目标月份：%s" % month)
+        if problem:
+            print("\n[错误] %s" % problem[1])
+            return problem[0]
         print("日志目录：%s" % runlog.runs_dir(LOG_DIR))
         print("输出目录：%s（%s）" % (os.path.abspath(out_dir), out_src))
         print("\n[dry-run] 会依次执行：")
@@ -702,7 +811,7 @@ def execute(args, plan=None):
     # urgent ：还要写成告警文件推到财务眼前。判断标准见 alert() 的说明。
     steps, bad, urgent = [], [], []
     doc = {"run_id": run_id, "entrance": args.entrance, "pid": os.getpid(),
-           "month": month, "step": args.step, "stores": args.stores or "all",
+           "region": region, "month": month, "step": args.step, "stores": args.stores or "all",
            "began": now(), "ended": None, "status": "running",
            "steps": steps, "exit": None, "urgent": urgent, "attention": bad,
            "log": paths["log"], "out_dir": os.path.abspath(out_dir),
@@ -737,6 +846,17 @@ def execute(args, plan=None):
 
     header(log, args, month, run_id, plan, out_dir, out_src)
 
+    if problem:
+        # 在拿锁之前就停：什么都没跑，也不碰 current.json。照样告警 —— 定时
+        # 任务撞上这个时没人在看，config 里智利那一批是空的就得有人知道。
+        log.error(S, problem[1])
+        urgent.append(problem[1])
+        bad.append(problem[1])
+        alert(month, urgent, out_dir, entrance=args.entrance,
+              log_path=paths["log"], region=region,
+              say=lambda level, text: log.write(E, level, text))
+        return finish("failed", problem[0])
+
     if not acquire(lambda level, text: log.write(S, level, text)):
         # 没拿到锁：不碰 current.json —— 那是正在跑的那一轮的。
         return finish("skipped", 5)
@@ -745,9 +865,10 @@ def execute(args, plan=None):
     runlog.write_current({"run_id": run_id, "pid": os.getpid(),
                           "entrance": args.entrance, "log": paths["log"],
                           "started": doc["began"], "month": month,
+                          "region": region,
                           "step": args.step}, LOG_DIR)
     save()
-    stores = args.stores or known_stores()
+    stores = args.stores or all_stores or known_stores()
     worst, cut, aborted = 0, False, False
     try:
         for s in plan:
@@ -860,7 +981,7 @@ def execute(args, plan=None):
             log.write(E, runlog.WARN, "  · %s" % b)
         if urgent:
             alert(month, urgent, out_dir, entrance=args.entrance,
-                  log_path=paths["log"],
+                  log_path=paths["log"], region=region,
                   say=lambda level, text: log.write(E, level, text))
     return finish("done" if final < 2 else "failed", final)
 

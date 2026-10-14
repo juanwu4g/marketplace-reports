@@ -546,6 +546,63 @@ MercadoPago 的报表经常当晚生成不完）**不告警**：这是常态，�
 > ⚠️ **财务手填的单位采购成本，每次出报表都会重置。** 同一个月别反复重出报表覆盖
 > 财务已经填好的那份 —— 要重出就先改 `--out-dir` 指到别处。
 
+### 3.6 多国家（区域）
+
+同一个紫鸟账号下现在有墨西哥（MX）和智利（CL）两国的店。**一轮只跑一个国家**：
+两国共用一个紫鸟客户端，锁是全局的。
+
+**config.json**：`allowed` 里是两国全部店铺；`batch` 仍是墨西哥那一批；智利的店在
+`regions` 里标出来，智利那一批写在 `batches.CL`。没写进 `regions` 的店一律算墨西哥，
+所以旧配置一个字不改照样能跑。
+
+```json
+"stores": {
+  "default": "BOCINA_SM",
+  "allowed": ["BOCINA_SM", "Tecnohub_CL"],
+  "batch":   ["BOCINA_SM"],
+  "regions": {"Tecnohub_CL": "CL"},
+  "batches": {"CL": ["Tecnohub_CL"]}
+}
+```
+
+**命令行**：`run_monthly.py` 和 `run_reports.py` 都多了 `--region MX|CL`，默认 MX。
+
+```
+python run_monthly.py --region CL                 # 智利，上个月，下载 + 出报表
+python run_monthly.py --region CL --step report   # 只重出智利的报表
+python run_reports.py --region CL --dry-run
+```
+
+* 墨西哥：子进程命令、文件名和以前**完全一样**。
+* 智利：运行器给 `run_batch.py` **永远**显式传智利的店铺清单（`run_batch` 不带店铺时
+  走的是墨西哥那一批），给 `run_reports.py` 传 `--region CL`。
+* `--stores` 里有不属于这个国家的店：退出码 3，什么都不跑。
+
+**文件名**（都在同一个报表输出目录里）：
+
+| | 墨西哥 | 智利 |
+|---|---|---|
+| 全店汇总 | `MX_ML_全店汇总_<月>.xlsx` | `CL_ML_全店汇总_<月>.xlsx` |
+| 单店报表 | `<店名>_<月>.xlsx` | 同左 |
+| 告警文件 | `！报表异常_<年月>.txt` | `！报表异常_CL_<年月>.txt` |
+
+日志开头有一行「区域：智利（CL）」，运行摘要 JSON 里有 `"region"`；运行日志的下拉框
+里智利那几轮的月份前面带「智利」。
+
+**窗口**：「启动」和「定时设置」最上面都有「国家」下拉框，记在 `gui_settings.json`。
+店铺清单、"全部店铺"、「先看用哪批数据」、起的每一轮都跟着它走。「需要人工处理」两国
+的店都列出来，补跑时按店铺所属的国家跑（选中的店分属两国时会提示分两次点）。
+
+**两个计划任务**：墨西哥的叫 `MX月度报表`（生产上早就登记过，名字不变），智利的叫
+`CL月度报表`，参数分别是 `--entrance scheduled --region MX` / `--region CL`。在「定时
+设置」里先选国家，再点「设为每月自动跑」。两个任务定在同一天、开始时间相差不到 6 小时，
+窗口会提醒：后到点的那个会撞上前一个的锁，被跳过（退出码 5）。
+
+**清洗目前只支持墨西哥**：`downloads/mx_sales` 读的是 "Ventas MX" 表。一批全是智利店时
+`run_batch.py` 打一行「清洗目前只支持墨西哥，智利店铺跳过这一步；不影响报表」，批次
+汇总里记 `"transform": {"skipped": true, "reason": "region"}` —— 不算失败，报表读的是
+原始导出。
+
 ---
 
 ## 4. 财务报表：十张子表

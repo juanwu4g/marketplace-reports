@@ -39,6 +39,7 @@ import time
 
 import site_time
 import download_diag
+import meli_site as site_config
 
 _BASE = "https://www.mercadopago.com.mx/balance/reports/"
 
@@ -106,6 +107,20 @@ REPORTS = {
 
 # Kept for callers that predate the multi-type support.
 REPORTS_URL = REPORTS["settlement"]["url"]
+
+
+def set_site(code):
+    """Point every report URL at one country's MercadoPago ("mx"/"cl").
+
+    Only the host changes; the path under /balance/reports/ is kept. Mutates
+    REPORTS in place because callers hold references to its rows.
+    """
+    global _BASE, REPORTS_URL
+    base = site_config.get(code)["mp_host"] + "/balance/reports/"
+    for spec in REPORTS.values():
+        spec["url"] = base + spec["url"][len(_BASE):]
+    _BASE = base
+    REPORTS_URL = REPORTS["settlement"]["url"]
 
 ES_MONTHS = [None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]

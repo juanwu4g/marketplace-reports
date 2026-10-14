@@ -16,6 +16,14 @@
 （log_view.py），看的是同一批文件（logs\runs），所以在这里也能实时看到、
 也能中止任何一轮 —— 包括窗口开着的时候到点自己跑起来的那轮。
 
+两个国家，两个任务
+------------------
+墨西哥的任务叫「MX月度报表」（生产机器上早就登记了，名字不能改），智利的叫
+「CL月度报表」，参数分别带 --region MX / --region CL。窗口上方选哪个国家，
+「设为每月自动跑 / 试跑 / 现在就跑 / 取消」就只动那个国家的任务。两国共用
+一个紫鸟，锁是全局的：两个任务定在同一天、开始时间离得太近，后到点的那个
+会被跳过 —— 窗口会提醒。规则在 region_choice.py，有测试。
+
 **在这次改动之前登记的任务不带 --entrance scheduled**，日志里会被记成
 「命令行」。再点一次「设为每月自动跑」就改过来了；状态栏会提醒。
 
@@ -50,6 +58,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+import region_choice
 import runlog
 from log_view import LogView, fit_to_screen
 from gui import ROOT, interpreter, store_list, load_settings, save_settings
@@ -59,16 +68,19 @@ from run_monthly import resolve_out_dir
 # 左列说明文字的折行宽度（像素），和「启动」窗口取同一个值。
 WRAP = 470
 
-TASK = "MX月度报表"
-REHEARSAL = TASK + "-试跑"
+# 墨西哥任务的名字和参数。区域出现之后实际用的是 region_choice.task_name /
+# task_args（每个国家一份），这两个常量只是留给还在引用它们的地方。
+TASK = region_choice.task_name("MX")
+REHEARSAL = region_choice.rehearsal_name("MX")
 RUNNER = os.path.join(ROOT, "run_monthly.cmd")
 LOG_DIR = os.path.join(ROOT, "logs")
 
 # 计划任务传给 run_monthly.cmd 的参数。和「启动」窗口用的是同一个拼法
 # （runlog.runner_argv），只有 entrance 不同；月份、店铺、输出目录都不写，
-# 由 run_monthly 取默认值：上个月、全部店铺、主界面里选的输出目录。
-TASK_ARGS = " ".join(runlog.runner_argv("scheduled"))
-REHEARSAL_ARGS = " ".join(runlog.runner_argv("scheduled", step="report"))
+# 由 run_monthly 取默认值：上个月、全部店铺、主界面里选的输出目录。区域要写
+# （--region MX / CL），见 region_choice.task_args。
+TASK_ARGS = region_choice.task_args("MX")
+REHEARSAL_ARGS = region_choice.rehearsal_args("MX")
 
 # 任务超时，超了 Windows 会把**整条链**杀掉，报表那一步就再也跑不到。
 # 现在这只是兜底：run_monthly 自己在 5 小时（它的 MAX_HOURS）就会掐断下载、
@@ -271,7 +283,7 @@ def install(name, xml):
 
 # ────────────────────────────────────────────────────────── 机器自检
 
-def machine_checks():
+def machine_checks(region="MX"):
     """返回 [(通过?, 标题, 说明)]。全部只读，不改系统。"""
     out = []
 
@@ -284,8 +296,8 @@ def machine_checks():
                 "在" if os.path.exists(RUNNER) else
                 "找不到 run_monthly.cmd，程序文件不全。"))
 
-    names = store_list()
-    out.append((bool(names), "要跑哪些店",
+    names = store_list(region)
+    out.append((bool(names), "要跑哪些店（%s）" % region_choice.label(region),
                 "%d 家：%s" % (len(names), "、".join(names[:3]) +
                               ("…" if len(names) > 3 else ""))
                 if names else "读不出店铺名单，config.json 可能有问题。"))
@@ -341,14 +353,19 @@ class SchedApp(object):
         self.q = queue.Queue()
         self.busy = False
         self.busy_label = ""
-        root.title("每月自动出报表 —— 设置")
         fit_to_screen(root, 1680, 900)
         root.minsize(1000, 600)
 
         s = load_settings()
-        self.day = tk.IntVar(value=int(s.get("sched_day", 15)))
-        self.hour = tk.IntVar(value=int(s.get("sched_hour", 2)))
-        self.minute = tk.IntVar(value=int(s.get("sched_minute", 0)))
+        # 选的是哪个国家的任务。和「启动」窗口记在同一个键里：在那边选了智利，
+        # 打开这边也是智利。
+        self.region = region_choice.remembered(s)
+        root.title(self._title())
+        self.day = tk.IntVar()
+        self.hour = tk.IntVar()
+        self.minute = tk.IntVar()
+        self._load_time(s)
+        self.other = None               # 另一个国家的任务现状（查撞车用）
 
         # 和「启动」窗口同一个排法：左边是设置和按钮，右边整列给运行日志 ——
         # 两个窗口看日志的地方长得一样、一样大。
@@ -364,11 +381,63 @@ class SchedApp(object):
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.refresh()
 
+    # ---------------------------------------------------------- 区域
+
+    def _title(self):
+        return "每月自动出报表 —— 设置（%s）" % region_choice.label(self.region)
+
+    def _task(self):
+        return region_choice.task_name(self.region)
+
+    def _other_region(self):
+        others = [r for r in region_choice.REGIONS if r != self.region]
+        return others[0] if others else None
+
+    def _load_time(self, s):
+        """界面上的几号几点：各国各记各的（region_choice.sched_key）。"""
+        k = lambda name: region_choice.sched_key(name, self.region)
+        self.day.set(int(s.get(k("sched_day"), 15)))
+        self.hour.set(int(s.get(k("sched_hour"), 2)))
+        self.minute.set(int(s.get(k("sched_minute"), 0)))
+
+    def _save_time(self, **extra):
+        k = lambda name: region_choice.sched_key(name, self.region)
+        d = dict(load_settings(), **extra)
+        d.update({k("sched_day"): self.day.get(), k("sched_hour"): self.hour.get(),
+                  k("sched_minute"): self.minute.get()})
+        save_settings(d)
+
+    def _pick_region(self):
+        region = region_choice.from_label(self.region_box.get())
+        if region == self.region:
+            return
+        self._save_time()                       # 先记下切走之前那个国家的时间
+        self.region = region
+        s = load_settings()
+        save_settings(dict(s, region=region))
+        self.root.title(self._title())
+        self._load_time(s)
+        self.other = None
+        self.clash_note.set("")
+        self.status.set("正在读取…")
+        self.refresh()
+
     # ---------------------------------------------------------- 布局
 
     def _build_status(self):
+        top = ttk.Frame(self.left)
+        top.pack(fill="x", padx=(12, 6), pady=(12, 0))
+        ttk.Label(top, text="国家").pack(side="left")
+        self.region_box = ttk.Combobox(top, values=region_choice.labels(),
+                                       width=10, state="readonly")
+        self.region_box.set(region_choice.label(self.region))
+        self.region_box.pack(side="left", padx=(6, 12))
+        self.region_box.bind("<<ComboboxSelected>>", lambda e: self._pick_region())
+        ttk.Label(top, text="每个国家一个任务；下面的按钮只动所选国家的那个。",
+                  foreground="#666").pack(side="left")
+
         f = ttk.LabelFrame(self.left, text=" 现在是什么状态 ", padding=10)
-        f.pack(fill="x", padx=(12, 6), pady=(12, 6))
+        f.pack(fill="x", padx=(12, 6), pady=(6, 6))
         self.status = tk.StringVar(value="正在读取…")
         self.status_lbl = ttk.Label(f, textvariable=self.status,
                                     font=("Microsoft YaHei UI", 11, "bold"))
@@ -382,6 +451,10 @@ class SchedApp(object):
         ttk.Label(f, textvariable=self.human_note, foreground="#b42318",
                   justify="left", wraplength=WRAP,
                   font=("", 10, "bold")).pack(anchor="w", pady=(4, 0))
+        # 两国任务撞车（同一天、时间离得太近）的提醒。
+        self.clash_note = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.clash_note, foreground="#9a6700",
+                  justify="left", wraplength=WRAP).pack(anchor="w", pady=(4, 0))
         ttk.Button(f, text="刷新状态", command=self.refresh, width=12).pack(
             anchor="w", pady=(8, 0))
 
@@ -530,7 +603,37 @@ class SchedApp(object):
 
     def refresh(self):
         # 只读查询，不锁按钮：它要 2 秒，锁上的话刚开窗口那两秒点什么都没反应。
-        self._work(lambda: task_state(TASK), self._show_state, lock=False)
+        # 另一个国家的任务也查一次：要看两个任务会不会撞车。
+        region, other = self.region, self._other_region()
+
+        def body():
+            mine = task_state(region_choice.task_name(region))
+            theirs = task_state(region_choice.task_name(other)) if other else None
+            return region, mine, theirs
+        self._work(body, self._show_states, lock=False)
+
+    def _show_states(self, r):
+        if isinstance(r, tuple) and len(r) == 3:
+            region, mine, theirs = r
+            if region != self.region:
+                return                  # 查的时候人已经切到另一个国家了
+            self.other = theirs
+            self._show_clash()
+            self._show_state(mine)
+        else:
+            self._show_state(r)          # ("err", 说明)
+
+    def _show_clash(self, day=None, hm=None):
+        """两国任务撞车时在状态区里说一句。day/hm 给了就按"要登记的时间"算。"""
+        mine = (day, hm) if day is not None else None
+        if mine is None:
+            mine = (self.day.get(), "%02d:%02d" % (self.hour.get(),
+                                                   self.minute.get()))
+        msg = region_choice.clash(mine, self.other) if self.other else None
+        self.clash_note.set(
+            "⚠ 和%s的任务撞车：%s" % (region_choice.label(self._other_region()), msg)
+            if msg else "")
+        return msg
 
     def _show_human(self):
         try:
@@ -558,7 +661,9 @@ class SchedApp(object):
             self.log(st[1], "bad")
             return
         if not st:
-            self.status.set("● 还没设置，现在不会自动跑")
+            self.clash_note.set("")
+            self.status.set("● %s还没设置，现在不会自动跑"
+                            % region_choice.label(self.region))
             self.status_lbl.configure(foreground="#9a6700")
             self.detail.set("选好时间，点「设为每月自动跑」。")
             return
@@ -579,13 +684,18 @@ class SchedApp(object):
                    "267014": "上次被 Windows 中途停掉了（超过 6 小时，或有人在"
                              "任务计划程序里停的）"}.get(
             code, "上次没跑成（代码 %s），看右边的「运行日志」" % code)
+        if region_choice.args_region(st.get("ARGS")) != self.region:
+            verdict += ("\n⚠ 这个任务登记的参数（%s）跑的不是%s的店铺：再点一次"
+                        "「设为每月自动跑」改过来。"
+                        % (st.get("ARGS") or "无", region_choice.label(self.region)))
         if "--entrance" not in st.get("ARGS", ""):
             # 这次改动之前登记的任务。照样能跑，跑的也是同一个过程，只是日志
             # 的"入口"一列会写成「命令行」而不是「定时」。
             verdict += ("\n⚠ 这个任务是旧版登记的：再点一次「设为每月自动跑」，"
                         "日志里才会标成「定时」。")
-        self.status.set("● 已设置：每月 %s 号 %s 自动跑"
-                        % (st.get("DAY"), st.get("TIME")))
+        self.status.set("● %s已设置：每月 %s 号 %s 自动跑"
+                        % (region_choice.label(self.region), st.get("DAY"),
+                           st.get("TIME")))
         self.status_lbl.configure(foreground="#1a7f37")
         # 报表写到哪儿必须摆在眼前：定时任务和主界面曾经各用各的目录，
         # 结果报表出了却落在别处，看起来像"只下载没出报表"。
@@ -602,6 +712,7 @@ class SchedApp(object):
             self.minute.set(int(m))
         except (ValueError, TypeError):
             pass
+        self._show_clash()
 
     def do_install(self):
         if not os.path.exists(RUNNER):
@@ -611,21 +722,25 @@ class SchedApp(object):
                 "程序文件不全，找技术的人看一下。" % RUNNER)
             return
         d, h, m = self.day.get(), self.hour.get(), self.minute.get()
+        region = self.region
+        name = region_choice.label(region)
+        clash = self._show_clash(d, "%02d:%02d" % (h, m))
+        warn = ("\n⚠ %s\n\n" % clash) if clash else ""
         if not messagebox.askokcancel(
                 "设为每月自动跑",
                 "以后每月 %d 号 %02d:%02d，这台电脑会自己做两件事：\n"
-                "  ① 下载上个月的数据（12 家店全部）\n"
+                "  ① 下载上个月的数据（%s的店铺全部）\n"
                 "  ② 出上个月的报表\n\n"
                 "这台电脑那时候必须是开着的、已经登录、没睡着、没锁屏。\n"
-                "（下载要开浏览器，没人登录就开不起来。）\n\n"
-                "继续？" % (d, h, m)):
+                "（下载要开浏览器，没人登录就开不起来。）\n%s\n"
+                "继续？" % (d, h, m, name, warn)):
             return
-        save_settings(dict(load_settings(), sched_day=d, sched_hour=h,
-                           sched_minute=m))
+        self._save_time()
+        task = region_choice.task_name(region)
+        args = region_choice.task_args(region)
         self.log("")
-        self.log("正在登记：每月 %d 号 %02d:%02d" % (d, h, m))
-        self._work(lambda: install(TASK, task_xml(TASK_ARGS, day=d, hour=h,
-                                                  minute=m)),
+        self.log("正在登记「%s」：每月 %d 号 %02d:%02d（%s）" % (task, d, h, m, args))
+        self._work(lambda: install(task, task_xml(args, day=d, hour=h, minute=m)),
                    self._after_install, label="设为每月自动跑")
 
     def _after_install(self, r):
@@ -651,26 +766,32 @@ class SchedApp(object):
             return
         self.log("")
         self.log("=" * 64)
-        self.log(">>> 试跑  %s" % datetime.datetime.now().strftime("%H:%M:%S"))
-        self._work(self._rehearse_body, self._after_rehearse, label="试跑一次")
+        self.log(">>> 试跑（%s）  %s" % (region_choice.label(self.region),
+                                       datetime.datetime.now().strftime("%H:%M:%S")))
+        region = self.region
+        self._work(lambda: self._rehearse_body(region), self._after_rehearse,
+                   label="试跑一次")
         self._show_run_log()
 
-    def _rehearse_body(self):
-        rc, out = install(REHEARSAL, task_xml(args=REHEARSAL_ARGS))
+    def _rehearse_body(self, region=None):
+        region = region or self.region
+        rehearsal = region_choice.rehearsal_name(region)
+        rc, out = install(rehearsal, task_xml(
+            args=region_choice.rehearsal_args(region)))
         if rc != 0:
             return ("err", "建不了临时任务：%s" % (out.strip() or rc))
-        rc, out = _run(["schtasks", "/run", "/tn", REHEARSAL])
+        rc, out = _run(["schtasks", "/run", "/tn", rehearsal])
         if rc != 0:
-            _run(["schtasks", "/delete", "/tn", REHEARSAL, "/f"])
+            _run(["schtasks", "/delete", "/tn", rehearsal, "/f"])
             return ("err", "临时任务启动不了：%s" % (out.strip() or rc))
         # 轮询到不再是 Running 为止。出 13 份报表实测 60～70 秒。
         for _ in range(90):
-            st = task_state(REHEARSAL) or {}
+            st = task_state(rehearsal) or {}
             if st.get("STATE") != "Running":
                 break
             threading.Event().wait(2)
-        st = task_state(REHEARSAL) or {}
-        _run(["schtasks", "/delete", "/tn", REHEARSAL, "/f"])
+        st = task_state(rehearsal) or {}
+        _run(["schtasks", "/delete", "/tn", rehearsal, "/f"])
         return ("ok", st.get("RESULT", "?"))
 
     def _after_rehearse(self, r):
@@ -706,18 +827,22 @@ class SchedApp(object):
                 "已经有一轮在跑了（入口：%s）。等它结束，或先中止它。"
                 % runlog.ENTRANCE_ZH.get(cur.get("entrance"), "?"))
             return
-        self._work(self._run_now_body, self._after_run_now, label="现在就跑一次")
+        task = self._task()
+        self._work(lambda: self._run_now_body(task), self._after_run_now,
+                   label="现在就跑一次")
 
-    def _run_now_body(self):
+    def _run_now_body(self, task=None):
         # 查任务在不在要 2 秒，放子线程里做，不然界面会卡住不动。
-        if not task_state(TASK):
+        task = task or self._task()
+        if not task_state(task):
             return (-2, "")
-        return _run(["schtasks", "/run", "/tn", TASK])
+        return _run(["schtasks", "/run", "/tn", task])
 
     def _after_run_now(self, r):
         rc, out = r
         if rc == -2:
-            self.log("✗ 还没设置过自动跑，先点「设为每月自动跑」。", "bad")
+            self.log("✗ %s还没设置过自动跑，先点「设为每月自动跑」。"
+                     % region_choice.label(self.region), "bad")
         elif rc == 0:
             self.log("✓ 已经开始跑了，进度看「运行日志」那一页（已经帮你翻过去）。",
                      "good")
@@ -729,7 +854,9 @@ class SchedApp(object):
         self.log("")
         self.log("=" * 64)
         self.log(">>> 检查这台电脑")
-        self._work(machine_checks, self._after_check, label="检查这台电脑")
+        region = self.region
+        self._work(lambda: machine_checks(region), self._after_check,
+                   label="检查这台电脑")
 
     def _after_check(self, items):
         bad = 0
@@ -760,12 +887,13 @@ class SchedApp(object):
     def do_delete(self):
         if not messagebox.askokcancel(
                 "取消每月自动跑",
-                "以后不再自动跑了。\n\n"
+                "以后%s的店铺不再自动跑了（另一个国家的任务不动）。\n\n"
                 "只是撤掉 Windows 里的登记 —— 程序、下载好的数据、已经出的\n"
                 "报表都不会动，手动跑也照常。想恢复就再点「设为每月自动跑」。\n\n"
-                "确定？"):
+                "确定？" % region_choice.label(self.region)):
             return
-        self._work(lambda: _run(["schtasks", "/delete", "/tn", TASK, "/f"]),
+        task = self._task()
+        self._work(lambda: _run(["schtasks", "/delete", "/tn", task, "/f"]),
                    self._after_delete, label="取消每月自动跑")
 
     def _after_delete(self, r):
@@ -790,9 +918,7 @@ class SchedApp(object):
             subprocess.Popen(["xdg-open", d])
 
     def _on_close(self):
-        save_settings(dict(load_settings(), sched_day=self.day.get(),
-                           sched_hour=self.hour.get(),
-                           sched_minute=self.minute.get()))
+        self._save_time(region=self.region)
         self.root.destroy()
 
 

@@ -37,12 +37,35 @@ import time
 
 import site_time
 import download_diag
+import meli_site as site_config
 
+# Rebound per store by set_site(); the values here are the Mexican defaults the
+# module was written against.
 BILLING_BASE = "https://vendedores.mercadolibre.com.mx"
 BILLING_RESUME = BILLING_BASE + "/billing/resume"
-VENTAS_LISTADO = "https://vendedores.mercadolibre.com.mx/ventas/omni/listado"
-SPACE_MANAGEMENT = ("https://vendedores.mercadolibre.com.mx"
-                    "/publicaciones/listado/space_management")
+VENTAS_LISTADO = BILLING_BASE + "/ventas/omni/listado"
+SPACE_MANAGEMENT = BILLING_BASE + "/publicaciones/listado/space_management"
+SELLER_HOME = BILLING_BASE + "/resumen"
+WANT_LOCALE = "es_MX"
+
+
+def set_site(code):
+    """Point every URL and the language gate at one country site ("mx"/"cl").
+
+    Call before a store's routes run. The paths are ASSUMED identical across
+    sites - same seller centre, different host. That has not been verified
+    against a live Chilean store yet; a path that turns out to differ belongs
+    in meli_site.py.
+    """
+    global BILLING_BASE, BILLING_RESUME, VENTAS_LISTADO, SPACE_MANAGEMENT
+    global SELLER_HOME, WANT_LOCALE
+    facts = site_config.get(code)
+    BILLING_BASE = facts["seller_host"]
+    BILLING_RESUME = BILLING_BASE + "/billing/resume"
+    VENTAS_LISTADO = BILLING_BASE + "/ventas/omni/listado"
+    SPACE_MANAGEMENT = BILLING_BASE + "/publicaciones/listado/space_management"
+    SELLER_HOME = BILLING_BASE + "/resumen"
+    WANT_LOCALE = facts["locale"]
 
 # Spanish month names, as they appear in the datepicker's aria-labels.
 ES_MONTHS = [None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -218,9 +241,6 @@ def wait_for_downloads(path, before, min_files=1, timeout=240, settle=12, label=
 
 # ---------------------------------------------------- 0. 语言关卡
 
-SELLER_HOME = BILLING_BASE + "/resumen"
-WANT_LOCALE = "es_MX"
-
 # 整个下载层靠可见的西语文字定位元素（"Ir al detalle"、"descargar"、
 # "almacenamiento"、/ultimos?\s*(\d+)\s*mes/ …），导出文件的列名也是西语，
 # 而**导出文件的语言跟着账号的界面语言走**。有人在浏览器里把语言改成 English，
@@ -262,7 +282,7 @@ return 'clicked';
 """
 
 
-def ensure_language(driver, want=WANT_LOCALE, timeout=30):
+def ensure_language(driver, want=None, timeout=30):
     """进店后、跑任何路线之前：确认卖家后台是西语，不是就切回去。
 
     返回 (进来时的 locale 或 None, 是否动过)。
@@ -271,6 +291,7 @@ def ensure_language(driver, want=WANT_LOCALE, timeout=30):
     的判据把 12 家店全挡住，比它要防的问题更糟。真的改不回来才抛错 —— 那种
     情况下继续跑必然产出错语言的导出。
     """
+    want = want or WANT_LOCALE      # 调用时取值：set_site() 之后才是对的
     if not (driver.current_url or "").startswith(BILLING_BASE):
         driver.get(SELLER_HOME)
         time.sleep(6)

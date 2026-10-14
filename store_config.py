@@ -125,3 +125,102 @@ def describe():
     return "default=%s allowed=%s" % (
         _stores().get("default") or "(未配置)",
         ", ".join(allowed) if allowed else "(不限制)")
+
+
+# ---------------------------------------------------------------- 区域（国家）
+#
+# 同一个紫鸟账号下既有墨西哥店也有智利店。config.json 里：
+#
+#     "stores": {
+#       "allowed": [... 两国全部店铺 ...],
+#       "batch":   [... 墨西哥那一批，顺序即下载顺序 ...],
+#       "regions": {"Tecnohub_CL": "CL", ...},
+#       "batches": {"CL": [... 智利那一批 ...]}
+#     }
+#
+# 没写进 regions 的店一律算墨西哥 —— 区域出现之前每家店都是墨西哥店，旧配置
+# 一个字不改照样能跑。`batch` 也因此还是"墨西哥那一批"，不改名：生产机器上
+# 的 config.json 就是这么写的。
+#
+# 这里只认 config.json，不看店名里的 _CL、也不看紫鸟的平台名（meli_site 会
+# 看）：决定"这一轮跑哪些店、报表叫什么名字"的规则必须是写在配置里、人能
+# 核对的，不能靠猜。
+
+DEFAULT_REGION = "MX"
+REGION_NAMES = {"MX": "墨西哥", "CL": "智利"}
+
+
+def region_name(region):
+    """界面和日志里用的中文名：MX -> 墨西哥。不认识的代码原样返回。"""
+    return REGION_NAMES.get(str(region or "").upper(), str(region or ""))
+
+
+def _region_map():
+    regions = _stores().get("regions")
+    if not isinstance(regions, dict):
+        return {}
+    return dict((k, str(v).upper()) for k, v in regions.items() if v)
+
+
+def region_of(store):
+    """这家店属于哪个区域（"MX" / "CL"）。config 里没写就是墨西哥。"""
+    return _region_map().get(store, DEFAULT_REGION)
+
+
+def stores_for_region(region):
+    """某个区域"全部店铺"指哪几家，按顺序。
+
+    MX：沿用 `batch`（以前的"全部店铺"就是它，一字不变）；`batch` 为空时取
+    白名单里属于墨西哥的店。注意不是 batch_stores() —— 它在 batch 为空时会把
+    整份白名单（含智利店）都返回。
+    其他区域：`batches[区域]`；没写就取白名单里标成这个区域的店。
+
+    每家店都要过白名单，并且必须真的属于这个区域：一家智利店误抄进墨西哥的
+    batch，会被拿去墨西哥站点下载、汇进墨西哥的全店汇总 —— 宁可报错。
+    """
+    region = str(region or DEFAULT_REGION).upper()
+    cfg = _stores()
+    if region == DEFAULT_REGION:
+        listed = cfg.get("batch")
+    else:
+        listed = (cfg.get("batches") or {}).get(region) \
+            if isinstance(cfg.get("batches"), dict) else None
+    if isinstance(listed, list) and listed:
+        names = [require_allowed(n) for n in listed]
+        wrong = [n for n in names if region_of(n) != region]
+        if wrong:
+            raise StoreConfigError(
+                "config.json 里 %s 那一批混进了别的区域的店：%s。"
+                "检查 stores.regions 和 stores.%s。"
+                % (region, "、".join("%s（%s）" % (n, region_of(n)) for n in wrong),
+                   "batch" if region == DEFAULT_REGION else "batches." + region))
+        return names
+    return [n for n in allowed_stores() if region_of(n) == region]
+
+
+def regions():
+    """有店铺的区域，墨西哥排第一。白名单为空（不限制）时只有墨西哥。"""
+    cfg = _stores()
+    found = [region_of(n) for n in allowed_stores()]
+    found += list(_region_map().values())
+    if isinstance(cfg.get("batches"), dict):
+        found += [str(k).upper() for k, v in cfg["batches"].items() if v]
+    out = [DEFAULT_REGION] if (DEFAULT_REGION in found or not found) else []
+    for r in found:
+        if r not in out:
+            out.append(r)
+    return out
+
+
+def group_by_region(stores):
+    """[店名] -> [(区域, [店名])]，保持原顺序。界面重跑时用：一轮只跑一个区域。"""
+    out = []
+    for s in stores:
+        r = region_of(s)
+        for reg, names in out:
+            if reg == r:
+                names.append(s)
+                break
+        else:
+            out.append((r, [s]))
+    return out

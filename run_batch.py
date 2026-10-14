@@ -90,6 +90,26 @@ def resolve_stores(args):
     return names
 
 
+# 清洗（downloads/mx_sales）读的是 "Ventas MX" 表，只认墨西哥的导出。
+REGION_SKIP_NOTE = "清洗目前只支持墨西哥，智利店铺跳过这一步；不影响报表"
+
+
+def cleaning_applies(names):
+    """这一批要不要清洗：有一家墨西哥店就要。纯函数（只读 config.json）。
+
+    全是别的国家的店时跳过，并且记成 skipped —— 不是失败：报表读的是原始
+    导出，不读清洗结果；记成失败的话每一轮智利都会是"有需要关注的项"。
+    """
+    return any(store_config.region_of(n) == store_config.DEFAULT_REGION
+               for n in names)
+
+
+def region_skip():
+    """全是非墨西哥店铺时，批次汇总里 transform 那一项。"""
+    return {"ok": True, "partial": False, "skipped": True, "reason": "region",
+            "note": REGION_SKIP_NOTE}
+
+
 def write_summary(path, stamp, rows, transform_result=None, extra=None):
     """Machine-readable record of the run.
 
@@ -733,7 +753,10 @@ def main():
     # per store would repeat the same work. A failure here is reported but
     # cannot undo the downloads, which are already on disk.
     tr = None
-    if not args.no_transform:
+    if not args.no_transform and not cleaning_applies(names):
+        print("\n>>> %s" % REGION_SKIP_NOTE)
+        tr = region_skip()
+    elif not args.no_transform:
         # 清洗每次都扫整棵 downloads 树。以前某一轮留下的坏文件会让之后**每
         # 一轮**都报"清洗部分失败"、整批退出码 1 —— 2026-10-09 那轮 902 个文件
         # 里 28 个失败，全是 9 月的旧导出。告诉清洗哪些目录是这一轮的，旧文件
@@ -813,7 +836,7 @@ def main():
 
     if tr is not None:
         if tr.get("skipped"):
-            print("  清洗            已跳过（%s）" % tr["skipped"])
+            print("  清洗            已跳过（%s）" % (tr.get("note") or tr["skipped"]))
         elif tr["ok"]:
             print("  清洗            成功")
         elif tr.get("partial"):

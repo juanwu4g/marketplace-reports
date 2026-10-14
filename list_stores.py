@@ -22,6 +22,7 @@ import console  # noqa: F401  中文输出编码保护
 import store_config
 
 MX_MELI = "MercadoLibre-墨西哥-本土"
+CL_MELI = "MercadoLibre-智利-本土"
 
 
 def main():
@@ -29,6 +30,8 @@ def main():
     ap.add_argument("--platform", default=None, help="exact platform_name filter")
     ap.add_argument("--mx", action="store_true",
                     help="shorthand for --platform %s" % MX_MELI)
+    ap.add_argument("--cl", action="store_true",
+                    help="shorthand for --platform %s" % CL_MELI)
     ap.add_argument("--tag", default=None, help="only stores carrying this tag")
     ap.add_argument("--names", action="store_true",
                     help="print bare store names only, for scripting")
@@ -42,7 +45,7 @@ def main():
 
     if not args.include_expired:
         stores = [s for s in stores if not s.get("isExpired")]
-    platform = MX_MELI if args.mx else args.platform
+    platform = MX_MELI if args.mx else CL_MELI if args.cl else args.platform
     if platform:
         stores = [s for s in stores if (s.get("platform_name") or "") == platform]
     if args.tag:
@@ -59,7 +62,7 @@ def main():
         print("共 %d 家店铺，分布在 %d 个平台\n" % (len(stores), len(by_plat)))
         for name, n in by_plat.most_common():
             print("  %-34s %d" % (name, n))
-        print("\n用 --platform / --mx / --tag 可列出具体店铺")
+        print("\n用 --platform / --mx / --cl / --tag 可列出具体店铺")
         return 0
 
     allowed = store_config.allowed_stores()

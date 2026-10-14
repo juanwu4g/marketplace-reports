@@ -15,10 +15,16 @@
 """
 import datetime
 
-SITE_TZ = "America/Mexico_City"
+SITE_TZ = "America/Mexico_City"     # 当前站点；run_store 进店前用 set_site() 切换
 # zoneinfo 读不到时区库时的退路（Windows 自带的 Python 没有 tzdata，requirements
 # 里装了 tzdata；万一没装，墨西哥城现在全年都是 UTC-6）。
 SITE_UTC_OFFSET_HOURS = -6
+
+
+def set_site(tz, utc_offset):
+    """切到另一个国家站点的时区（智利 America/Santiago，有夏令时）。"""
+    global SITE_TZ, SITE_UTC_OFFSET_HOURS
+    SITE_TZ, SITE_UTC_OFFSET_HOURS = tz, utc_offset
 
 
 def site_now(now=None):

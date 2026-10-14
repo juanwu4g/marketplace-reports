@@ -224,7 +224,7 @@ class LogView(ttk.Frame):
         e = st.get("entrance") or ""
         self.badge.configure(text=" %s " % runlog.ENTRANCE_ZH.get(e, e or "?"),
                              bg=BADGE_BG.get(e, "#8c959f"))
-        month = st.get("month") or ""
+        month = runlog.region_tag(st) + (st.get("month") or "")   # 智利的带上国家
         stopping = (st["state"] == "running"
                     and self._stopping == st.get("run_id"))
         if stopping:
