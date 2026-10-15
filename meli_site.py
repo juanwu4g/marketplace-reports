@@ -48,6 +48,22 @@ SITES = {
         "platform_hint": "智利",
         "tz": "America/Santiago", "utc_offset": -3,
     },
+    "pe": {
+        "name": "秘鲁",
+        "site_id": "MPE",
+        "seller_host": "https://vendedores.mercadolibre.com.pe",
+        "mp_host": "https://www.mercadopago.com.pe",
+        "locale": "es_PE",
+        "currency": "PEN",
+        "platform_hint": "秘鲁",
+        "tz": "America/Lima", "utc_offset": -5,
+        # 秘鲁把九月写成 "Setiembre"（账单卡片、明细页标题、日期 "30/set/2026"）
+        "september": "setiembre", "sep_abbr": "set",
+        # 销售 Excel 的下载通知过一阵就清空：申请完必须当场取（run_downloads）
+        "ventas_collect_now": True,
+        # 秘鲁没有 Full 仓：库存报表页（space_management）是 404，不去下载
+        "has_full": False,
+    },
 }
 
 
@@ -62,7 +78,7 @@ def get(code):
 
 
 def of_store(store_name, platform_name=None):
-    """Resolve a store to its site code ("mx" / "cl")."""
+    """Resolve a store to its site code ("mx" / "cl" / "pe")."""
     try:
         regions = store_config._stores().get("regions")
     except Exception:
@@ -74,7 +90,7 @@ def of_store(store_name, platform_name=None):
     for code, facts in SITES.items():
         if platform_name and facts["platform_hint"] in platform_name:
             return code
-    m = re.search(r"(?:^|[_\-\s])(MX|CL)(?:$|[_\-\s(（])", store_name or "", re.I)
+    m = re.search(r"(?:^|[_\-\s])(MX|CL|PE)(?:$|[_\-\s(（])", store_name or "", re.I)
     if m:
         return m.group(1).lower()
     return DEFAULT

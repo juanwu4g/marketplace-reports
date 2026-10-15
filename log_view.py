@@ -1,41 +1,48 @@
 # -*- coding: utf-8 -*-
-"""运行日志查看器：「启动」和「定时设置」两个窗口嵌的是同一个控件。
+"""运行日志查看器：「ML 报表」窗口右边那一栏。
 
     view = LogView(parent, on_state=callback)
     view.pack(fill="both", expand=True)
 
 它只做一件事：盯着 logs/runs/<run_id>.log 这个**文件**，有新内容就贴出来。
-不从任何管道读 —— 所以不管那一轮是谁起的（本窗口点的、另一个窗口点的、
-半夜计划任务自己跑起来的），看到的都一样；窗口关了重开，也能接着看。
+不从任何管道读 —— 所以不管那一轮是谁起的（本窗口点的、半夜计划任务自己跑
+起来的、命令行敲的），看到的都一样；窗口关了重开，也能接着看。
 
-这里**只有 Tk 胶水**。该看哪一轮、怎么跟读、怎么解析一行、退出码是什么意思，
-全在 runlog.py（那边能在没有 tkinter 的机器上测）。要改行为先去那边找。
+这里**只有 Tk 胶水**。该看哪一轮、怎么跟读、怎么解析一行、一行分几列、
+退出码是什么意思，全在 runlog.py（那边能在没有 tkinter 的机器上测）。
+
+列靠 Text 控件的制表位对齐（而不是靠空格）：汉字和英文字宽不同，用空格
+补齐在中文 Windows 上永远对不齐。正文太长时折行，折下来的行从「内容」那一
+列开始，不用拖横向滚动条。
 
 不要从无界面的代码 import 本模块：它一上来就 import tkinter。
 """
-import datetime
+import os
+import subprocess
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+import tkinter.font as tkfont
+from tkinter import ttk
 
 import runlog
+import ui_style as S
 
-FOLLOW = "跟随当前运行（有新的一轮自动切过去）"
+FOLLOW = "跟随当前运行（有新的一轮会自动切过去）"
 ALL_STORES = "全部店铺"
-LEVEL_CHOICES = [("全部", None), ("警告和错误", runlog.WARN),
+ALL_REGIONS = "全部国家"
+LEVEL_CHOICES = [("全部级别", None), ("警告和错误", runlog.WARN),
                  ("只看错误", runlog.ERROR)]
-
-BADGE_BG = {"manual": "#0969da", "scheduled": "#8250df", "cli": "#57606a"}
-KIND_FG = {"run": "#0969da", "good": "#1a7f37", "warn": "#9a6700",
-           "bad": "#b42318"}
 TICK_MS = 400
+# 屏幕上最多放这么多行（筛选之后）。一轮全店下载几千行，远够；再多 Text 控件
+# 重排会卡。文件里一行不少。
+MAX_SHOWN = 20000
 
 
 def fit_to_screen(root, want_w, want_h):
     """窗口不超过屏幕，放不下就直接最大化。
 
-    运行日志在窗口最下面，是整个界面里唯一会伸缩的区域。窗口比屏幕高的话，
-    被挤到屏幕外面的正是它 —— 在 1280x800 的机器上实测只剩一条缝。
+    运行日志是整个界面里唯一会伸缩的区域。窗口比屏幕大的话，被挤到屏幕外面
+    的正是它 —— 在 1280x800 的机器上实测只剩一条缝。
     """
     try:
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -56,116 +63,206 @@ def fit_to_screen(root, want_w, want_h):
 
 class LogView(ttk.Frame):
     """见模块说明。on_state(state) 在所看那一轮的状态变化时被调用，
-    state 是 runlog.run_state() 的结果（没有任何运行记录时为 None）。"""
+    state 是 runlog.run_state() 的结果（没有任何运行记录时为 None）。
+    on_tick(view) 每次轮询之后被调用（宿主拿 view.state / view.follower.records
+    刷新顶上那条"现在在跑什么"）。"""
 
-    def __init__(self, master, log_dir=None, on_state=None, height=14,
+    def __init__(self, master, log_dir=None, on_state=None, on_tick=None,
                  who="", **kw):
         ttk.Frame.__init__(self, master, **kw)
         self.follower = runlog.Follower(log_dir)
         self.log_dir = log_dir
         self.on_state = on_state
+        self.on_tick = on_tick
         self.who = who                # 写进中止请求里：是哪个窗口点的
         self.state = None
         self._labels = {}             # 下拉框里的文字 -> run_id
-        self._stopping = None         # 已经发过中止请求的那一轮
-        self._build(height)
+        self._with_region = False     # 这一轮是不是一轮多国（要不要国家那一列）
+        self._widths = None
+        self._font = tkfont.Font(family=S.MONO_FAMILY, size=S.FONT_LOG[1])
+        self._bold = tkfont.Font(family=S.MONO_FAMILY, size=S.FONT_LOG[1],
+                                 weight="bold")
+        self._build()
         self.after(50, self._tick)
 
     # ---------------------------------------------------------- 布局
 
-    def _build(self, height):
+    def _build(self):
         top = ttk.Frame(self)
         top.pack(fill="x")
-        # 入口徽标用实心色块：一眼就得分清这是"手动"还是"定时"那一轮。
-        self.badge = tk.Label(top, text=" — ", fg="white", bg="#8c959f",
-                              font=("", 10, "bold"), padx=8, pady=2)
-        self.badge.pack(side="left")
-        self.state_var = tk.StringVar(value="还没有运行记录")
-        self.state_lbl = ttk.Label(top, textvariable=self.state_var,
-                                   font=("", 10, "bold"))
-        self.state_lbl.pack(side="left", padx=(8, 0))
-        self.stop_btn = ttk.Button(top, text="中止这一轮", width=12,
-                                   command=self.stop, state="disabled")
-        self.stop_btn.pack(side="right")
-
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", pady=(4, 4))
-        ttk.Label(bar, text="看哪一轮").pack(side="left")
-        self.pick = ttk.Combobox(bar, state="readonly", width=30,
-                                 values=[FOLLOW],
+        ttk.Label(top, text="运行日志", style="Title.TLabel").pack(side="left")
+        # 入口色块：一眼分清这是"手动"还是"定时"那一轮。
+        self.badge = tk.Label(top, text=" — ", fg="white", bg=S.MUTED,
+                              font=S.FONT_SMALL, padx=6, pady=1)
+        self.badge.pack(side="left", padx=(S.GAP, 0))
+        self.pick = ttk.Combobox(top, state="readonly", values=[FOLLOW],
                                  postcommand=self._refresh_runs)
         self.pick.set(FOLLOW)
-        self.pick.pack(side="left", padx=(4, 8), fill="x", expand=True)
+        self.pick.pack(side="left", padx=(S.GAP, 0), fill="x", expand=True)
         self.pick.bind("<<ComboboxSelected>>", self._on_pick)
-        ttk.Label(bar, text="店铺").pack(side="left")
-        self.store = ttk.Combobox(bar, state="readonly", width=14,
+        ttk.Button(top, text="打开日志文件", command=self.open_file
+                   ).pack(side="left", padx=(S.GAP, 0))
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", pady=(S.GAP, S.SMALL))
+        self.region_lbl = ttk.Label(bar, text="国家")
+        self.region = ttk.Combobox(bar, state="readonly", width=9,
+                                   values=[ALL_REGIONS])
+        self.region.set(ALL_REGIONS)
+        self.region.bind("<<ComboboxSelected>>", lambda e: self._rerender())
+        self.store_lbl = ttk.Label(bar, text="店铺")
+        self.store_lbl.pack(side="left")
+        self.store = ttk.Combobox(bar, state="readonly", width=20,
                                   values=[ALL_STORES])
         self.store.set(ALL_STORES)
-        self.store.pack(side="left", padx=(4, 8))
+        self.store.pack(side="left", padx=(S.SMALL, S.PAD))
         self.store.bind("<<ComboboxSelected>>", lambda e: self._rerender())
         ttk.Label(bar, text="级别").pack(side="left")
-        self.level = ttk.Combobox(bar, state="readonly", width=8,
+        self.level = ttk.Combobox(bar, state="readonly", width=10,
                                   values=[c[0] for c in LEVEL_CHOICES])
         self.level.set(LEVEL_CHOICES[0][0])
-        self.level.pack(side="left", padx=(4, 8))
+        self.level.pack(side="left", padx=(S.SMALL, S.PAD))
         self.level.bind("<<ComboboxSelected>>", lambda e: self._rerender())
+        ttk.Label(bar, text="查找").pack(side="left")
+        self.find = tk.StringVar()
+        ttk.Entry(bar, textvariable=self.find, width=16).pack(
+            side="left", padx=(S.SMALL, S.PAD))
+        self._find_job = None
+        self.find.trace_add("write", lambda *a: self._find_later())
         self.autoscroll = tk.BooleanVar(value=True)
-        ttk.Checkbutton(bar, text="跟着滚到底", variable=self.autoscroll
-                        ).pack(side="left")
+        ttk.Checkbutton(bar, text="跟到最新一行", variable=self.autoscroll,
+                        command=self._follow_toggled).pack(side="left")
+        self.count_var = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self.count_var, style="Hint.TLabel"
+                  ).pack(side="right")
 
-        body = ttk.Frame(self)
+        # 表头和正文是两个 Text，用同一组制表位，所以列对得齐；表头不随正文滚走。
+        box = tk.Frame(self, bd=1, relief="solid", background="#d0d7de")
+        box.pack(fill="both", expand=True)
+        self.head = tk.Text(box, height=1, wrap="none", font=self._bold,
+                            bg="#f6f8fa", fg=S.HINT, bd=0, padx=8, pady=4,
+                            highlightthickness=0, cursor="arrow")
+        self.head.pack(fill="x")
+        body = tk.Frame(box)
         body.pack(fill="both", expand=True)
-        self.txt = tk.Text(body, wrap="none", height=height, bg="#1e1e1e",
-                           fg="#d4d4d4", insertbackground="#d4d4d4",
-                           font=("Consolas", 9))
+        self.txt = tk.Text(body, wrap="word", bg=S.LOG_BG, fg=S.LOG_FG,
+                           font=self._font, bd=0, padx=8, pady=4,
+                           highlightthickness=0, insertwidth=0, spacing1=1,
+                           spacing3=1)
         sy = ttk.Scrollbar(body, orient="vertical", command=self.txt.yview)
-        sx = ttk.Scrollbar(body, orient="horizontal", command=self.txt.xview)
-        self.txt.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        self.txt.configure(yscrollcommand=sy.set)
         sy.pack(side="right", fill="y")
-        sx.pack(side="bottom", fill="x")
         self.txt.pack(side="left", fill="both", expand=True)
-        self.txt.tag_config(runlog.ERROR, foreground="#f48771")
-        self.txt.tag_config(runlog.WARN, foreground="#e2c08d")
-        self.txt.tag_config("head", foreground="#9cdcfe")
-        self.txt.tag_config("good", foreground="#89d185")
+        self.txt.tag_config("time", foreground=S.LOG_TIME)
+        self.txt.tag_config(runlog.ERROR, foreground=S.LOG_ERROR_FG,
+                            background=S.LOG_ERROR_BG)
+        self.txt.tag_config(runlog.WARN, foreground=S.LOG_WARN_FG,
+                            background=S.LOG_WARN_BG)
+        self.txt.tag_config("head", foreground=S.LOG_HEAD)
+        self.txt.tag_config("banner", font=self._bold, background=S.LOG_BANNER_BG,
+                            spacing1=6, spacing3=4)
+        self.txt.tag_config("row")
+        # 往上翻看的时候不要被新行拽回到底部
+        self.txt.bind("<MouseWheel>", self._wheel)
+        self.txt.bind("<Button-4>", self._wheel)
         self.txt.configure(state="disabled")
+        self._set_columns()
+
+    # ---------------------------------------------------------- 列
+
+    def _headers(self):
+        return (["时间"] + (["国家"] if self._with_region else [])
+                + ["步骤", "店铺", "级别", "内容"])
+
+    def _set_columns(self):
+        """按现在要显示的列和认识的店名算制表位。店名长短不一，取最长的那个。"""
+        f = self._font
+        pad = 18
+        samples = [["00:00:00", "时间"]]
+        if self._with_region:
+            samples.append(["墨西哥", "国家"])
+        samples.append(["补收", "步骤"])
+        samples.append(["店铺"] + list(self.follower.stores or [])[:200])
+        samples.append(["警告", "级别"])
+        stops, x = [], 0
+        for col in samples:
+            w = max(f.measure(t) for t in col if t)
+            w = min(w, 260)                    # 极长的店名就让它挤一挤
+            x += w + pad
+            stops.append(x)
+        widths = tuple(stops)
+        if widths == self._widths:
+            return
+        self._widths = widths
+        for t in (self.head, self.txt):
+            t.configure(tabs=widths)
+        # 折行从「内容」那一列开始
+        self.txt.tag_config("row", lmargin2=widths[-1])
+        self.head.configure(state="normal")
+        self.head.delete("1.0", "end")
+        self.head.insert("end", "\t".join(self._headers()))
+        self.head.configure(state="disabled")
+
+    def _show_region_filter(self, show):
+        if show == self._with_region:
+            return
+        self._with_region = show
+        if show:
+            self.region_lbl.pack(side="left", before=self.store_lbl)
+            self.region.pack(side="left", padx=(S.SMALL, S.PAD),
+                             before=self.store_lbl)
+        else:
+            self.region_lbl.pack_forget()
+            self.region.pack_forget()
+            self.region.set(ALL_REGIONS)
+        self._widths = None
+        self._set_columns()
 
     # ---------------------------------------------------------- 筛选 / 渲染
 
     def _filters(self):
         s = self.store.get()
-        lv = dict(LEVEL_CHOICES).get(self.level.get())
-        return (None if s == ALL_STORES else s), lv
+        r = self.region.get()
+        code = None
+        if r != ALL_REGIONS:
+            for c in self.follower.regions:
+                if runlog.region_name(c) == r:
+                    code = c
+        return {"store": None if s == ALL_STORES else s,
+                "min_level": dict(LEVEL_CHOICES).get(self.level.get()),
+                "region": code, "text": self.find.get().strip() or None}
 
     @staticmethod
-    def _tag(rec):
+    def _tags(rec):
+        if rec.get("step") == runlog.STEP_START and "个国家：" in (rec.get("body") or ""):
+            return ("row", "banner")
         if rec["level"] in (runlog.ERROR, runlog.WARN):
-            return rec["level"]
+            return ("row", rec["level"])
         if rec["step"] == runlog.STEP_START:
-            return "head"
-        return ()
+            return ("row", "head")
+        return ("row",)
 
-    @staticmethod
-    def _shown(rec):
-        """屏幕上显示的那一行。
+    def _insert(self, rec):
+        cols = runlog.view_columns(rec, self._with_region)
+        tags = self._tags(rec)
+        self.txt.insert("end", cols[0] + "\t", tags + ("time",),
+                        "\t".join(cols[1:]) + "\n", tags)
 
-        日志文件里每行都带日期和入口，那是给事后翻文件的人看的。窗口里这两样
-        是多余的 —— 入口就是上面那块徽标，日期在「看哪一轮」里 —— 省下来的
-        二十几列留给正文，窄屏上少拖一次横向滚动条。文件内容不变。
-        """
-        if not rec.get("time"):
-            return rec["raw"]                 # 解析不了的行原样显示
-        return " | ".join([rec["time"][-8:], rec["step"], rec["store"],
-                           rec["level"], rec["message"]])
-
-    def _append(self, records):
+    def _append(self, records, fresh=False):
         if not records:
             return
-        store, lv = self._filters()
+        f = self._filters()
+        shown = [r for r in records if runlog.matches(r, **f)]
+        if not shown:
+            return
         self.txt.configure(state="normal")
-        for rec in records:
-            if runlog.matches(rec, store, lv):
-                self.txt.insert("end", self._shown(rec) + "\n", self._tag(rec))
+        if fresh and len(shown) > MAX_SHOWN:
+            self.txt.insert("end", "（前面还有 %d 行没显示；用上面的筛选缩小范围，"
+                                   "或点「打开日志文件」看全文）\n"
+                            % (len(shown) - MAX_SHOWN), ("head",))
+            shown = shown[-MAX_SHOWN:]
+        for rec in shown:
+            self._insert(rec)
         if self.autoscroll.get():
             self.txt.see("end")
         self.txt.configure(state="disabled")
@@ -177,14 +274,46 @@ class LogView(ttk.Frame):
 
     def _rerender(self):
         self._clear()
-        self._append(self.follower.records)
+        self._append(self.follower.records, fresh=True)
+        self._count()
 
-    def _sync_stores(self):
+    def _count(self):
+        n = len(self.follower.records)
+        f = self._filters()
+        if any(f.values()):
+            self.count_var.set("显示 %d / %d 行" % (len(self.follower.filtered(**f)), n))
+        else:
+            self.count_var.set("共 %d 行" % n if n else "")
+
+    def _find_later(self):
+        if self._find_job:
+            self.after_cancel(self._find_job)
+        self._find_job = self.after(300, self._rerender)
+
+    def _wheel(self, event):
+        up = getattr(event, "delta", 0) > 0 or getattr(event, "num", 0) == 4
+        if up and self.autoscroll.get():
+            self.autoscroll.set(False)
+
+    def _follow_toggled(self):
+        if self.autoscroll.get():
+            self.txt.see("end")
+
+    def _sync_choices(self, rerender=True):
         want = [ALL_STORES] + list(self.follower.stores)
         if list(self.store.cget("values")) != want:
             self.store.configure(values=want)
+            self._set_columns()
         if self.store.get() not in want:
             self.store.set(ALL_STORES)
+        regions = [ALL_REGIONS] + [runlog.region_name(r) for r in self.follower.regions]
+        if list(self.region.cget("values")) != regions:
+            self.region.configure(values=regions)
+        need = bool(self.follower.regions)
+        if need != self._with_region:
+            self._show_region_filter(need)     # 多出 / 少了国家那一列
+            if rerender:
+                self._rerender()
 
     # ---------------------------------------------------------- 选哪一轮
 
@@ -211,71 +340,31 @@ class LogView(ttk.Frame):
         """回到跟随模式。起了新的一轮之后由宿主窗口调用。"""
         self.pick.set(FOLLOW)
         self.follower.follow_current()
+        self.autoscroll.set(True)
+
+    def open_file(self):
+        """用系统默认程序打开正在看的这一轮的日志文件（看全文、搜索、转发）。"""
+        rid = self.follower.run_id
+        path = runlog.run_paths(rid, self.log_dir)["log"] if rid else ""
+        if not path or not os.path.exists(path):
+            path = runlog.runs_dir(self.log_dir)
+        try:
+            if os.name == "nt":
+                os.startfile(path)                # noqa: S606
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- 状态
 
-    def _show_state(self, st):
-        self.state = st
+    def _show_badge(self, st):
         if not st:
-            self.badge.configure(text=" — ", bg="#8c959f")
-            self.state_var.set("还没有运行记录")
-            self.stop_btn.configure(state="disabled")
+            self.badge.configure(text=" 还没有运行记录 ", bg=S.MUTED)
             return
         e = st.get("entrance") or ""
         self.badge.configure(text=" %s " % runlog.ENTRANCE_ZH.get(e, e or "?"),
-                             bg=BADGE_BG.get(e, "#8c959f"))
-        month = runlog.region_tag(st) + (st.get("month") or "")   # 智利的带上国家
-        stopping = (st["state"] == "running"
-                    and self._stopping == st.get("run_id"))
-        if stopping:
-            text = "● 正在中止…（几秒内生效）"
-        elif st["state"] == "running" and st.get("stalled"):
-            # 短说法；完整的那句在窗口底部的状态栏里，这一行还要给按钮留地方
-            text = "▲ 没有响应，多半卡住了"
-        elif st["state"] == "running":
-            text = "● 正在跑　%s　%s" % (month, self._elapsed(st))
-        elif st["state"] == "aborted":
-            text = "■ 已中止　%s" % month
-        elif st["state"] == "skipped":
-            text = "■ %s" % st["text"]
-        else:
-            text = "■ 已结束　%s　%s" % (month, st["text"])
-        self.state_var.set(text)
-        self.state_lbl.configure(foreground=KIND_FG.get(st.get("kind"), ""))
-        self.stop_btn.configure(
-            state="normal" if st["state"] == "running" and not stopping
-            else "disabled")
-
-    @staticmethod
-    def _elapsed(st):
-        parsed = runlog.parse_run_id(st.get("run_id"))
-        if not parsed:
-            return ""
-        secs = int((datetime.datetime.now() - parsed[0]).total_seconds())
-        if secs < 0:
-            return ""
-        return "已跑 %d:%02d:%02d" % (secs // 3600, secs % 3600 // 60, secs % 60)
-
-    def stop(self, confirm=True):
-        """请正在看的那一轮停下来。它不是本窗口起的也一样能停。"""
-        st = self.state
-        if not st or st.get("state") != "running":
-            return False
-        e = runlog.ENTRANCE_ZH.get(st.get("entrance"), "")
-        if confirm and not messagebox.askokcancel(
-                "中止",
-                "确定要结束正在跑的这一轮吗？（入口：%s）\n\n"
-                "会连同它打开的紫鸟和浏览器一起关掉。\n"
-                "已经下好的文件会保留；中止后不会接着出报表。" % e):
-            return False
-        try:
-            runlog.request_stop(st["run_id"], self.who, self.log_dir)
-        except Exception as ex:
-            messagebox.showerror("中止", "中止请求写不进去：%s" % ex)
-            return False
-        self._stopping = st["run_id"]
-        self._show_state(st)
-        return True
+                             bg=S.BADGE_BG.get(e, S.MUTED))
 
     # ---------------------------------------------------------- 轮询
 
@@ -286,24 +375,28 @@ class LogView(ttk.Frame):
             if r["reset"]:
                 self._clear()
                 self.store.set(ALL_STORES)
-                self._sync_stores()
-                self._append(self.follower.records)
-            else:
+                self.region.set(ALL_REGIONS)
+                self._sync_choices(rerender=False)
+                self._append(self.follower.records, fresh=True)
+                self._count()
+            elif r["new"]:
                 self._append(r["new"])
-            if r["new"]:
-                self._sync_stores()
+                self._sync_choices()
+                self._count()
             st = r["state"]
-            # 在跑的时候每次都刷新：状态栏上有个"已跑多久"。
-            if r["state_changed"] or (st and st.get("state") == "running"):
-                self._show_state(st)
-            if r["state_changed"] and self.on_state:
-                self.on_state(st)
+            self.state = st
+            if r["state_changed"]:
+                self._show_badge(st)
+                if self.on_state:
+                    self.on_state(st)
+            if self.on_tick:
+                self.on_tick(self)
             if r["more"]:
                 delay = 30            # 还有没读完的（刚打开一份大日志）
         except Exception as e:
             # 查看器出错不该弄垮宿主窗口，但也不能悄悄停住 —— 把错摆出来。
             try:
-                self.state_var.set("日志查看器出错：%s: %s"
+                self.count_var.set("日志查看器出错：%s: %s"
                                    % (e.__class__.__name__, str(e)[:120]))
             except Exception:
                 pass

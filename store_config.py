@@ -147,7 +147,7 @@ def describe():
 # 核对的，不能靠猜。
 
 DEFAULT_REGION = "MX"
-REGION_NAMES = {"MX": "墨西哥", "CL": "智利"}
+REGION_NAMES = {"MX": "墨西哥", "CL": "智利", "PE": "秘鲁"}
 
 
 def region_name(region):

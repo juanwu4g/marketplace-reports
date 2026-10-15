@@ -74,3 +74,22 @@ def test_stock_reports_that_start_no_download_get_one_retry():
 def test_mercado_pago_billing_report_does_not_count_as_missing_report_data():
     assert not download_diag.affects_report({"form": "billing/2026-09/BILL_MP_V3"})
     assert download_diag.affects_report({"form": "billing/2026-09"})
+
+
+def test_peru_spells_september_setiembre_and_mexico_is_restored():
+    # 2026-10-15 IDG_PE：秘鲁账单写 "Setiembre 2026"、日期 "30/set/2026"，
+    # 按 "Septiembre" 找就"页面没有可识别的月份"
+    import meli_forms
+    import mercadopago
+    try:
+        meli_forms.set_site("pe")
+        mercadopago.set_site("pe")
+        assert meli_forms.SPANISH_MONTH_NAMES[8] == "Setiembre"
+        assert meli_forms.ES_MONTHS[9] == "setiembre"
+        assert mercadopago.ES_MONTHS[9] == "setiembre"
+        assert mercadopago.ES_ABBR[9] == "set"
+    finally:
+        meli_forms.set_site("mx")
+        mercadopago.set_site("mx")
+    assert meli_forms.SPANISH_MONTH_NAMES[8] == "Septiembre"
+    assert mercadopago.ES_ABBR[9] == "sep"

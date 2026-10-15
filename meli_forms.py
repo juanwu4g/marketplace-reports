@@ -66,6 +66,9 @@ def set_site(code):
     SPACE_MANAGEMENT = BILLING_BASE + "/publicaciones/listado/space_management"
     SELLER_HOME = BILLING_BASE + "/resumen"
     WANT_LOCALE = facts["locale"]
+    sep = facts.get("september", "septiembre")
+    ES_MONTHS[9] = sep
+    SPANISH_MONTH_NAMES[8] = sep.capitalize()
 
 # Spanish month names, as they appear in the datepicker's aria-labels.
 ES_MONTHS = [None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -346,7 +349,7 @@ for (let i = 0; i < 8 && e; i++) {
   e = e.parentElement; if (!e) break;
   const txt = e.innerText || '';
   const m = txt.match(
-    /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)/i);
+    /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Sept?iembre|Octubre|Noviembre|Diciembre)/i);
   if (m) return {month: m[1], enCurso: /EN CURSO/i.test(txt)};
 }
 return {month: '?', enCurso: false};
@@ -421,7 +424,7 @@ def download_billing_reports(driver, download_dir, months=2, timeout=240,
             for (let i = 0; i < 8 && e; i++) {
               e = e.parentElement; if (!e) break;
               const m = (e.innerText||'').match(
-                /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)/i);
+                /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Sept?iembre|Octubre|Noviembre|Diciembre)/i);
               if (m) return m[1];
             }
             return '?';
@@ -537,7 +540,7 @@ def download_billing_for_period(driver, download_dir, year, month, timeout=240,
     # 页面存在≠是我们要的那一期。用页面自己写的月份名核对，避免平台把
     # 无效日期悄悄重定向到最近一期、结果把 9 月的账单当成 7 月的存下来。
     shown = driver.execute_script("""
-        const re = /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)/i;
+        const re = /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Sept?iembre|Octubre|Noviembre|Diciembre)/i;
         const m = (document.body.innerText || '').match(re);
         return m ? m[1] : null;
     """)

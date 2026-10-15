@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """运行日志的统一格式，以及读它的全部非界面逻辑。
 
-「启动」窗口、「定时设置」窗口和命令行，跑的是同一个 run_monthly.py；它每跑
+「ML 报表」窗口、计划任务和命令行，跑的是同一个 run_monthly.py；它每跑
 一次，就在 logs/runs/ 下写一组文件：
 
     logs/runs/<run_id>.log     给人看的日志，本模块定义的固定六列
@@ -50,9 +50,9 @@ LOG_DIR = os.path.join(ROOT, "logs")
 ENTRANCES = ("manual", "scheduled", "cli")
 ENTRANCE_ZH = {"manual": "手动", "scheduled": "定时", "cli": "命令行"}
 ENTRANCE_WHAT = {
-    "manual": "有人在「启动」窗口里点按钮跑的",
-    "scheduled": "Windows 计划任务拉起的（到点自动跑，或在「定时设置」窗口里"
-                 "点了「现在就跑一次」/「试跑一次」）",
+    "manual": "有人在「ML 报表」窗口（ML报表.cmd / 启动.cmd）里点按钮跑的",
+    "scheduled": "Windows 计划任务拉起的（到点自动跑，或在窗口的「每月自动运行」"
+                 "里点了「现在就跑一次」/「试跑一次」）",
     "cli": "有人直接敲命令（或双击 run_monthly.cmd）跑的",
 }
 
@@ -167,17 +167,56 @@ def as_record(text):
         text = (text or "").rstrip("\r\n")
         rec = {"time": "", "entrance": "", "step": "", "store": NO_STORE,
                "level": INFO, "message": text, "raw": text}
+    rec["region"], rec["body"] = split_region(rec["message"])
     return rec
 
 
-def matches(rec, store=None, min_level=None):
-    """这一行过不过筛选。store=None 不限店铺；min_level 是最低级别。"""
+def matches(rec, store=None, min_level=None, region=None, text=None):
+    """这一行过不过筛选。store=None 不限店铺；min_level 是最低级别；
+    region 只看某个国家（--region ALL 那种一轮多国的日志里才有意义）；
+    text 是要找的字（不分大小写，店名和正文里找）。"""
     if store and rec.get("store") != store:
         return False
     if min_level and (LEVEL_RANK.get(rec.get("level"), 0)
                       < LEVEL_RANK.get(min_level, 0)):
         return False
+    if region and rec.get("region") != region:
+        return False
+    if text:
+        t = text.strip().lower()
+        if t and t not in (rec.get("message") or "").lower() \
+                and t not in (rec.get("store") or "").lower():
+            return False
     return True
+
+
+# ════════════════════════════════════════════════════════════ 一轮多国
+
+# --region ALL 时，一个国家那一段里每行正文前面带 "[CL] "。只认真有的国家代码：
+# 子进程自己打的 "[OK] ..." 不能被当成一个叫 OK 的国家。
+_REGION_TAG_RE = re.compile(r"^\[([A-Z]{2,3})\] ")
+
+
+def _region_codes():
+    try:
+        import store_config             # 不带 selenium / tkinter
+        return set(store_config.REGION_NAMES)
+    except Exception:
+        return {"MX", "CL", "PE"}
+
+
+def tag_region(region, message):
+    """每一行正文前面加上 "[CL] "。多行的话每行都加（RunLog 会按行拆开写）。"""
+    lines = str(message).splitlines() or [""]
+    return "\n".join("[%s] %s" % (region, x) for x in lines)
+
+
+def split_region(message):
+    """"[CL] 正文" -> ("CL", "正文")；不带国家的行 -> (None, 原文)。"""
+    m = _REGION_TAG_RE.match(message or "")
+    if m and m.group(1) in _region_codes():
+        return m.group(1), message[m.end():]
+    return None, message
 
 
 # ════════════════════════════════════════════════════════════ 逐行分类
@@ -332,6 +371,12 @@ class RunLog(object):
             os.makedirs(d)
         # newline="\n"：Windows 上也只写 \n，查看器按字节数跟读时不用猜换行。
         self._f = io.open(self.path, "a", encoding="utf-8", newline="\n")
+        # 有人盯着控制台（双击 run_monthly.cmd）时，屏幕上打短一点的行；
+        # 文件里永远是完整的六列。重定向到文件 / 管道时原样打。
+        try:
+            self._tty = bool(sys.stdout.isatty())
+        except Exception:
+            self._tty = False
 
     def write(self, step, level, message, store=NO_STORE):
         for part in (str(message).splitlines() or [""]):
@@ -344,7 +389,8 @@ class RunLog(object):
                 pass                  # 日志写不进去不该让跑批停下来
             if self.echo:
                 try:
-                    sys.stdout.write(line + "\n")
+                    sys.stdout.write((console_line(line) if self._tty else line)
+                                     + "\n")
                     sys.stdout.flush()
                 except Exception:
                     pass              # 没有控制台（窗口拉起的后台进程）
@@ -363,6 +409,22 @@ class RunLog(object):
             self._f.close()
         except Exception:
             pass
+
+
+def console_line(line):
+    """控制台上的一行：`14:05:01  下载  BOCINA_TA02  [警告]  正文`。
+
+    日期和入口在控制台上是多余的（就是现在、就是这个黑框）；级别只在不是
+    「信息」时标出来，扫一眼就看得见。"""
+    rec = parse_line(line)
+    if not rec:
+        return line
+    parts = [rec["time"][-8:], rec["step"]]
+    if rec["store"] != NO_STORE:
+        parts.append(rec["store"])
+    if rec["level"] != INFO:
+        parts.append("[%s]" % rec["level"])
+    return "  ".join(parts + [rec["message"]])
 
 
 def git_commit(root=None):
@@ -733,7 +795,7 @@ def enforce_stop(log_dir=None, now=None):
 # (说明, 颜色类别)。类别：good / warn / bad。含义以契约为准。
 EXIT_MEANING = {
     0: ("全部正常", "good"),
-    1: ("跑完了，但有需要关注的项 —— 看日志里标黄标红的行，或报表的 ⑩ 页", "warn"),
+    1: ("跑完了，但有需要关注的项 —— 看日志里标黄标红的行，或报表第 10 页（数据缺口与待办）", "warn"),
     2: ("没跑成：紫鸟客户端出错 / 没有一家店下到数据 / 有报表没生成", "bad"),
     3: ("没跑成：店铺不在 config.json 的白名单里，或不属于所选的国家", "bad"),
     4: ("没跑成：config.json 读不了或格式不对", "bad"),
@@ -757,6 +819,8 @@ def exit2_text(summary):
     只有 1 家店因为要登录而没有报表，窗口却写着"紫鸟客户端出错 / 没有一家店
     下到数据" —— 两句都不对。按各步骤的退出码说清楚是哪一步。
     """
+    if summary.get("region") == "ALL":
+        return _exit2_all(summary)
     codes = {st.get("step"): st.get("code") for st in summary.get("steps") or []
              if isinstance(st, dict)}
     dl = codes.get("download", codes.get("collect"))
@@ -767,6 +831,30 @@ def exit2_text(summary):
         return ("下载完成，但有报表没生成（有店铺没下到可用的数据，或出报表时"
                 "出错）—— 看左边「需要人工处理」和日志末尾")
     return None
+
+
+def _exit2_all(summary):
+    """--region ALL 那一轮的退出码 2：说清楚是哪几个国家、坏在哪一步。"""
+    out = []
+    for r in summary.get("regions") or []:
+        if not isinstance(r, dict) or (r.get("exit") or 0) < 2 or r.get("exit") == 7:
+            continue
+        text = exit2_text(dict(r, region=r.get("region"))) if r.get("exit") == 2 \
+            else exit_meaning(r.get("exit"))[0]
+        out.append("%s：%s" % (region_name(r.get("region")),
+                              text or exit_meaning(r.get("exit"))[0]))
+    return "；".join(out) or None
+
+
+def region_name(code):
+    """MX -> 墨西哥；ALL -> 全部国家。"""
+    if code == "ALL":
+        return "全部国家"
+    try:
+        import store_config
+        return store_config.region_name(code)
+    except Exception:
+        return str(code or "")
 
 
 def run_state(run_id, log_dir=None):
@@ -792,7 +880,7 @@ def run_state(run_id, log_dir=None):
                             "点「中止这一轮」结束它"
                             % (cur.get("quiet_seconds", 0) // 60))
         elif cur and cur.get("run_id") == run_id:
-            out.update(state="running", text="正在跑", kind="run")
+            out.update(state="running", text="正在跑", kind="run", current=cur)
         elif pid_alive(summary.get("pid")) and summary.get("pid"):
             # current.json 还没写出来或刚被删，进程还在：当它在跑。
             out.update(state="running", text="正在跑", kind="run")
@@ -838,8 +926,7 @@ def region_tag(st):
     r = (st or {}).get("region") or "MX"
     if r == "MX":
         return ""
-    import store_config                 # 不带 selenium / tkinter
-    return store_config.region_name(r) + " "
+    return region_name(r) + " "
 
 
 def run_label(run, log_dir=None):
@@ -913,6 +1000,7 @@ class Follower(object):
         self.run_id = None
         self.records = []
         self.stores = []
+        self.regions = []             # 日志里出现过的国家代码（一轮多国时才有）
         self._tail = None
         self._state = None
         self._state_at = 0.0
@@ -939,6 +1027,7 @@ class Follower(object):
         self.run_id = run_id
         self.records = []
         self.stores = []
+        self.regions = []
         self._state = None
         self._state_at = 0.0
         self._tail = (Tailer(run_paths(run_id, self.log_dir)["log"])
@@ -962,6 +1051,9 @@ class Follower(object):
                 s = rec["store"]
                 if s and s != NO_STORE and s not in self.stores:
                     self.stores.append(s)
+                r = rec.get("region")
+                if r and r not in self.regions:
+                    self.regions.append(r)
             self.records.extend(new)
         changed = False
         # 状态一秒看一次就够；已经结束的那轮不会再变，就不反复读了。
@@ -981,8 +1073,93 @@ class Follower(object):
         return {"reset": reset, "new": new, "more": more,
                 "state": self._state, "state_changed": changed or reset}
 
-    def filtered(self, store=None, min_level=None):
-        return [r for r in self.records if matches(r, store, min_level)]
+    def filtered(self, store=None, min_level=None, region=None, text=None):
+        return [r for r in self.records
+                if matches(r, store, min_level, region, text)]
+
+
+# ════════════════════════════════════════════════════════════ 查看器的一行
+
+def view_columns(rec, with_region=False):
+    """查看器里一行分成哪几列：[时间, (国家,) 步骤, 店铺, 级别, 正文]。
+
+    日志文件里每行都带日期和入口，那是给事后翻文件的人看的；窗口里入口是顶上
+    那块色块、日期在「看哪一轮」里，所以只留时分秒。国家只在一轮多国（--region
+    ALL）时才有一列，正文前面那个 "[CL] " 挪进这一列。解析不了的行整行放进正文。
+    """
+    if not rec.get("time"):
+        cols = ["", "", "", "", rec.get("raw") or rec.get("message") or ""]
+        return cols[:1] + ([""] if with_region else []) + cols[1:]
+    store = rec.get("store") or ""
+    cols = [rec["time"][-8:], rec.get("step") or "",
+            "" if store == NO_STORE else store, rec.get("level") or ""]
+    body = rec.get("body") if rec.get("body") is not None else rec.get("message")
+    if with_region:
+        r = rec.get("region")
+        cols.insert(1, region_name(r) if r else "")
+    else:
+        body = rec.get("message")
+    return cols + [body or ""]
+
+
+# ════════════════════════════════════════════════════════════ 状态栏
+
+def elapsed_text(run_id, now=None):
+    """"1:12:05" —— 从运行编号里的开始时间算到现在。算不出来返回 ""。"""
+    parsed = parse_run_id(run_id)
+    if not parsed:
+        return ""
+    secs = int(((now or datetime.datetime.now()) - parsed[0]).total_seconds())
+    if secs < 0:
+        return ""
+    return "%d:%02d:%02d" % (secs // 3600, secs % 3600 // 60, secs % 60)
+
+
+def live_status(st, records=(), now=None, scan=3000):
+    """窗口顶上那一句"现在在跑什么"：国家、第几个国家、月份、步骤、店铺（第几家）、
+    已经跑了多久。不在跑（或没有记录）返回 None。
+
+    st 是 run_state() 的结果；records 是查看器读到的日志行（as_record 的结果），
+    只往回看最后 scan 行 —— 一份几万行的日志每秒从头翻一遍太浪费。
+    """
+    if not st or st.get("state") != "running":
+        return None
+    cur = st.get("current") or {}
+    summary = st.get("summary") or {}
+    region = summary.get("region") or cur.get("region") or "MX"
+    parts = []
+    if region == "ALL":
+        r = cur.get("current_region") or summary.get("current_region")
+        idx, n = cur.get("region_index"), cur.get("region_count")
+        if r:
+            parts.append("%s（%s）%s" % (region_name(r), r,
+                                       "，第 %d/%d 个国家" % (idx, n)
+                                       if idx and n else ""))
+        else:
+            parts.append("全部国家")
+    else:
+        parts.append("%s（%s）" % (region_name(region), region))
+    if st.get("month"):
+        parts.append(st["month"])
+    step = store = prog = None
+    for rec in list(records)[-scan:][::-1]:
+        if not rec.get("time"):
+            continue
+        if step is None:
+            step, store = rec.get("step"), rec.get("store")
+        m = _STORE_HEAD_RE.match((rec.get("body") or rec.get("message") or "").strip())
+        if m:
+            prog = (int(m.group(1)), int(m.group(2)), m.group(3))
+            break
+    if step:
+        parts.append(step)
+    if store and store != NO_STORE:
+        parts.append(store + ("（第 %d/%d 家）" % prog[:2]
+                              if prog and prog[2] == store else ""))
+    took = elapsed_text(st.get("run_id"), now)
+    if took:
+        parts.append("已运行 " + took)
+    return "  ·  ".join(parts)
 
 
 # ════════════════════════════════════════════════════════════ 起一轮
@@ -993,17 +1170,37 @@ def human_actions_for_run(run_id, log_dir=None):
     读这一轮摘要里记的批次汇总；没有下载这一步（只出报表）的返回 None ——
     和"下载了、没有要人处理的"（返回 []）区分开。
     """
+    groups = human_action_groups(run_id, log_dir)
+    return groups[0] if groups else None
+
+
+def _region_batches(summary):
+    """一轮摘要里的批次汇总：[(区域, 批次汇总路径, 是不是这个国家的全部店铺)]。
+
+    单个国家的一轮只有一项；--region ALL 的一轮每个国家一项（都是全部店铺）。"""
+    if summary.get("region") == "ALL":
+        return [(r.get("region") or "MX", r.get("batch_summary"), True)
+                for r in summary.get("regions") or [] if isinstance(r, dict)]
+    return [(summary.get("region") or "MX", summary.get("batch_summary"),
+             summary.get("stores") in ("all", None))]
+
+
+def human_action_groups(run_id, log_dir=None):
+    """某一轮里每个国家下载之后需要人处理的店：[{run_id, month, region,
+    stores, actions, full}]。没有下载这一步的国家不出现。"""
     summary = read_json(run_paths(run_id, log_dir)["json"]) or {}
-    batch = read_json(summary.get("batch_summary") or "") if summary.get(
-        "batch_summary") else None
-    if not batch:
-        return None
-    import download_diag                # 纯 Python，不带 selenium / tkinter
-    return {"run_id": run_id, "month": summary.get("month"),
-            "region": summary.get("region") or "MX",
-            "stores": [r.get("store") for r in batch.get("stores") or []
-                       if isinstance(r, dict)],
-            "actions": download_diag.human_actions(batch.get("stores"))}
+    out = []
+    for region, path, full in _region_batches(summary):
+        batch = read_json(path) if path else None
+        if not batch:
+            continue
+        import download_diag            # 纯 Python，不带 selenium / tkinter
+        out.append({"run_id": run_id, "month": summary.get("month"),
+                    "region": region, "full": full,
+                    "stores": [r.get("store") for r in batch.get("stores") or []
+                               if isinstance(r, dict)],
+                    "actions": download_diag.human_actions(batch.get("stores"))})
+    return out
 
 
 def pending_human_actions(log_dir=None, look_back=30):
@@ -1020,23 +1217,21 @@ def pending_human_actions(log_dir=None, look_back=30):
     seen, actions, month = set(), [], None
     full = set()                        # 已经见过一轮全店下载的区域
     for run in list_runs(log_dir, limit=look_back):
-        summary = read_json(run_paths(run["run_id"], log_dir)["json"])
-        if summary is None:
+        if read_json(run_paths(run["run_id"], log_dir)["json"]) is None:
             continue
-        region = summary.get("region") or "MX"
-        if region in full:
-            continue                    # 这个国家更晚有过一轮全店：这轮过时了
-        got = human_actions_for_run(run["run_id"], log_dir)
-        if got is None:
-            continue
-        fresh = [s for s in got["stores"] if s not in seen]
-        for a in got["actions"]:
-            if a["store"] in fresh:
-                actions.append(dict(a, run_id=got["run_id"], region=region))
-                month = month or got["month"]
-        seen.update(got["stores"])
-        if summary.get("stores") in ("all", None):
-            full.add(region)            # 一轮全店下载：这个国家再往前的都过时了
+        # --region ALL 的一轮里每个国家各算一段，和单独跑那个国家一样对待。
+        for got in human_action_groups(run["run_id"], log_dir):
+            region = got["region"]
+            if region in full:
+                continue                # 这个国家更晚有过一轮全店：这段过时了
+            fresh = [s for s in got["stores"] if s not in seen]
+            for a in got["actions"]:
+                if a["store"] in fresh:
+                    actions.append(dict(a, run_id=got["run_id"], region=region))
+                    month = month or got["month"]
+            seen.update(got["stores"])
+            if got["full"]:
+                full.add(region)        # 一轮全店下载：这个国家再往前的都过时了
     return {"month": month, "actions": actions}
 
 

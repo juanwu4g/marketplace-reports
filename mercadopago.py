@@ -121,6 +121,9 @@ def set_site(code):
         spec["url"] = base + spec["url"][len(_BASE):]
     _BASE = base
     REPORTS_URL = REPORTS["settlement"]["url"]
+    facts = site_config.get(code)
+    ES_MONTHS[9] = facts.get("september", "septiembre")
+    ES_ABBR[9] = facts.get("sep_abbr", "sep")
 
 ES_MONTHS = [None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]

@@ -7,13 +7,14 @@
     python run_monthly.py --step collect     # 只补取欠着的报表
     python run_monthly.py --stores A B       # 只跑这几家（不出全店汇总）
     python run_monthly.py --region CL        # 智利店铺（默认 MX 墨西哥）
+    python run_monthly.py --region ALL       # 全部国家依次跑（墨西哥第一）
     python run_monthly.py --dry-run          # 只打印会执行什么
 
 文件名还叫 run_monthly 是因为生产机器上已经登记的计划任务调的是
 run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一次运行**的入口：
 
-    启动.cmd     -> gui.py          -> run_monthly.py --entrance manual ...
-    定时设置.cmd -> 计划任务         -> run_monthly.py --entrance scheduled
+    ML报表.cmd（启动.cmd） -> ml_app.py -> run_monthly.py --entrance manual ...
+    计划任务（在同一个窗口里设置） -> run_monthly.cmd --entrance scheduled
     命令行                          -> run_monthly.py（--entrance 默认 cli）
 
 三条路只差 --entrance 这一个参数，它只影响日志里"入口"那一列。锁、日志、
@@ -78,6 +79,26 @@ run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一
   "别忘了传"来保证。run_reports 带 --region，汇总表叫 CL_ML_全店汇总_<月>.xlsx，
   告警文件叫 `！报表异常_CL_<年月>.txt`。
 * --stores 里有不属于这个区域的店：退出码 3，什么都不跑。
+
+全部国家：--region ALL
+----------------------
+一个进程、一把锁、一份运行日志，按 store_config.regions() 的顺序（墨西哥第一）
+把每个有店铺的国家**依次**跑一遍。每个国家的子进程命令和单独跑它时一字不差
+（就是同一个 build_plan），各出各的全店汇总表、各写各的告警文件。
+
+* 日志里每个国家一段，段首一行醒目的分隔；这一段里的每一行正文前面都带
+  `[MX] ` / `[CL] ` 这样的国家代码 —— 只转发中间十几行也分得清是哪个国家。
+  不在任何国家里的行（文件头、最后的总结）不带。
+* 一个国家下载硬失败、配置有问题，只影响它自己：记下、告警，接着跑下一个。
+  被人中止则整轮停下，后面的国家不跑。
+* 没有店铺的国家跳过，日志里记一笔。
+* 退出码取最坏的那个：0 < 1 < 7 < 2 < 3 < 4（和单个国家时"7 让位给更糟的
+  报表失败"同一个排法）；中止仍是 6。
+* 不能和 --stores 一起用（店铺子集只在一个国家里有意义）：退出码 3。
+* 下载时限 --max-hours 按国家各算各的，和单独跑时一样。
+
+以前每个国家一个计划任务，两个任务时间挨得近就会撞上这把全局锁、后到的被
+跳过（退出码 5）。一个 --region ALL 的任务从根上没有这个问题。
 """
 import argparse
 import datetime
@@ -108,9 +129,12 @@ LOCK = os.path.join(LOG_DIR, "monthly.lock")
 # 6 小时，这里留足余量。
 STALE_HOURS = 8
 
-# 下载这一步最多跑多久，见文件头「自己的时限」。必须小于 schedule_gui 里的
+# 下载这一步最多跑多久，见文件头「自己的时限」。必须小于 win_tasks 里的
 # TIME_LIMIT（6 小时），差出来的那一小时留给出报表和写告警。
 MAX_HOURS = 5.0
+
+# --region ALL：依次跑全部国家。
+ALL = "ALL"
 
 # 子进程在跑的时候，多久看一次中止请求和时限。
 POLL = 0.5
@@ -135,7 +159,7 @@ def resolve_out_dir(cli=None):
     看起来就像"只下载、没出报表"。告警文件也跟着写错了地方。
 
     直接读 gui_settings.json 而不 import gui：那会把 tkinter 拖进一个无界面的
-    计划任务里。定时设置界面从这里 import 同一个函数，规则只有一份。
+    计划任务里。统一窗口从这里 import 同一个函数，规则只有一份。
     """
     if cli:
         return cli, "命令行 --out-dir"
@@ -173,7 +197,81 @@ def wrong_region(region, stores):
 
 def region_label(region):
     import store_config
+    if region == ALL:
+        return "全部国家"
     return "%s（%s）" % (store_config.region_name(region), region)
+
+
+def region_lineup():
+    """--region ALL 依次跑哪些国家。返回 (要跑的, 跳过的)。
+
+    要跑的：[{"region", "stores", "problem"}]，顺序是 store_config.regions()
+    （墨西哥第一）。problem 和 check_region 的一样是 (退出码, 一句话)：这个国家
+    的 batch 写坏了 / 有店不在白名单，它自己不跑、告警，别的国家照跑。
+    跳过的：store_config.REGION_NAMES 里一家店都没有的国家（记一笔就好）。
+
+    config.json 本身读不了时抛 StoreConfigError —— 那就哪个国家都定不了。
+    """
+    import store_config
+    order = list(store_config.regions())
+    order += [r for r in store_config.REGION_NAMES if r not in order]
+    run, skipped = [], []
+    for r in order:
+        try:
+            names = list(store_config.stores_for_region(r))
+        except store_config.StoreNotAllowed as e:
+            run.append({"region": r, "stores": [],
+                        "problem": (3, "店铺不在白名单：%s" % e)})
+            continue
+        except store_config.StoreConfigError as e:
+            run.append({"region": r, "stores": [],
+                        "problem": (4, "config.json 有问题，定不了%s有哪些店铺：%s"
+                                    % (region_label(r), e))})
+            continue
+        if names:
+            run.append({"region": r, "stores": names, "problem": None})
+        else:
+            skipped.append(r)
+    return run, skipped
+
+
+# 退出码的轻重，--region ALL 取最坏的那个。7（下载超时、报表照出）比 1 重，
+# 但让位给 2–4 —— 和单个国家里 final = worst if worst >= 2 else 7 一致。
+SEVERITY = (0, 1, 7, 2, 3, 4)
+
+
+def worst_code(codes):
+    """几个国家的退出码合成一个。认不出来的码按 2 算。"""
+    worst = 0
+    for c in codes:
+        c = c if c in SEVERITY else 2
+        if SEVERITY.index(c) > SEVERITY.index(worst):
+            worst = c
+    return worst
+
+
+class RegionLog(object):
+    """--region ALL 时给一个国家用的日志：每行正文前面加 `[CL] `。
+
+    和 runlog.RunLog 同样的接口（write/info/warn/error/path），run_child、
+    run_steps、conclude 拿到哪个都一样用。"""
+
+    def __init__(self, log, region):
+        self.log = log
+        self.region = region
+        self.path = log.path
+
+    def write(self, step, level, message, store=runlog.NO_STORE):
+        self.log.write(step, level, runlog.tag_region(self.region, message), store)
+
+    def info(self, step, message, store=runlog.NO_STORE):
+        self.write(step, runlog.INFO, message, store)
+
+    def warn(self, step, message, store=runlog.NO_STORE):
+        self.write(step, runlog.WARN, message, store)
+
+    def error(self, step, message, store=runlog.NO_STORE):
+        self.write(step, runlog.ERROR, message, store)
 
 
 def alert_name(month, region="MX"):
@@ -541,8 +639,8 @@ def human_line(need):
     for a in need:
         if a["store"] not in stores:
             stores.append(a["store"])
-    return ("%d 家店铺需要人工处理：%s。处理完在「启动」窗口的「需要人工处理」"
-            "里点「重跑这些店铺并重出全部报表」。"
+    return ("%d 家店铺需要人工处理：%s。处理完双击 ML报表.cmd，在「需要人工处理」"
+            "那一页点「重跑这些店铺并重出全部报表」。"
             % (len(stores), "；".join(
                 "%s（%s）" % (s, "、".join(sorted(set(
                     a["title"] for a in need if a["store"] == s))))
@@ -632,7 +730,7 @@ def describe_batch(path):
     if waiting:
         n = sum(len(missing(r)) for r in waiting)
         attention.append("%d 张不影响报表的文件没下到（平台还在生成，或是报表不读的"
-                         "那几种）：%s。需要的话过几个小时在「启动」窗口点「补取欠的"
+                         "那几种）：%s。需要的话过几个小时在 ML报表.cmd 窗口点「补取欠的"
                          "报表」。" % (n, names(waiting)))
     tr = doc.get("transform")
     if isinstance(tr, dict) and not tr.get("skipped") and tr.get("ok") is False:
@@ -650,6 +748,10 @@ def _cause_text(code):
         return download_diag.CAUSES[code][0]
     except Exception:
         return "原因见日志"
+
+
+def alert_path(out_dir, month, region="MX"):
+    return os.path.join(os.path.abspath(out_dir), alert_name(month, region))
 
 
 def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
@@ -679,8 +781,7 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
                                  runlog.ENTRANCE_WHAT.get(entrance, "")), ""]
     body += lines
     body += ["", "完整日志：%s" % (log_path or runlog.runs_dir(LOG_DIR)),
-             "也可以双击 启动.cmd 或 定时设置.cmd，在窗口下方的「运行日志」里"
-             "挑这一轮来看。",
+             "也可以双击 ML报表.cmd，在窗口右边的「运行日志」里挑这一轮来看。",
              "处理办法见 README.md 第 12 节《出问题先做这三步》。"]
     text = "\n".join(body)
     try:
@@ -708,6 +809,7 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
 # ---------------------------------------------------------------- 主流程
 
 def parse_args(argv=None):
+    import store_config
     ap = argparse.ArgumentParser()
     ap.add_argument("--month", default=None, metavar="YYYY-MM",
                     help="目标月份，默认上个月")
@@ -716,10 +818,11 @@ def parse_args(argv=None):
                     help="只跑其中一步。collect = 只补取欠着的报表")
     ap.add_argument("--stores", nargs="+", default=None, metavar="NAME",
                     help="只跑这几家店。给了就不出全店汇总表（避免覆盖真正的那份）")
-    ap.add_argument("--region", type=str.upper, choices=["MX", "CL"],
+    ap.add_argument("--region", type=str.upper,
+                    choices=list(store_config.REGION_NAMES) + [ALL],
                     default="MX",
-                    help="哪个国家的店铺：MX 墨西哥（默认）/ CL 智利。"
-                         "一轮只跑一个国家")
+                    help="哪个国家的店铺：MX 墨西哥（默认）/ CL 智利 / PE 秘鲁；"
+                         "ALL = 全部国家依次跑（墨西哥第一），同一把锁、同一份日志")
     ap.add_argument("--reports-for", choices=["stores", "all"], default="stores",
                     help="和 --stores 一起用：all = 只下载这几家店，报表给全部"
                          "店铺重出（含全店汇总）。给人工处理完补跑用")
@@ -727,7 +830,7 @@ def parse_args(argv=None):
                     help="报表输出目录。不给就用主界面里选的，再不行用默认目录")
     ap.add_argument("--entrance", choices=list(runlog.ENTRANCES), default="cli",
                     help="谁起的这一轮，只影响日志里的「入口」一列："
-                         "manual 启动窗口 / scheduled 计划任务 / cli 命令行")
+                         "manual ML 报表窗口 / scheduled 计划任务 / cli 命令行")
     ap.add_argument("--max-hours", type=float, default=MAX_HOURS, metavar="N",
                     help="下载这一步最多跑 N 小时，到点掐断并接着出报表"
                          "（默认 %g，0 = 不限）" % MAX_HOURS)
@@ -761,11 +864,19 @@ def header(log, args, month, run_id, plan, out_dir, out_src):
     log.info(S, "步骤　　：%s" % " → ".join(s["label"] for s in plan))
     for i, s in enumerate(plan, 1):
         log.info(S, "命令 %d　：%s" % (i, show(s["cmd"])))
+    _header_tail(log, args, out_dir, out_src,
+                 any(s["key"] in ("download", "collect") for s in plan))
+
+
+def _header_tail(log, args, out_dir, out_src, downloads, per_region=False):
+    """文件头的后半段：输出目录、时限、机器、版本。单个国家和全部国家共用。"""
+    S = runlog.STEP_START
     log.info(S, "输出目录：%s（%s）" % (os.path.abspath(out_dir), out_src))
-    if any(s["key"] in ("download", "collect") for s in plan):
-        log.info(S, "下载时限：%s" % ("%g 小时，到点掐断下载、接着出报表"
-                                  % args.max_hours if args.max_hours > 0
-                                  else "不限"))
+    if downloads:
+        log.info(S, "下载时限：%s" % ("%g 小时%s，到点掐断下载、接着出报表"
+                                  % (args.max_hours,
+                                     "（每个国家各算各的）" if per_region else "")
+                                  if args.max_hours > 0 else "不限"))
     try:
         user = getpass.getuser()
     except Exception:
@@ -776,8 +887,135 @@ def header(log, args, month, run_id, plan, out_dir, out_src):
     log.info(S, "日志文件：%s" % log.path)
 
 
+def run_steps(log, args, plan, run_id, stores, rec, st, save):
+    """依次跑一个国家的子进程，把结果记进 rec、把轻重记进 st。
+
+    rec：steps / urgent / attention / batch_summary / human_actions 这几个键，
+         单个国家时就是摘要 doc 本身，全部国家时是 doc["regions"] 里那一项。
+    st ：{"worst", "cut", "aborted"}，就地改 —— 中途抛异常时调用方还拿得到
+         已经跑出来的结果。
+    异常不在这里接，由调用方写日志、告警、放锁。
+    """
+    steps, bad, urgent = rec["steps"], rec["attention"], rec["urgent"]
+    for s in plan:
+        key = s["key"]
+        step = runlog.LineClassifier.BASE[key]
+        limited = key in ("download", "collect") and args.max_hours > 0
+        deadline = time.time() + args.max_hours * 3600 if limited else None
+        log.info(step, "开始：%s" % s["label"])
+        r = run_child(log, key, s["cmd"], run_id, deadline=deadline,
+                      stores=stores, log_dir=LOG_DIR)
+        code = r["code"]
+        steps.append({"step": key, "code": code, "seconds": r["seconds"],
+                      "ended": r["ended"]})
+
+        if r["ended"] == "aborted":
+            st["aborted"] = True
+            log.warn(step, "收到中止请求：已结束「%s」和它起的所有进程"
+                           "（用时 %d 秒）。已经下好的文件都还在。"
+                     % (s["label"], r["seconds"]))
+            bad.append("被人中止于「%s」。" % s["label"])
+            return
+
+        if r["ended"] == "deadline":
+            st["cut"] = True
+            where = ""
+            if r["progress"]:
+                where = "，当时在第 %d/%d 家（%s）" % r["progress"]
+            msg = ("下载超过 %g 小时被掐断%s。报表按**已经下到**的数据出；"
+                   "没轮到的店铺可能用的是更早一批数据，或者没有报表 —— "
+                   "看报表的【⑩ 数据缺口与待办】。"
+                   % (args.max_hours, where))
+            log.error(step, msg)
+            urgent.append(msg)
+            bad.append(msg)
+            save()
+            continue                      # 接着出报表，见文件头
+
+        log.write(step, runlog.INFO if code == 0 else
+                  runlog.WARN if code == 1 else runlog.ERROR,
+                  "结束：%s，退出码 %d，用时 %d 分 %02d 秒"
+                  % (s["label"], code, r["seconds"] // 60, r["seconds"] % 60))
+        code = norm(code)
+        st["worst"] = max(st["worst"], code)
+
+        if key in ("download", "collect"):
+            summary = r["markers"].get("BATCH_SUMMARY_JSON")
+            rec["batch_summary"] = summary
+            u, a = describe_batch(summary)
+            need = human_needed(summary)
+            rec["human_actions"] = need
+            if need:
+                report_human(log, step, need)
+                # 放在告警最前面：这是唯一一类"不找人就永远好不了"的事。
+                urgent.append(human_line(need))
+            if code >= 2:
+                urgent.append("下载失败（退出码 %d：%s），报表未生成。"
+                              % (code, HARD.get(code, "")))
+                urgent.extend(u)
+                bad.extend(urgent)
+                bad.extend(a)
+                save()
+                if len(plan) > 1:
+                    log.error(step, "下载是硬失败，后面的出报表不跑了 —— "
+                                    "不能拿旧数据出一份看起来正常的报表。")
+                return
+            if code == 1:
+                if not u and not a:
+                    # 没有批次汇总可读：只能笼统地说。
+                    u = ["下载这一步有需要关注的项（没读到批次汇总，细节"
+                         "看日志）。报表已按现有数据生成，缺口见报表的"
+                         "【⑩ 数据缺口与待办】。"]
+                urgent.extend(u)
+                bad.extend(u + a)
+        else:
+            if code == 1:
+                # 报表都写出来了，只是校验或 Ventas 源数据要人核对。不告警。
+                bad.append("报表都生成了，但需要核对：有校验未过，或 Ventas "
+                           "源数据不完整。看报表【⑩ 数据缺口与待办】。")
+            elif code >= 2:
+                why = {2: "至少有一份报表没有生成（崩溃 / 超时），或者没有"
+                          "一家店有可用的下载目录"}.get(code, HARD.get(code, ""))
+                urgent.append("报表步骤失败（退出码 %d）：%s。" % (code, why))
+                bad.append(urgent[-1])
+        save()
+
+
+def internal_error(log, rec, st):
+    """运行器自己出了没料到的错。写进日志、记进告警，算硬失败。"""
+    log.error(runlog.STEP_END, "运行器内部出错：\n" + traceback.format_exc())
+    rec["urgent"].append("运行器内部出错，这一轮没跑完。细节在日志最后。")
+    rec["attention"].append(rec["urgent"][-1])
+    st["worst"] = max(st["worst"], 2)
+
+
+def conclude(log, args, month, out_dir, region, st, rec, log_path):
+    """一个国家（没被中止）跑完之后：算出它的退出码，列出要关注的项，该告警就告警。"""
+    E = runlog.STEP_END
+    bad, urgent = rec["attention"], rec["urgent"]
+    # 时限被掐是 7，除非还有更糟的事（报表也没出来）。
+    final = st["worst"] if (st["worst"] >= 2 or not st["cut"]) else 7
+    if final == 0:
+        log.info(E, "%s 全部成功。" % month)
+    else:
+        log.write(E, runlog.WARN if final == 1 else runlog.ERROR,
+                  ("%s 跑完了，有需要关注的项：" if final == 1
+                   else "%s 这一轮出了问题：") % month)
+        for b in bad:
+            log.write(E, runlog.WARN, "  · %s" % b)
+        if urgent:
+            alert(month, urgent, out_dir, entrance=args.entrance,
+                  log_path=log_path, region=region,
+                  say=lambda level, text: log.write(E, level, text))
+    return final
+
+
 def execute(args, plan=None):
-    """跑一轮。plan 给测试用：换掉真正的子进程命令，流程本身不变。"""
+    """跑一轮。plan 给测试用：换掉真正的子进程命令，流程本身不变。
+
+    --region ALL 走 execute_all；那边的 plan 是 {区域: 计划}。"""
+    if args.region == ALL:
+        return execute_all(args, plan)
     month = args.month or prev_month()
     out_dir, out_src = resolve_out_dir(args.out_dir)
     region = args.region
@@ -809,8 +1047,8 @@ def execute(args, plan=None):
     log = runlog.RunLog(run_id, args.entrance, LOG_DIR)
     S, E = runlog.STEP_START, runlog.STEP_END
 
-    # bad    ：写进日志和摘要，供人翻查
-    # urgent ：还要写成告警文件推到财务眼前。判断标准见 alert() 的说明。
+    # attention（bad）：写进日志和摘要，供人翻查
+    # urgent        ：还要写成告警文件推到财务眼前。判断标准见 alert() 的说明。
     steps, bad, urgent = [], [], []
     doc = {"run_id": run_id, "entrance": args.entrance, "pid": os.getpid(),
            "region": region, "month": month, "step": args.step, "stores": args.stores or "all",
@@ -871,120 +1109,254 @@ def execute(args, plan=None):
                           "step": args.step}, LOG_DIR)
     save()
     stores = args.stores or all_stores or known_stores()
-    worst, cut, aborted = 0, False, False
+    st = {"worst": 0, "cut": False, "aborted": False}
     try:
-        for s in plan:
-            key = s["key"]
-            step = runlog.LineClassifier.BASE[key]
-            limited = key in ("download", "collect") and args.max_hours > 0
-            deadline = time.time() + args.max_hours * 3600 if limited else None
-            log.info(step, "开始：%s" % s["label"])
-            r = run_child(log, key, s["cmd"], run_id, deadline=deadline,
-                          stores=stores, log_dir=LOG_DIR)
-            code = r["code"]
-            rec = {"step": key, "code": code, "seconds": r["seconds"],
-                   "ended": r["ended"]}
-            steps.append(rec)
-
-            if r["ended"] == "aborted":
-                aborted = True
-                log.warn(step, "收到中止请求：已结束「%s」和它起的所有进程"
-                               "（用时 %d 秒）。已经下好的文件都还在。"
-                         % (s["label"], r["seconds"]))
-                bad.append("被人中止于「%s」。" % s["label"])
-                break
-
-            if r["ended"] == "deadline":
-                cut = True
-                where = ""
-                if r["progress"]:
-                    where = "，当时在第 %d/%d 家（%s）" % r["progress"]
-                msg = ("下载超过 %g 小时被掐断%s。报表按**已经下到**的数据出；"
-                       "没轮到的店铺可能用的是更早一批数据，或者没有报表 —— "
-                       "看报表的【⑩ 数据缺口与待办】。"
-                       % (args.max_hours, where))
-                log.error(step, msg)
-                urgent.append(msg)
-                bad.append(msg)
-                save()
-                continue                      # 接着出报表，见文件头
-
-            log.write(step, runlog.INFO if code == 0 else
-                      runlog.WARN if code == 1 else runlog.ERROR,
-                      "结束：%s，退出码 %d，用时 %d 分 %02d 秒"
-                      % (s["label"], code, r["seconds"] // 60, r["seconds"] % 60))
-            code = norm(code)
-            worst = max(worst, code)
-
-            if key in ("download", "collect"):
-                summary = r["markers"].get("BATCH_SUMMARY_JSON")
-                doc["batch_summary"] = summary
-                u, a = describe_batch(summary)
-                need = human_needed(summary)
-                doc["human_actions"] = need
-                if need:
-                    report_human(log, step, need)
-                    # 放在告警最前面：这是唯一一类"不找人就永远好不了"的事。
-                    urgent.append(human_line(need))
-                if code >= 2:
-                    urgent.append("下载失败（退出码 %d：%s），报表未生成。"
-                                  % (code, HARD.get(code, "")))
-                    urgent.extend(u)
-                    bad.extend(urgent)
-                    bad.extend(a)
-                    save()
-                    if len(plan) > 1:
-                        log.error(step, "下载是硬失败，后面的出报表不跑了 —— "
-                                        "不能拿旧数据出一份看起来正常的报表。")
-                    break
-                if code == 1:
-                    if not u and not a:
-                        # 没有批次汇总可读：只能笼统地说。
-                        u = ["下载这一步有需要关注的项（没读到批次汇总，细节"
-                             "看日志）。报表已按现有数据生成，缺口见报表的"
-                             "【⑩ 数据缺口与待办】。"]
-                    urgent.extend(u)
-                    bad.extend(u + a)
-            else:
-                if code == 1:
-                    # 报表都写出来了，只是校验或 Ventas 源数据要人核对。不告警。
-                    bad.append("报表都生成了，但需要核对：有校验未过，或 Ventas "
-                               "源数据不完整。看报表【⑩ 数据缺口与待办】。")
-                elif code >= 2:
-                    why = {2: "至少有一份报表没有生成（崩溃 / 超时），或者没有"
-                              "一家店有可用的下载目录"}.get(code, HARD.get(code, ""))
-                    urgent.append("报表步骤失败（退出码 %d）：%s。" % (code, why))
-                    bad.append(urgent[-1])
-            save()
+        run_steps(log, args, plan, run_id, stores, doc, st, save)
     except Exception:
-        # 运行器自己出了没料到的错。写进日志、照样告警、照样放锁。
-        log.error(E, "运行器内部出错：\n" + traceback.format_exc())
-        urgent.append("运行器内部出错，这一轮没跑完。细节在日志最后。")
-        bad.append(urgent[-1])
-        worst = max(worst, 2)
+        internal_error(log, doc, st)
     finally:
         release()
         runlog.clear_current(run_id, LOG_DIR)
         runlog.clear_stop(run_id, LOG_DIR)
 
-    if aborted:
+    if st["aborted"]:
         # 人为中止不告警：停的人自己知道。
         return finish("aborted", 6)
+    final = conclude(log, args, month, out_dir, region, st, doc, paths["log"])
+    return finish("done" if final < 2 else "failed", final)
 
-    # 时限被掐是 7，除非还有更糟的事（报表也没出来）。
-    final = worst if (worst >= 2 or not cut) else 7
-    if final == 0:
-        log.info(E, "%s 全部成功。" % month)
+
+# ---------------------------------------------------------------- 全部国家
+
+def region_banner(i, n, region, stores):
+    """每个国家那一段的段首。宽一点、带上第几个，滚动的时候一眼看得见。"""
+    return "━━━━━━━━ 第 %d/%d 个国家：%s，%d 家店铺 ━━━━━━━━" % (
+        i, n, region_label(region), len(stores))
+
+
+def execute_all(args, plans=None):
+    """--region ALL：全部国家依次跑，见文件头「全部国家」。
+
+    plans 给测试用：{区域: 计划}，换掉那个国家真正的子进程命令。没给的国家
+    照常用 build_plan —— 和单独跑它时同一个函数、同样的参数。
+    """
+    month = args.month or prev_month()
+    out_dir, out_src = resolve_out_dir(args.out_dir)
+    problem, lineup, skipped = None, [], []
+    if args.stores:
+        problem = (3, "选了全部国家（--region ALL）就不能再指定店铺：店铺子集只在"
+                      "一个国家里有意义。只跑几家店请选具体的国家。")
     else:
-        log.write(E, runlog.WARN if final == 1 else runlog.ERROR,
-                  ("%s 跑完了，有需要关注的项：" if final == 1
-                   else "%s 这一轮出了问题：") % month)
-        for b in bad:
-            log.write(E, runlog.WARN, "  · %s" % b)
-        if urgent:
-            alert(month, urgent, out_dir, entrance=args.entrance,
-                  log_path=paths["log"], region=region,
-                  say=lambda level, text: log.write(E, level, text))
+        import store_config
+        try:
+            lineup, skipped = region_lineup()
+        except store_config.StoreConfigError as e:
+            problem = (4, "config.json 有问题，定不了每个国家有哪些店铺：%s" % e)
+        if not problem and not lineup:
+            problem = (4, "config.json 里一个国家的店铺都没有（stores.allowed / "
+                          "batch / batches 都是空的）。")
+    for item in lineup:
+        item["plan"] = []
+        if item["problem"]:
+            continue
+        if plans is not None and item["region"] in plans:
+            item["plan"] = plans[item["region"]]
+        else:
+            item["plan"] = build_plan(args.step, month, None, out_dir,
+                                      region=item["region"],
+                                      all_stores=item["stores"])
+
+    if args.dry_run:
+        print("入口　　：%s" % runlog.ENTRANCE_ZH[args.entrance])
+        print("区域　　：全部国家，依次跑")
+        print("目标月份：%s" % month)
+        if problem:
+            print("\n[错误] %s" % problem[1])
+            return problem[0]
+        print("日志目录：%s" % runlog.runs_dir(LOG_DIR))
+        print("输出目录：%s（%s）" % (os.path.abspath(out_dir), out_src))
+        for i, item in enumerate(lineup, 1):
+            print("\n[dry-run] 第 %d/%d 个国家：%s，%d 家店铺"
+                  % (i, len(lineup), region_label(item["region"]),
+                     len(item["stores"])))
+            if item["problem"]:
+                print("  [错误] %s（这个国家不跑，别的国家照跑）" % item["problem"][1])
+            for s in item["plan"]:
+                print("  " + show(s["cmd"]))
+        for r in skipped:
+            print("\n[dry-run] %s：config.json 里没有店铺，跳过" % region_label(r))
+        return 0
+
+    run_id = runlog.make_run_id(args.entrance, log_dir=LOG_DIR)
+    paths = runlog.run_paths(run_id, LOG_DIR)
+    log = runlog.RunLog(run_id, args.entrance, LOG_DIR)
+    S, E = runlog.STEP_START, runlog.STEP_END
+
+    regions_doc = []
+    doc = {"run_id": run_id, "entrance": args.entrance, "pid": os.getpid(),
+           "region": ALL, "month": month, "step": args.step, "stores": "all",
+           "began": now(), "ended": None, "status": "running",
+           "steps": [], "exit": None, "urgent": [], "attention": [],
+           "log": paths["log"], "out_dir": os.path.abspath(out_dir),
+           "out_dir_source": out_src, "max_hours": args.max_hours,
+           "commands": [{"region": it["region"], "step": s["key"], "cmd": s["cmd"]}
+                        for it in lineup for s in it["plan"]],
+           "regions": regions_doc, "skipped_regions": skipped,
+           "current_region": None,
+           "batch_summary": None, "human_actions": []}
+
+    extra = []                  # 不属于哪个国家的问题（config 读不了、运行器出错）
+
+    def save(**kw):
+        doc.update(kw)
+        # 平铺的几项（steps / urgent / attention）从各国那里汇总，旧的读法
+        # （exit2_text、界面）照样能用；每项都标上国家。
+        doc["steps"] = [dict(x, region=r["region"]) for r in regions_doc
+                        for x in r["steps"]]
+        doc["urgent"] = extra + [runlog.tag_region(r["region"], x)
+                                 for r in regions_doc for x in r["urgent"]]
+        doc["attention"] = extra + [runlog.tag_region(r["region"], x)
+                                    for r in regions_doc for x in r["attention"]]
+        doc["human_actions"] = [dict(a, region=r["region"]) for r in regions_doc
+                                for a in r.get("human_actions") or []]
+        try:
+            runlog.write_json(paths["json"], doc)
+        except Exception as e:
+            log.warn(E, "[警告] 摘要写不进去：%s" % str(e)[:100])
+
+    def finish(status, code):
+        save(status=status, exit=code, ended=now(), current_region=None)
+        text, _ = runlog.exit_meaning(code)
+        if code == 2:
+            text = runlog.exit2_text(doc) or text
+        level = (runlog.INFO if code == 0 else
+                 runlog.WARN if code in (1, 5, 6) else runlog.ERROR)
+        log.write(E, level, "本轮结束：退出码 %d —— %s" % (code, text))
+        log.close()
+        return code
+
+    # ---- 文件头
+    e = args.entrance
+    log.info(S, "入口　　：%s —— %s" % (runlog.ENTRANCE_ZH[e], runlog.ENTRANCE_WHAT[e]))
+    log.info(S, "运行编号：%s" % run_id)
+    log.info(S, "目标月份：%s" % month)
+    log.info(S, "区域　　：全部国家，依次跑：%s" % (
+        " → ".join(region_label(it["region"]) for it in lineup) or "（无）"))
+    for it in lineup:
+        log.info(S, "店铺　　：%s %s" % (
+            region_label(it["region"]),
+            "全部 %d 家：%s" % (len(it["stores"]), "、".join(it["stores"]))
+            if it["stores"] else "（定不了，见下）"))
+    for r in skipped:
+        log.info(S, "店铺　　：%s config.json 里没有店铺，跳过" % region_label(r))
+    if lineup and lineup[0]["plan"]:
+        log.info(S, "步骤　　：每个国家 %s" % " → ".join(
+            s["label"] for s in lineup[0]["plan"]))
+    for it in lineup:
+        for i, s in enumerate(it["plan"], 1):
+            log.info(S, "命令 %s-%d：%s" % (it["region"], i, show(s["cmd"])))
+    _header_tail(log, args, out_dir, out_src,
+                 any(s["key"] in ("download", "collect")
+                     for it in lineup for s in it["plan"]), per_region=True)
+
+    if problem:
+        log.error(S, problem[1])
+        extra.append(problem[1])
+        # 哪个国家都定不了：写进墨西哥那份告警（大家看惯了的那个文件）。
+        alert(month, [problem[1]], out_dir, entrance=args.entrance,
+              log_path=paths["log"], region="MX",
+              say=lambda level, text: log.write(E, level, text))
+        return finish("failed", problem[0])
+
+    if not acquire(lambda level, text: log.write(S, level, text)):
+        return finish("skipped", 5)
+
+    runlog.clear_stop(run_id, LOG_DIR)
+    current = {"run_id": run_id, "pid": os.getpid(), "entrance": args.entrance,
+               "log": paths["log"], "started": doc["began"], "month": month,
+               "region": ALL, "regions": [it["region"] for it in lineup],
+               "step": args.step}
+    runlog.write_current(current, LOG_DIR)
+    save()
+    aborted = False
+    n = len(lineup)
+    try:
+        for i, it in enumerate(lineup, 1):
+            r = it["region"]
+            rlog = RegionLog(log, r)
+            rec = {"region": r, "stores": it["stores"], "status": "running",
+                   "exit": None, "began": now(), "ended": None, "steps": [],
+                   "urgent": [], "attention": [], "batch_summary": None,
+                   "human_actions": [], "alert": None}
+            regions_doc.append(rec)
+            rlog.info(S, region_banner(i, n, r, it["stores"]))
+            runlog.write_current(dict(current, current_region=r,
+                                      region_index=i, region_count=n), LOG_DIR)
+            save(current_region=r)
+
+            if it["problem"]:
+                code, msg = it["problem"]
+                rlog.error(S, msg + "（这个国家不跑，别的国家照跑）")
+                rec["urgent"].append(msg)
+                rec["attention"].append(msg)
+                alert(month, rec["urgent"], out_dir, entrance=args.entrance,
+                      log_path=paths["log"], region=r,
+                      say=lambda level, text, _l=rlog: _l.write(E, level, text))
+                rec.update(status="failed", exit=code, ended=now(),
+                           alert=alert_path(out_dir, month, r))
+                save()
+                continue
+
+            st = {"worst": 0, "cut": False, "aborted": False}
+            try:
+                run_steps(rlog, args, it["plan"], run_id, it["stores"], rec, st, save)
+            except Exception:
+                internal_error(rlog, rec, st)
+            if st["aborted"]:
+                aborted = True
+                rec.update(status="aborted", exit=6, ended=now())
+                save()
+                break
+            final = conclude(rlog, args, month, out_dir, r, st, rec, paths["log"])
+            rec.update(status="done" if final < 2 else "failed", exit=final,
+                       ended=now(), alert=alert_path(out_dir, month, r)
+                       if final and rec["urgent"] else None)
+            text, _ = runlog.exit_meaning(final)
+            rlog.write(E, runlog.INFO if final == 0 else
+                       runlog.WARN if final == 1 else runlog.ERROR,
+                       "%s这一段结束：退出码 %d —— %s"
+                       % (region_label(r), final, text))
+            save()
+    except Exception:
+        # 国家之间的那点衔接出了错（不是哪个国家里面的）：记下，照样收尾。
+        log.error(E, "运行器内部出错：\n" + traceback.format_exc())
+        extra.append("运行器内部出错，这一轮没跑完。细节在日志最后。")
+    finally:
+        release()
+        runlog.clear_current(run_id, LOG_DIR)
+        runlog.clear_stop(run_id, LOG_DIR)
+
+    # ---- 总结：每个国家一行
+    done = [rec["region"] for rec in regions_doc]
+    log.info(E, "全部国家的结果：")
+    for rec in regions_doc:
+        code = rec.get("exit")
+        text, _ = runlog.exit_meaning(code)
+        log.write(E, runlog.INFO if code == 0 else
+                  runlog.WARN if code in (1, 6) else runlog.ERROR,
+                  "  %s：退出码 %s —— %s" % (region_label(rec["region"]), code, text))
+    for it in lineup:
+        if it["region"] not in done:
+            log.warn(E, "  %s：没跑（前面被中止了）" % region_label(it["region"]))
+    for r in skipped:
+        log.info(E, "  %s：没有店铺，跳过" % region_label(r))
+
+    if aborted:
+        return finish("aborted", 6)
+    final = worst_code([rec.get("exit") for rec in regions_doc]
+                       + ([2] if extra else []))
+    if final == 0:
+        log.info(E, "%s 全部国家都成功。" % month)
     return finish("done" if final < 2 else "failed", final)
 
 

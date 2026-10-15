@@ -1,0 +1,3 @@
+
+  这段内容也存在 logs\_window_check.txt，可以发给技术的人看。
+

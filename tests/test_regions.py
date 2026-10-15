@@ -447,7 +447,7 @@ def test_settings_and_labels():
     assert region_choice.remembered({"region": "AR"}) == "MX"
     assert region_choice.from_label("智利") == "CL"
     assert region_choice.from_label("墨西哥") == "MX"
-    assert region_choice.labels() == ["墨西哥", "智利"]
+    assert region_choice.labels() == ["墨西哥", "智利", "秘鲁"]
     assert region_choice.window_title("MX") == "meli-mx-pipeline —— 墨西哥店铺报表"
     assert region_choice.sched_key("sched_day", "MX") == "sched_day"
     assert region_choice.sched_key("sched_day", "CL") == "sched_day_CL"

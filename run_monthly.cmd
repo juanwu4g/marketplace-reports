@@ -1,26 +1,45 @@
 @echo off
+REM ---------------------------------------------------------------------------
+REM  The one runner. The monthly scheduled task calls this file
+REM  (--entrance scheduled --region ALL); the window starts the same
+REM  run_monthly.py with --entrance manual. Arguments are passed through.
+REM  Double-clicked with no arguments: last month, download + reports.
+REM
+REM  Logs: logs\runs\<date>_<time>_<entrance>.log (also shown in the window).
+REM  Exit codes: 0 ok / 1 needs attention / 2 hard failure / 3 allowlist /
+REM              4 config error / 5 another run active / 6 stopped / 7 timeout
+REM
+REM  ASCII on purpose (see launcher\README.txt). No arguments -> wait at the end
+REM  with "timeout", not "pause": very old scheduled tasks call this file with
+REM  no arguments and a pause would hang them until Windows kills the task.
+REM ---------------------------------------------------------------------------
 chcp 65001 >nul 2>&1
-REM ============================================================
-REM  唯一的运行器。计划任务调它（带 --entrance scheduled），
-REM  「启动」窗口点按钮起的也是同一个 run_monthly.py（--entrance manual）。
-REM  手动双击也可以跑：下载上个月数据 + 生成上个月报表。
-REM  参数原样传给 run_monthly.py，见它的文件头。
-REM
-REM  日志：logs\runs\ 下，文件名是 日期_时间_入口.log，两个窗口下方都能实时看。
-REM
-REM  退出码：0 成功 / 1 有需关注项 / 2 硬失败（紫鸟、没下到数据、报表没出）
-REM          3 白名单 / 4 配置错误 / 5 另一轮还在跑 / 6 被中止 / 7 下载超时
-REM ============================================================
 cd /d "%~dp0"
+set "ML_INTERACTIVE="
+if "%~1"=="" set "ML_INTERACTIVE=1"
+if defined ML_INTERACTIVE title ML Reports - running
 
-if not exist ".venv\Scripts\python.exe" (
-  echo [x] Not found: .venv\Scripts\python.exe
-  echo [x] 缺少虚拟环境，请先在本目录依次执行这两条命令：
-  echo     python -m venv .venv
-  echo     .venv\Scripts\pip install -r requirements.txt
-  exit /b 4
-)
+if not exist ".venv\Scripts\python.exe" goto novenv
+if defined ML_INTERACTIVE type "launcher\run_start.txt"
 
-REM -u 关掉输出缓冲：计划任务超时会强杀进程，缓冲区里的日志会全丢。
+REM -u: unbuffered, so a timeout kill does not lose the buffered log lines.
 ".venv\Scripts\python.exe" -u run_monthly.py %*
-exit /b %ERRORLEVEL%
+set "RC=%ERRORLEVEL%"
+if not defined ML_INTERACTIVE exit /b %RC%
+
+if "%RC%"=="0" type "launcher\run_0.txt"
+if "%RC%"=="1" type "launcher\run_1.txt"
+if "%RC%"=="5" type "launcher\run_5.txt"
+if "%RC%"=="6" type "launcher\run_6.txt"
+if not "%RC%"=="0" if not "%RC%"=="1" if not "%RC%"=="5" if not "%RC%"=="6" (
+  type "launcher\run_fail.txt"
+  echo   %RC%
+)
+type "launcher\run_close.txt"
+timeout /t 600 >nul
+exit /b %RC%
+
+:novenv
+type "launcher\novenv.txt"
+if defined ML_INTERACTIVE timeout /t 600
+exit /b 4

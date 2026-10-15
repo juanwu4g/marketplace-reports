@@ -215,6 +215,10 @@ def _request(result, label, pending, fn, *a, **kw):
     pending.append(p)
 
 
+# 秘鲁那种"通知留不住"的站点：申请完 Ventas 原地等多久。实测 ~45 秒就绪。
+VENTAS_NOW_BUDGET = 300
+
+
 def label_of(p):
     return ("ventas" if p["kind"] == "ventas"
             else "mercadopago/%s" % p.get("report", "?"))
@@ -537,6 +541,18 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                      meli_forms.request_sales_excel,
                      d, period_months=sales_window(args),
                      diag=diag, _form="ventas")
+            # 秘鲁（2026-10-15 IDG_PE）：通知小组件里的记录过一阵就没了 —— 申请后
+            # 先去做 MercadoPago、账单、库存，40 分钟后回来一条都看不到。那边
+            # 生成只要 ~45 秒，所以就守在销售页上，取到了再走。
+            if _facts.get("ventas_collect_now"):
+                now = [p for p in pending if p["kind"] == "ventas"]
+                if now:
+                    print("    本站点的下载通知留不住，原地等它生成（最多 %d 秒）"
+                          % VENTAS_NOW_BUDGET)
+                    left = collect_pending(d, now, out_dir, result,
+                                           budget=VENTAS_NOW_BUDGET, poll=15)
+                    pending[:] = [p for p in pending
+                                  if p["kind"] != "ventas"] + left
         if args.only in ("mercadopago", "all"):
             # every report type under /balance/reports shares one UI
             for kind in mercadopago.REPORTS:
@@ -581,7 +597,12 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                              d, out_dir, months=args.months,
                              skip_current=args.skip_current, diag=diag)
             result["billing"] = got if isinstance(got, dict) else {}
-        if args.only in ("stock", "all"):
+        if args.only in ("stock", "all") and not _facts.get("has_full", True):
+            # 秘鲁：库存报表页是 404（没有 Full 仓）。不是失败，也不算缺报表。
+            print("\n--- Publicaciones：库存报表 ---")
+            print("    %s没有 Full 仓，库存报表跳过（不影响报表）" % _facts["name"])
+            result["stock"] = {}
+        elif args.only in ("stock", "all"):
             got = _guard(result, "stock", meli_forms.download_stock_reports,
                          d, out_dir, months_back=2, diag=diag)
             result["stock"] = got if isinstance(got, dict) else {}

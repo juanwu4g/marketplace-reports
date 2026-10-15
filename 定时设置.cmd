@@ -1,22 +1,37 @@
 @echo off
+REM ---------------------------------------------------------------------------
+REM  Double-click to open the "ML Reports" window (ml_app.py) on tab: schedule.
+REM  ML_Reports / start / schedule launchers all open the same window.
+REM
+REM  This file is ASCII on purpose: cmd.exe mis-reads non-ASCII lines that come
+REM  after "chcp 65001" in the same file. User-facing Chinese text lives in
+REM  launcher\*.txt and is shown with "type".
+REM
+REM  The interpreter is pinned to .venv: other Pythons on the machine may carry
+REM  a different pandas and break the reports. "--check" runs first with
+REM  python.exe so a broken setup shows a reason instead of "nothing happened".
+REM ---------------------------------------------------------------------------
 chcp 65001 >nul 2>&1
-REM ============================================================
-REM  定时任务设置：把「每月自动出报表」配进 Windows 计划任务。
-REM  只需要配一次。之后想看某一轮跑得怎么样（实时日志、历史记录、中止），
-REM  开这个窗口或 启动.cmd 都行 —— 两边看的是同一份日志，跑的是同一个过程。
-REM  日常手动跑报表请双击 启动.cmd。
-REM ============================================================
 cd /d "%~dp0"
+title ML Reports - MercadoLibre
+if not exist ".venv\Scripts\pythonw.exe" goto novenv
+if not exist "logs" mkdir "logs" >nul 2>&1
 
-if not exist ".venv\Scripts\pythonw.exe" (
-  echo [x] Not found: .venv\Scripts\pythonw.exe
-  echo [x] 找不到虚拟环境，请先在本目录依次执行这两条命令：
-  echo.
-  echo     python -m venv .venv
-  echo     .venv\Scripts\pip install -r requirements.txt
-  echo.
-  pause
-  exit /b 1
-)
+type "launcher\opening.txt"
+".venv\Scripts\python.exe" ml_app.py --check >"logs\_window_check.txt" 2>&1
+if errorlevel 1 goto broken
 
-start "" ".venv\Scripts\pythonw.exe" schedule_gui.py
+start "" ".venv\Scripts\pythonw.exe" ml_app.py --tab schedule
+exit /b 0
+
+:novenv
+type "launcher\novenv.txt"
+pause
+exit /b 1
+
+:broken
+type "launcher\broken.txt"
+type "logs\_window_check.txt"
+type "launcher\broken_tail.txt"
+pause
+exit /b 1
