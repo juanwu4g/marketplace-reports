@@ -4,12 +4,12 @@ import datetime
 import json
 import os
 
-import download_diag
-import mercadopago
-import pending_store
-import run_batch
-import run_downloads
-import site_time
+from core import download_diag
+from platforms.mercadolibre import mercadopago
+from core import pending_store
+from platforms.mercadolibre import run_batch
+from platforms.mercadolibre import run_downloads
+from core import site_time
 
 
 def _utc(*a):
@@ -66,7 +66,7 @@ def test_stale_owed_entries_are_dropped_before_collecting(tmp_path, monkeypatch,
 
 
 def test_stock_reports_that_start_no_download_get_one_retry():
-    import meli_forms
+    from platforms.mercadolibre import meli_forms
     assert "general" in meli_forms.STOCK_RETRY_ON_NO_START
     assert "consolidado" not in meli_forms.STOCK_RETRY_ON_NO_START, "要填弹窗的不在此列"
 
@@ -79,8 +79,8 @@ def test_mercado_pago_billing_report_does_not_count_as_missing_report_data():
 def test_peru_spells_september_setiembre_and_mexico_is_restored():
     # 2026-10-15 IDG_PE：秘鲁账单写 "Setiembre 2026"、日期 "30/set/2026"，
     # 按 "Septiembre" 找就"页面没有可识别的月份"
-    import meli_forms
-    import mercadopago
+    from platforms.mercadolibre import meli_forms
+    from platforms.mercadolibre import mercadopago
     try:
         meli_forms.set_site("pe")
         mercadopago.set_site("pe")
@@ -100,7 +100,7 @@ def test_peru_spells_september_setiembre_and_mexico_is_restored():
 
 def test_no_full_country_does_not_expect_stock_reports():
     import argparse
-    import download_diag
+    from core import download_diag
     a = argparse.Namespace(only="all", month="2026-09", billing_after=1)
     assert "stock/general" in download_diag.expected_forms(a)
     pe = download_diag.expected_forms(a, has_full=False)

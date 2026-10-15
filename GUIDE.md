@@ -4,7 +4,7 @@ Automating the 紫鸟 (Ziniao) SuperBrowser to pull sales data from MercadoLibre
 and other stores.
 
 > **Status:** all four routes (billing, ventas, stock, mercadopago) verified
-> end-to-end against `BOCINA_SM` on 2026-09-02. See FORMS.md for the 15 forms. Sections marked **TODO** are scaffolding to be filled in
+> end-to-end against `BOCINA_SM` on 2026-09-02. See platforms/mercadolibre/FORMS.md for the 15 forms. Sections marked **TODO** are scaffolding to be filled in
 > as the extraction work continues.
 
 ---
@@ -39,7 +39,7 @@ machine.
 **The one command that does everything, start to finish, unattended:**
 
 ```bash
-.venv\Scripts\python run_batch.py --workbooks
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --workbooks
 ```
 
 That opens every store in `config.json` → `stores.allowed`, one at a time,
@@ -51,12 +51,12 @@ Drop `--workbooks` for the raw files plus cleaned tables, without the workbooks.
 
 | Command | Downloads? | Cleans? | Workbook? |
 |---|---|---|---|
-| `python run_batch.py --workbooks` | **yes**, every allowed store | **yes** | **yes**, one per store |
-| `python run_batch.py` | yes | yes | no |
-| `python run_batch.py --no-transform` | yes | no | no |
-| `python run_batch.py --dry-run` | no | no | no |
-| `python run_batch.py --collect-only` | **only what's owed** | yes | no |
-| `python run_downloads.py` | **one** store only | no | no |
+| `python -m platforms.mercadolibre.run_batch --workbooks` | **yes**, every allowed store | **yes** | **yes**, one per store |
+| `python -m platforms.mercadolibre.run_batch` | yes | yes | no |
+| `python -m platforms.mercadolibre.run_batch --no-transform` | yes | no | no |
+| `python -m platforms.mercadolibre.run_batch --dry-run` | no | no | no |
+| `python -m platforms.mercadolibre.run_batch --collect-only` | **only what's owed** | yes | no |
+| `python -m platforms.mercadolibre.run_downloads` | **one** store only | no | no |
 | `cd downloads && python -m mx_sales build` | no | yes | no |
 
 **These are the building blocks.** A production run — either window, the
@@ -70,7 +70,7 @@ that is the whole recipe for onboarding a new store, once its name is in
 `stores.allowed`:
 
 ```bash
-.venv\Scripts\python run_batch.py --stores NEW_STORE --workbooks
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --stores NEW_STORE --workbooks
 ```
 
 ### The two things people get wrong
@@ -162,6 +162,12 @@ personal login will not work with this API.
 
 ## 3. Files in this project
 
+> **Where files live (since 2026-10):** shared modules are in `core/`, MercadoLibre
+> modules in `platforms/mercadolibre/`; file names are unchanged. Scripts are started
+> as modules, e.g. `python -m platforms.mercadolibre.run_batch`. The root keeps the
+> `.cmd` files, `config.json`, `downloads/`, `logs/` and three forwarding scripts
+> (`run_monthly.py`, `list_stores.py`, `open_store.py`). See `docs/ARCHITECTURE.md`.
+
 | File | Purpose |
 |---|---|
 | `bootstrap.py` | Environment check / driver download. Run this first on any new machine. |
@@ -194,7 +200,7 @@ personal login will not work with this API.
 | `requirements.txt` | Pinned runtime deps. |
 | `.venv/` | **Gitignored.** Project-local Python environment. |
 | `webdriver/` | **Gitignored.** Optional fallback chromedrivers. |
-| `FORMS.md` | Catalogue of every downloaded form: source page, how obtained, file structure. |
+| `platforms/mercadolibre/FORMS.md` | Catalogue of every downloaded form: source page, how obtained, file structure. |
 | `GUIDE.md` | This file. |
 
 TODO — add rows as exporters / parsers land.
@@ -419,15 +425,15 @@ the vendor's.
 ## 9. Data extraction
 
 Four download routes are implemented — three from MercadoLibre's left-tab menu
-and one from MercadoPago. Entry point: `run_downloads.py`. **FORMS.md is the
+and one from MercadoPago. Entry point: `run_downloads.py`. **platforms/mercadolibre/FORMS.md is the
 per-form reference**; this section covers only the mechanics.
 
 ```bash
-.venv\Scripts\python run_downloads.py                      # all four routes
-.venv\Scripts\python run_downloads.py --only ventas        # route 2 only
-.venv\Scripts\python run_downloads.py --only billing --months 2
-.venv\Scripts\python run_downloads.py --skip-current       # skip the EN CURSO month
-.venv\Scripts\python run_downloads.py --store EWTTO_SM     # must be on the allowlist
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads                      # all four routes
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --only ventas        # route 2 only
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --only billing --months 2
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --skip-current       # skip the EN CURSO month
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --store EWTTO_SM     # must be on the allowlist
 ```
 
 ### The run has three phases
@@ -558,10 +564,10 @@ TODO - still to decide:
 `run_batch.py` walks several stores in one client session.
 
 ```bash
-.venv\Scripts\python run_batch.py                       # every store in stores.batch
-.venv\Scripts\python run_batch.py --stores BOCINA_SM EWTTO_SM
-.venv\Scripts\python run_batch.py --only ventas --limit 2
-.venv\Scripts\python run_batch.py --dry-run             # list the stores, open nothing
+.venv\Scripts\python -m platforms.mercadolibre.run_batch                       # every store in stores.batch
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --stores BOCINA_SM EWTTO_SM
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --only ventas --limit 2
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --dry-run             # list the stores, open nothing
 ```
 
 It takes every `--only` / `--months` / `--collect-timeout` option
@@ -689,7 +695,7 @@ process dying, or the machine rebooting.
 To pick up what a previous run left generating, without downloading anything:
 
 ```bash
-.venv\Scripts\python run_batch.py --collect-only
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --collect-only
 ```
 
 It opens only the stores that actually owe something. Entries older than

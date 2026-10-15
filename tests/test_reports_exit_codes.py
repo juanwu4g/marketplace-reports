@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-import financial_report
-import run_reports
+from platforms.mercadolibre import financial_report
+from platforms.mercadolibre import run_reports
 
 
 def check(key="bridge_b", ok=False, severity="error", store="A", name="桥B"):

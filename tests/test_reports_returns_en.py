@@ -2,7 +2,7 @@
 """Returns（Triages）导出现在是英文的：读进来要翻回西语，退货分析才不会是空的。"""
 import openpyxl
 
-import report_build as rb
+from platforms.mercadolibre import report_build as rb
 
 
 def _english_returns(path):

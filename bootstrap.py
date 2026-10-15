@@ -20,7 +20,7 @@ import hashlib
 import io
 import json
 import os
-import console  # noqa: F401  中文输出编码保护
+from core import console  # noqa: F401  中文输出编码保护
 import platform
 import sys
 

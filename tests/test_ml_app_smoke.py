@@ -10,9 +10,9 @@ import os
 import pytest
 
 import fake_tk
-import region_choice
-import runlog
-import store_config
+from core import region_choice
+from core import runlog
+from core import store_config
 
 MONTH = "2026-09"
 CFG = {"default": "BOCINA_SM",
@@ -32,7 +32,7 @@ def app(tmp_path, monkeypatch):
         monkeypatch.setattr(store_config, "_stores", lambda: d)
         logs = str(tmp_path / "logs")
         monkeypatch.setattr(runlog, "LOG_DIR", logs)
-        import ml_entrance
+        from core import ml_entrance
         monkeypatch.setattr(ml_entrance, "SETTINGS", str(tmp_path / "gui_settings.json"))
         spawned = []
 
@@ -46,7 +46,7 @@ def app(tmp_path, monkeypatch):
             spawned.append(cmd)
             return P()
         monkeypatch.setattr(runlog, "spawn_detached", fake_spawn)
-        import ml_app
+        from core import ml_app
         monkeypatch.setattr(ml_app, "LOG_DIR", logs)
         root = fake_tk.Tk()
         a = ml_app.App(root, tab="run")
@@ -149,7 +149,7 @@ def test_schedule_overview_renders(app):
 
 
 def test_preview_lists_one_command_per_country(app, monkeypatch):
-    import ml_app
+    from core import ml_app
     ran = []
 
     class R(object):
@@ -171,7 +171,7 @@ def test_preview_lists_one_command_per_country(app, monkeypatch):
 
 
 def test_pick_tab_and_legacy_entrances(app):
-    import ml_entrance
+    from core import ml_entrance
     assert ml_entrance.pick_tab([]) == "run"
     assert ml_entrance.pick_tab(["--tab", "schedule"]) == "schedule"
     assert ml_entrance.pick_tab(["--tab=human"]) == "human"

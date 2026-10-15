@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-import run_monthly
-import runlog
+from core import run_monthly
+from core import runlog
 
 PY = sys.executable
 MONTH = "2026-09"
@@ -76,21 +76,21 @@ def strip_py(p):
 def test_plan_for_each_step_always_passes_month():
     full = strip_py(run_monthly.build_plan("both", MONTH, None, "OUT", py="py"))
     assert full == [
-        ("download", ["-u", "run_batch.py", "--month", MONTH]),
-        ("report", ["-u", "run_reports.py", "--month", MONTH, "--out-dir", "OUT"]),
+        ("download", ["-u", "-m", "platforms.mercadolibre.run_batch", "--month", MONTH]),
+        ("report", ["-u", "-m", "platforms.mercadolibre.run_reports", "--month", MONTH, "--out-dir", "OUT"]),
     ]
     assert strip_py(run_monthly.build_plan("download", MONTH, None, "OUT")) == full[:1]
     assert strip_py(run_monthly.build_plan("report", MONTH, None, "OUT")) == full[1:]
     assert strip_py(run_monthly.build_plan("collect", MONTH, None, "OUT")) == [
-        ("collect", ["-u", "run_batch.py", "--collect-only", "--month", MONTH])]
+        ("collect", ["-u", "-m", "platforms.mercadolibre.run_batch", "--collect-only", "--month", MONTH])]
 
 
 def test_plan_with_store_subset_never_writes_the_combined_workbook():
     p = strip_py(run_monthly.build_plan("both", MONTH, ["A", "清货1_PW03"], "OUT"))
     assert p == [
-        ("download", ["-u", "run_batch.py", "--month", MONTH,
+        ("download", ["-u", "-m", "platforms.mercadolibre.run_batch", "--month", MONTH,
                       "--stores", "A", "清货1_PW03"]),
-        ("report", ["-u", "run_reports.py", "--month", MONTH,
+        ("report", ["-u", "-m", "platforms.mercadolibre.run_reports", "--month", MONTH,
                     "--stores", "A", "清货1_PW03", "--no-combined",
                     "--out-dir", "OUT"]),
     ]

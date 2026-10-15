@@ -7,11 +7,11 @@ import os
 
 import pytest
 
-import download_diag as dd
-import meli_forms
-import mercadopago
-import run_downloads
-import run_report
+from core import download_diag as dd
+from platforms.mercadolibre import meli_forms
+from platforms.mercadolibre import mercadopago
+from platforms.mercadolibre import run_downloads
+from platforms.mercadolibre import run_report
 
 T0 = 1_800_000_000.0        # 任意一个固定时刻，规则不读时钟
 
@@ -665,7 +665,7 @@ def test_update_missing_replaces_only_that_section(tmp_path):
     assert "`release-1.csv`" in after
     assert after.count(run_report.MISSING_BEGIN) == 1
     assert after.startswith(before[:before.index(run_report.MISSING_BEGIN)])
-    assert after.rstrip().endswith("`FORMS.md`.")
+    assert after.rstrip().endswith("`platforms/mercadolibre/FORMS.md`.")
     # 老报告没有记号：插在页脚之前
     with open(path, "w", encoding="utf-8") as f:
         f.write("# old\n\nbody\n\n---\n\nfooter\n")

@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-import runlog
-from runlog import INFO, WARN, ERROR
+from core import runlog
+from core.runlog import INFO, WARN, ERROR
 
 
 # ------------------------------------------------------------ 格式 / 解析

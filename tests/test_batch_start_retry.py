@@ -2,8 +2,8 @@
 """紫鸟在内核下载期间回 -10000：等一等再试，别让这家店直接失败。"""
 import pytest
 
-import ziniao_client
-from ziniao_client import ZiniaoClient, ZiniaoError
+from core import ziniao_client
+from core.ziniao_client import ZiniaoClient, ZiniaoError
 
 
 def _client(responses, monkeypatch):

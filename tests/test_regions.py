@@ -10,12 +10,12 @@ import sys
 
 import pytest
 
-import region_choice
-import run_batch
-import run_monthly
-import run_reports
-import runlog
-import store_config
+from core import region_choice
+from platforms.mercadolibre import run_batch
+from core import run_monthly
+from platforms.mercadolibre import run_reports
+from core import runlog
+from core import store_config
 
 PY = sys.executable
 MONTH = "2026-09"
@@ -96,20 +96,20 @@ def R(name):
 
 def test_mexico_child_commands_are_byte_for_byte_unchanged():
     """区域出现之前的命令，原样写死在这里。墨西哥一个字都不能变。"""
-    dl = ["py", "-u", R("run_batch.py"), "--month", MONTH]
-    rp = ["py", "-u", R("run_reports.py"), "--month", MONTH]
+    dl = ["py", "-u", "-m", "platforms.mercadolibre.run_batch", "--month", MONTH]
+    rp = ["py", "-u", "-m", "platforms.mercadolibre.run_reports", "--month", MONTH]
     cases = [
         (("both", None, False), [dl, rp + ["--out-dir", "OUT"]]),
         (("download", None, False), [dl]),
         (("report", None, False), [rp + ["--out-dir", "OUT"]]),
         (("collect", None, False),
-         [["py", "-u", R("run_batch.py"), "--collect-only", "--month", MONTH]]),
+         [["py", "-u", "-m", "platforms.mercadolibre.run_batch", "--collect-only", "--month", MONTH]]),
         (("both", ["A", "B"], False),
          [dl + ["--stores", "A", "B"],
           rp + ["--stores", "A", "B", "--no-combined", "--out-dir", "OUT"]]),
         (("both", ["A"], True), [dl + ["--stores", "A"], rp + ["--out-dir", "OUT"]]),
         (("collect", ["A"], False),
-         [["py", "-u", R("run_batch.py"), "--collect-only", "--month", MONTH,
+         [["py", "-u", "-m", "platforms.mercadolibre.run_batch", "--collect-only", "--month", MONTH,
            "--stores", "A"]]),
     ]
     for (step, stores, all_), want in cases:
@@ -123,16 +123,16 @@ def test_chile_always_passes_an_explicit_store_list():
     p = run_monthly.build_plan("both", MONTH, None, "OUT", py="py",
                                region="CL", all_stores=CL)
     dl, rp = p[0]["cmd"], p[1]["cmd"]
-    assert dl == ["py", "-u", R("run_batch.py"), "--month", MONTH,
+    assert dl == ["py", "-u", "-m", "platforms.mercadolibre.run_batch", "--month", MONTH,
                   "--stores"] + CL
     # 全部智利店：run_reports 自己按区域取店，并且要出（智利的）全店汇总
-    assert rp == ["py", "-u", R("run_reports.py"), "--month", MONTH,
+    assert rp == ["py", "-u", "-m", "platforms.mercadolibre.run_reports", "--month", MONTH,
                   "--region", "CL", "--out-dir", "OUT"]
 
     sub = run_monthly.build_plan("both", MONTH, ["Andes_CL"], "OUT", py="py",
                                  region="CL", all_stores=CL)
     assert sub[0]["cmd"][-2:] == ["--stores", "Andes_CL"]
-    assert sub[1]["cmd"][3:] == ["--month", MONTH, "--region", "CL", "--stores",
+    assert sub[1]["cmd"][4:] == ["--month", MONTH, "--region", "CL", "--stores",
                                  "Andes_CL", "--no-combined", "--out-dir", "OUT"]
 
     co = run_monthly.build_plan("collect", MONTH, None, "OUT", py="py",
@@ -204,8 +204,8 @@ def test_chile_dry_run_prints_the_explicit_store_list(env, capsys):
     assert env.run(["--region", "CL", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "区域　　：智利（CL）" in out
-    assert "run_batch.py --month %s --stores Tecnohub_CL Andes_CL" % MONTH in out
-    assert "run_reports.py --month %s --region CL --out-dir" % MONTH in out
+    assert "-m platforms.mercadolibre.run_batch --month %s --stores Tecnohub_CL Andes_CL" % MONTH in out
+    assert "-m platforms.mercadolibre.run_reports --month %s --region CL --out-dir" % MONTH in out
 
 
 def test_chile_run_records_region_in_log_summary_and_alert(env):

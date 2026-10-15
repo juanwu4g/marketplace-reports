@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-import transform
+from platforms.mercadolibre import transform
 
 OLD = {"report": "ventas_mx", "file": "A/20260815_090000/v.xlsx",
        "error": "v.xlsx: ventas_mx: no usable header", "current": False}

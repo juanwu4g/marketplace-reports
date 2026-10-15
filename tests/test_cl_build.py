@@ -13,12 +13,12 @@ import os
 import pytest
 from openpyxl import load_workbook
 
-import report_build as rb
+from platforms.mercadolibre import report_build as rb
 
-_SCRATCH = ("/tmp/claude-1001/-home-hat-meli-mx-pipeline/"
-            "60f85e89-371b-4dd8-a325-f85924a7174a/scratchpad")
-DAB = os.environ.get("MELI_CL_DAB_DIR", os.path.join(_SCRATCH, "cl_dab"))
-TEC = os.environ.get("MELI_CL_TEC_DIR", os.path.join(_SCRATCH, "cl_tec"))
+# 真实下载目录在仓库外（含客户数据），和 test_golden.py 用同一个位置。
+_GOLDEN = os.environ.get("MELI_GOLDEN_ROOT", os.path.expanduser("~/meli-golden"))
+DAB = os.environ.get("MELI_CL_DAB_DIR", os.path.join(_GOLDEN, "cl", "DAB_CL"))
+TEC = os.environ.get("MELI_CL_TEC_DIR", os.path.join(_GOLDEN, "cl", "Tecnohub_CL"))
 DAB_NAME, TEC_NAME = "DAB_CL (Coco) 子账号", "Tecnohub_CL (个人店)"
 
 need_dab = pytest.mark.skipif(not os.path.isdir(DAB), reason="没有 DAB_CL 下载目录")

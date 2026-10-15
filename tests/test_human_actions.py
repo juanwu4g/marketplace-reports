@@ -7,9 +7,9 @@
 import json
 import os
 
-import download_diag
-import run_monthly
-import runlog
+from core import download_diag
+from core import run_monthly
+from core import runlog
 
 from test_runner import env, child, plan, _summary  # noqa: F401  复用夹具
 

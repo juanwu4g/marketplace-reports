@@ -5,8 +5,8 @@ from openpyxl import Workbook
 
 import pandas as pd
 
-import report_build
-import run_reports
+from platforms.mercadolibre import report_build
+from platforms.mercadolibre import run_reports
 from test_reports_build import NOTICE, make_download_folder
 
 

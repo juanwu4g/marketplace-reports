@@ -2,7 +2,7 @@
 """MercadoPago 逐单验证：一次买几件时，钱记在包裹行，子行是 0 —— 子行不能当成差异。"""
 import pandas as pd
 
-import report_build as rb
+from platforms.mercadolibre import report_build as rb
 
 
 def _settlement(tmp_path, rows):

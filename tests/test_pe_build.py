@@ -19,7 +19,7 @@ import os
 import pytest
 from openpyxl import Workbook, load_workbook
 
-import report_build as rb
+from platforms.mercadolibre import report_build as rb
 
 
 @pytest.fixture(autouse=True)

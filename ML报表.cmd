@@ -1,6 +1,6 @@
 @echo off
 REM ---------------------------------------------------------------------------
-REM  Double-click to open the "ML Reports" window (ml_app.py) on tab: run.
+REM  Double-click to open the "ML Reports" window (core\ml_app.py) on tab: run.
 REM  ML_Reports / start / schedule launchers all open the same window.
 REM
 REM  This file is ASCII on purpose: cmd.exe mis-reads non-ASCII lines that come
@@ -18,10 +18,10 @@ if not exist ".venv\Scripts\pythonw.exe" goto novenv
 if not exist "logs" mkdir "logs" >nul 2>&1
 
 type "launcher\opening.txt"
-".venv\Scripts\python.exe" ml_app.py --check >"logs\_window_check.txt" 2>&1
+".venv\Scripts\python.exe" -m core.ml_app --check >"logs\_window_check.txt" 2>&1
 if errorlevel 1 goto broken
 
-start "" ".venv\Scripts\pythonw.exe" ml_app.py --tab run
+start "" ".venv\Scripts\pythonw.exe" -m core.ml_app --tab run
 exit /b 0
 
 :novenv

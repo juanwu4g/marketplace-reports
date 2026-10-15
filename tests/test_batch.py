@@ -8,13 +8,13 @@ import os
 
 import pytest
 
-import download_diag as dd
-import meli_forms
-import mercadopago
-import pending_store
-import run_batch
-import run_downloads
-import ziniao_client
+from core import download_diag as dd
+from platforms.mercadolibre import meli_forms
+from platforms.mercadolibre import mercadopago
+from core import pending_store
+from platforms.mercadolibre import run_batch
+from platforms.mercadolibre import run_downloads
+from core import ziniao_client
 
 
 # ------------------------------------------------------------------ 假的世界

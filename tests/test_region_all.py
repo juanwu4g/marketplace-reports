@@ -13,9 +13,9 @@ import time
 
 import pytest
 
-import run_monthly
-import runlog
-import store_config
+from core import run_monthly
+from core import runlog
+from core import store_config
 
 PY = sys.executable
 MONTH = "2026-09"

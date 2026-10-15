@@ -8,9 +8,9 @@ import os
 import pandas as pd
 import pytest
 
-import financial_report
-import report_build as rb
-import run_reports
+from platforms.mercadolibre import financial_report
+from platforms.mercadolibre import report_build as rb
+from platforms.mercadolibre import run_reports
 
 
 @pytest.fixture(autouse=True)

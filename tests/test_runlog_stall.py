@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-import runlog
+from core import runlog
 
 
 def _sleeper():

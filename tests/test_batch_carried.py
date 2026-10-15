@@ -4,9 +4,9 @@
 2026-10-13 实测（定时入口，BOCINA_TA02）：这一趟 20 张报表全部下到，却因为
 上一趟留在登记簿里的 3 条旧欠账被标成 partial、退出码 1，还写了告警文件。
 """
-import download_diag
-import pending_store
-import run_batch
+from core import download_diag
+from core import pending_store
+from platforms.mercadolibre import run_batch
 
 NOW = "C:/dl/BOCINA_TA02/20261013_165113_m202609"
 OLD = "C:/dl/BOCINA_TA02/20261013_161937_m202609"

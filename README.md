@@ -302,10 +302,10 @@ copy config.example.json config.json
 cd D:\Projects\mx_sales_data
 
 REM 第一步：下载 + 清洗（约 3 小时，跑完可以走开）
-.venv\Scripts\python run_batch.py
+.venv\Scripts\python -m platforms.mercadolibre.run_batch
 
 REM 第二步：出上个月的财务报表（约 1 分钟）
-.venv\Scripts\python run_reports.py
+.venv\Scripts\python -m platforms.mercadolibre.run_reports
 ```
 
 `run_reports.py` 默认做**上一个完整月份** —— 当月还没过完，做月报没有意义。
@@ -367,7 +367,7 @@ MercadoPago 有些报表要生成几十分钟甚至几小时。跑完一轮后�
 `logs/pending.json` 里。补取时**不用重新下载**：
 
 ```bat
-.venv\Scripts\python run_batch.py --collect-only
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --collect-only
 ```
 
 在窗口里点「补取欠的报表」是同一件事（等同
@@ -382,10 +382,10 @@ MercadoPago 有些报表要生成几十分钟甚至几小时。跑完一轮后�
 
 ```bat
 REM 第一步：下载 7 月的数据（账单会直接去 7 月那一期的明细页）
-.venv\Scripts\python run_batch.py --month 2026-07
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --month 2026-07
 
 REM 第二步：出 7 月报表
-.venv\Scripts\python run_reports.py --month 2026-07
+.venv\Scripts\python -m platforms.mercadolibre.run_reports --month 2026-07
 ```
 
 `--month` 会做三件事：
@@ -598,7 +598,7 @@ python run_monthly.py --region CL                 # 智利，上个月，下载 
 python run_monthly.py --region CL --step report   # 只重出智利的报表
 python run_monthly.py --region ALL                # 全部国家，一个接一个
 python run_monthly.py --region ALL --dry-run      # 看看每个国家会执行哪些命令
-python run_reports.py --region CL --dry-run
+python -m platforms.mercadolibre.run_reports --region CL --dry-run
 ```
 
 **全部国家（`--region ALL`）**：
@@ -1135,6 +1135,12 @@ MercadoPago 那边没有语言切换器，只能读 `<html lang>` 并**警告**�
 
 ## 11. 项目结构
 
+> **文件放在哪：** 2026-10 起，各平台通用的模块在 `core/`（运行器、窗口、日志、紫鸟、
+> 店铺配置、没下到的原因……），MercadoLibre 专用的在 `platforms/mercadolibre/`
+> （下载路线、报表）。文件名没变。根目录只留双击入口、`config.json`、`downloads/`、
+> `logs/`，以及 `run_monthly.py` / `list_stores.py` / `open_store.py` 三个转发文件，
+> 老命令照样能用。完整目录见 `docs/ARCHITECTURE.md`。
+
 **下载层**
 
 | 文件 | 作用 |
@@ -1181,15 +1187,20 @@ MercadoPago 那边没有语言切换器，只能读 `<html lang>` 并**警告**�
 | 文件 | 内容 |
 |---|---|
 | `GUIDE.md` | 完整运维指南：连接原理、每条路线的实现细节、踩过的坑 |
-| `FORMS.md` | 15 张表单逐一说明：来源页面、怎么点出来的、文件长什么样 |
+| `platforms/mercadolibre/FORMS.md` | 15 张表单逐一说明：来源页面、怎么点出来的、文件长什么样 |
 | `downloads/README.md` | 清洗管线与对账规则 |
+| `docs/ARCHITECTURE.md` | 目录结构、运行流程、不能破坏的约定、接新平台时要改的地方（英文） |
+| `docs/NEW_PLATFORM_SOP.md` | 接入新平台的标准流程（英文） |
+| `docs/FORM_DISCOVERY_TEMPLATE.md` | 新平台每张表单"在哪、怎么点出来"的记录模板 |
+| `docs/REPORT_FAMILY.md` | 各平台报表保持"同一家族"的约定：页序、样式、校验级别 |
+| `docs/PLATFORM_PLAYBOOK.zh.md` | 换平台仍然成立的经验手册 |
 
 ---
 
 ## 12. 出问题先做这三步
 
 1. `.venv\Scripts\python bootstrap.py` —— 环境是不是好的
-2. `.venv\Scripts\python run_batch.py --dry-run` —— 配置读出来对不对
+2. `.venv\Scripts\python -m platforms.mercadolibre.run_batch --dry-run` —— 配置读出来对不对
 3. **看那一轮的运行日志** —— 双击 `ML报表.cmd`，在右边「运行日志」的
    「看哪一轮」里挑出那一轮，级别选「警告和错误」。文件本身在
    `logs/runs/<开始时间>_<入口>.log`，同名 `.json` 里有每一步的退出码。

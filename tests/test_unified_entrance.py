@@ -9,12 +9,12 @@ import os
 
 import pytest
 
-import ml_entrance as E
-import region_choice as RC
-import run_monthly
-import runlog
-import store_config
-import win_tasks
+from core import ml_entrance as E
+from core import region_choice as RC
+from core import run_monthly
+from core import runlog
+from core import store_config
+from core import win_tasks
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MX = ["BOCINA_SM", "EWTTO_SM"]
@@ -322,8 +322,8 @@ def test_launchers_open_the_one_window_on_the_right_tab(name, tab):
     lines = text.splitlines()
     assert lines[0] == "@echo off"
     assert any(l.startswith("title ") for l in lines)
-    assert 'ml_app.py --check' in text                    # 先自检，出错才停住
-    assert 'start "" ".venv\\Scripts\\pythonw.exe" ml_app.py --tab %s' % tab in text
+    assert '-m core.ml_app --check' in text                    # 先自检，出错才停住
+    assert 'start "" ".venv\\Scripts\\pythonw.exe" -m core.ml_app --tab %s' % tab in text
     assert "pause" in text and ":broken" in text and ":novenv" in text
 
 

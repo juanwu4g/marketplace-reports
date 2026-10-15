@@ -10,7 +10,7 @@ import os
 import pytest
 from openpyxl import Workbook
 
-import report_build
+from platforms.mercadolibre import report_build
 
 NOTICE = ("No pudimos mostrar algunos datos. "
           "Intenta generando el Excel de ventas nuevamente.")

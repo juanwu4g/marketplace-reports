@@ -8,9 +8,9 @@ import datetime
 
 import pytest
 
-import download_diag as dd
-import meli_forms as mf
-import mercadopago as mp
+from core import download_diag as dd
+from platforms.mercadolibre import meli_forms as mf
+from platforms.mercadolibre import mercadopago as mp
 
 
 class Clock(object):
