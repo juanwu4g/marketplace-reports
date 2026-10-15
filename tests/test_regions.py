@@ -359,7 +359,7 @@ def test_all_chilean_batch_skips_cleaning_and_says_so(
 
     assert run_batch.main() == 0
     out = capsys.readouterr().out
-    assert "清洗目前只支持墨西哥，智利店铺跳过这一步；不影响报表" in out
+    assert "清洗目前只支持墨西哥，其他国家的店铺跳过这一步；不影响报表" in out
     path = out.rstrip().splitlines()[-1].split(" ", 1)[1]
     doc = json.load(io.open(path, encoding="utf-8"))
     assert doc["transform"]["skipped"] is True

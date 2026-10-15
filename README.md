@@ -639,26 +639,28 @@ python run_reports.py --region CL --dry-run
 登记的 `MX月度报表` / `CL月度报表` 照样能跑，窗口里会列出来，由你决定替换还是删除，不会自动删。
 
 **清洗目前只支持墨西哥**：`downloads/mx_sales` 读的是 "Ventas MX" 表。一批全是智利店时
-`run_batch.py` 打一行「清洗目前只支持墨西哥，智利店铺跳过这一步；不影响报表」，批次
+`run_batch.py` 打一行「清洗目前只支持墨西哥，其他国家的店铺跳过这一步；不影响报表」，批次
 汇总里记 `"transform": {"skipped": true, "reason": "region"}` —— 不算失败，报表读的是
 原始导出。
 
 **店名要和紫鸟里一字不差**：智利那家店在紫鸟里叫 `Tecnohub_CL (个人店)`，不是
 `Tecnohub_CL`。写错了这家店会被当成"不在白名单"跳过。
 
-#### 智利报表和墨西哥的区别
+#### 智利、秘鲁报表和墨西哥的区别
 
 十张子表、排列和读法都一样（姊妹报表），按国家不同的地方：
 
-| | 墨西哥 | 智利 |
-|---|---|---|
-| 卖家中心 / MercadoPago | `.com.mx` | `vendedores.mercadolibre.cl` / `mercadopago.cl`，界面语言 es_CL |
-| 币种 | MXN，两位小数 | CLP，**没有小数**，容差 1 比索 |
-| 销售导出 | 表 "Ventas MX"，列名带 (MXN) | 表 "Ventas CL"，列名带 (CLP) |
-| 税 | IVA 16%，平台代扣 IVA / ISR（桥 E） | IVA 19%，**平台不代扣**；桥 E 换成"无代扣"核对，损益表底下有 IVA 备注 |
-| 月度账单 | 按自然月 | 按截账日：每家店不同（DAB 每月 8 日→次月 7 日，Tecnohub 24 日→23 日）。报表把账单里的每笔费用**按扣款日**归到所属月份，截账日从账单自己推断 |
-| 退货库存菜单 | "Reporte de devoluciones a la bodega" | "Reporte de devoluciones al centro de distribución"（两种都认） |
-| 清洗 | 有 | 跳过（见上） |
+| | 墨西哥 | 智利 | 秘鲁 |
+|---|---|---|---|
+| 卖家中心 / MercadoPago | `.com.mx` | `vendedores.mercadolibre.cl` / `mercadopago.cl`，界面语言 es_CL | `.com.pe`，es_PE（九月叫 Setiembre） |
+| 币种 | MXN，两位小数 | CLP，**没有小数**，容差 1 比索 | PEN（S/），两位小数，容差同墨西哥 |
+| 销售导出 | 表 "Ventas MX"，列名带 (MXN) | 表 "Ventas CL"，列名带 (CLP) | 表 "Ventas PE"，列名带 (PEN)；"Descuentos y bonificaciones" 列有值，是 Flex 配送补贴，**并进运费收入** |
+| 税 | IVA 16%，平台代扣 IVA / ISR（桥 E） | IVA 19%，**平台不代扣**；桥 E 换成"无代扣"核对，损益表底下有 IVA 备注 | IGV 18%，**不代扣、不 percibe**（同智利那一套，文字换成 IGV / SUNAT） |
+| 月度账单 | 按自然月 | 按截账日：每家店不同（DAB 每月 8 日→次月 7 日，Tecnohub 24 日→23 日）。报表把账单里的每笔费用**按扣款日**归到所属月份，截账日从账单自己推断 | 按自然月（Cierre 是月末） |
+| MercadoPago 逐单核对 | 一笔收款对一单 | 买家运费是单独一笔 SETTLEMENT_SHIPPING | 买家运费（SETTLEMENT_SHIPPING）和 Flex 补贴（CASHBACK）都是单独一笔 |
+| Full 仓 | 有 | 有 | **没有**：⑥ ⑨ 页写"不适用"，Full 核对跳过，不算缺文件 |
+| 退货库存菜单 | "Reporte de devoluciones a la bodega" | "Reporte de devoluciones al centro de distribución"（两种都认） | 无（没有 Full） |
+| 清洗 | 有 | 跳过（见上） | 跳过 |
 
 已知还没做的：智利的账户对账单（account statement）页面找不到"Generar"按钮——报表不用它，
 不影响出数；`BILL_MP_V3`（账单页第五个报表）要先选格式，脚本不答，所以不下载，也不算缺失。
@@ -677,10 +679,10 @@ python run_reports.py --region CL --dry-run
 | **③ 平账勾稽表** | 五座桥：A 订单资金流、B 月度账单、C 两种口径对比、D 从到账净额到经营利润、E 代扣税解释。**"平不了账"的时候看这一页** |
 | **④ 平台费用明细** | 本期账单全部费用科目（西班牙语原文 + 中文），标明结算通道；末尾附**与 ② 的对账**，逐项拆开两页费用合计为什么不相等 |
 | **⑤ 退货退款分析** | 按订单状态、按金额、按平台/卖家责任划分 |
-| **⑥ 退货质检明细** | Full 仓逐件质检结果与退货原因，含可回收 / 彻底损失判定 |
+| **⑥ 退货质检明细** | Full 仓逐件质检结果与退货原因，含可回收 / 彻底损失判定（秘鲁没有 Full：本页只写"不适用"） |
 | **⑦ SKU 盈利分析** | 五张表（见下），**要看某个 SKU 到底赚不赚钱，直接看表五** |
 | **⑧ 月度趋势** | 销售报表窗口内各月的销售、三项费率、退货率走势 |
-| **⑨ 库存与动销分析** | Full 仓库存结构、周转、断货与积压，并把平台的近 30 天销量与销售报表逐 SKU 核对 |
+| **⑨ 库存与动销分析** | Full 仓库存结构、周转、断货与积压，并把平台的近 30 天销量与销售报表逐 SKU 核对（秘鲁同上：不适用） |
 | **⑩ 数据缺口与待办** | 本期校验结果、数据缺失项、需要人处理的事 |
 
 ### ⑦ SKU 盈利分析的五张表

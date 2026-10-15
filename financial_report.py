@@ -60,9 +60,10 @@ OUTCOME_LABELS = {
 # 报表必需的输入。缺 Ventas 或账单就算不出损益表，这样的目录不能用 —— 光取"最新
 # 目录"是不够的：一次只跑了 --only ventas 的运行会留下一个看着很新、其实缺账单的
 # 目录（BOCINA_SM 的 20260903_110457 就是）。
-# 每项是 (几个可接受的文件名模式, 名称)：智利的销售报表叫 Ventas_CL。
+# 每项是 (几个可接受的文件名模式, 名称)：智利的销售报表叫 Ventas_CL，秘鲁叫 Ventas_PE。
+VENTAS_PATTERNS = ("*Ventas_MX*.xlsx", "*Ventas_CL*.xlsx", "*Ventas_PE*.xlsx")
 REQUIRED = (
-    (("*Ventas_MX*.xlsx", "*Ventas_CL*.xlsx"), "Ventas"),
+    (VENTAS_PATTERNS, "Ventas"),
     (("Reporte_Facturacion_MercadoLibre_*.xlsx",), "账单"),
 )
 
@@ -72,7 +73,12 @@ REQUIRED = (
 FILE_MONTH_TOKENS = {
     "ene": 1, "enero": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
     "jul": 7, "ago": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dic": 12,
+    "set": 9,       # 秘鲁的 Setiembre（实测文件名仍是 Sept，防平台改拼法）
 }
+
+# 账单按自然月出的站点（report_build 里 BILL_CYCLE_DAY == 1 的那些）。秘鲁账单页
+# 写"Cierre 30/set/2026"，IDG_PE 实测 Sept 账单计费日 09-01..09-30。
+CALENDAR_BILL_SITES = ("mx", "pe")
 
 
 def sales_span(folder):
@@ -113,9 +119,11 @@ def sales_reaches(folder, month):
     span = sales_span(folder)
     if span:
         return span[0] <= month <= span[1]
-    hits = (sorted(glob.glob(os.path.join(folder, "*Ventas_MX*.xlsx")))
-            or sorted(glob.glob(os.path.join(folder, "*Ventas_CL*.xlsx")))
-            or sorted(glob.glob(os.path.join(folder, "*Ventas*.xlsx"))))
+    hits = []
+    for pat in VENTAS_PATTERNS + ("*Ventas*.xlsx",):
+        hits = sorted(glob.glob(os.path.join(folder, pat)))
+        if hits:
+            break
     if not hits:
         return False
     p = hits[0]
@@ -170,12 +178,12 @@ def folder_site(folder):
 def bills_needed(folder, want):
     """做 want（(年, 月)）这个会计月要哪几期账单。
 
-    墨西哥账单是自然月，只要当月那一期。智利账单不按自然月切（各店切期日不同，
+    墨西哥、秘鲁账单是自然月，只要当月那一期。智利账单不按自然月切（各店切期日不同，
     如 8 号或 24 号），一个自然月横跨"当月"和"次月"两期账单 —— 两期都要有，
     报表才拿得全本月的费用（report_build.bill_cycles 是同一条规则）。
     """
     y, m = want
-    if folder_site(folder) == "mx":
+    if folder_site(folder) in CALENDAR_BILL_SITES:
         return {want}
     ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
     return {want, (ny, nm)}
@@ -394,7 +402,7 @@ def build(pairs, month, out, metrics_out=None, strict=False,
     if no_recalc:
         cmd.append("--no-recalc")
     if site:
-        # 国家（mx / cl）。不给时 report_build 读下载目录 run_meta.json 的 site。
+        # 国家（mx / cl / pe）。不给时 report_build 读下载目录 run_meta.json 的 site。
         cmd += ["--site", str(site).lower()]
 
     env = dict(os.environ)

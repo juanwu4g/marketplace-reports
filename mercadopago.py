@@ -121,9 +121,8 @@ def set_site(code):
         spec["url"] = base + spec["url"][len(_BASE):]
     _BASE = base
     REPORTS_URL = REPORTS["settlement"]["url"]
-    facts = site_config.get(code)
-    ES_MONTHS[9] = facts.get("september", "septiembre")
-    ES_ABBR[9] = facts.get("sep_abbr", "sep")
+    # 月份名不跟站点改：秘鲁的卖家中心写 "Setiembre"，但 MercadoPago 的日期
+    # 选择器仍是 "septiembre"（2026-10-15 IDG01_PE 改了之后 5 张都选不上日期）。
 
 ES_MONTHS = [None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -903,6 +902,28 @@ def _parse_cal_label(label):
     return datetime.date(int(year), ES_MONTHS.index(month_name), int(day))
 
 
+def _first_selectable(driver, start, end):
+    """起始日不可选时，从它的下一天起找第一个能点上的日子（点上即选中）。
+
+    日历当前停在 start 所在的月；找到下个月时先翻页。到 end 为止都不行返回 None。
+    """
+    day = start + datetime.timedelta(days=1)
+    while day <= end:
+        res = driver.execute_script(JS_PICK_DAY, day.day, ES_MONTHS[day.month],
+                                    day.year)
+        if res == "ok":
+            return day
+        if res != "disabled":            # 这一天不在当前页：翻到下个月再试
+            driver.execute_script(JS_CAL_NAV, "fwd")
+            time.sleep(1.2)
+            res = driver.execute_script(JS_PICK_DAY, day.day,
+                                        ES_MONTHS[day.month], day.year)
+            if res == "ok":
+                return day
+        day += datetime.timedelta(days=1)
+    return None
+
+
 def _select_range(driver, start, end):
     """Drive the range datepicker. Returns the (start, end) actually selected.
 
@@ -930,8 +951,17 @@ def _select_range(driver, start, end):
             picked = True
             break
         if res == "disabled":
-            print("      [警告] 起始日期 %s 不可选" % start)
-            return None
+            # 2026-10-15 IDG01_PE：比账户开通还早的日子是灰的。往后挪到第一个能选
+            # 的日子 —— 更早本来就没有数据，范围照样覆盖得到的全部。
+            first = _first_selectable(driver, start, end)
+            if first is None:
+                print("      [警告] 起始日期 %s 不可选，到 %s 为止也没有能选的日子"
+                      % (start, end))
+                return None
+            print("      起始日期收敛为 %s（更早的日期不可选，账户可能是之后才开的）"
+                  % first)
+            start, picked = first, True
+            break
         driver.execute_script(JS_CAL_NAV, "back")
         time.sleep(1.2)
     if not picked:

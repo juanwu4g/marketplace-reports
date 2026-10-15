@@ -665,7 +665,7 @@ def _month_of(args):
         return None
 
 
-def expected_forms(args, today=None):
+def expected_forms(args, today=None, has_full=True):
     """这一趟按参数**应该**产出的报表 id 列表。
 
     id 的写法：
@@ -699,7 +699,8 @@ def expected_forms(args, today=None):
         else:
             out.extend("billing/%d" % (i + 1)
                        for i in range(max(0, getattr(args, "months", 2) or 0)))
-    if only in ("stock", "all"):
+    # has_full=False：这个国家没有 Full 仓（秘鲁），库存报表本来就不下，不算缺。
+    if only in ("stock", "all") and has_full:
         out.extend(STOCK_FORMS)
     return out
 

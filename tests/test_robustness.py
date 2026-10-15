@@ -86,10 +86,22 @@ def test_peru_spells_september_setiembre_and_mexico_is_restored():
         mercadopago.set_site("pe")
         assert meli_forms.SPANISH_MONTH_NAMES[8] == "Setiembre"
         assert meli_forms.ES_MONTHS[9] == "setiembre"
-        assert mercadopago.ES_MONTHS[9] == "setiembre"
-        assert mercadopago.ES_ABBR[9] == "set"
+        # MercadoPago 秘鲁站的日期选择器仍写 septiembre
+        assert mercadopago.ES_MONTHS[9] == "septiembre"
+        import re
+        rx = re.compile(r"(Agosto|Sep?tiembre|Octubre)", re.I)
+        assert rx.search("Setiembre 2026") and rx.search("Septiembre 2026")
     finally:
         meli_forms.set_site("mx")
         mercadopago.set_site("mx")
     assert meli_forms.SPANISH_MONTH_NAMES[8] == "Septiembre"
     assert mercadopago.ES_ABBR[9] == "sep"
+
+
+def test_no_full_country_does_not_expect_stock_reports():
+    import argparse
+    import download_diag
+    a = argparse.Namespace(only="all", month="2026-09", billing_after=1)
+    assert "stock/general" in download_diag.expected_forms(a)
+    pe = download_diag.expected_forms(a, has_full=False)
+    assert not any(f.startswith("stock/") for f in pe) and "ventas" in pe

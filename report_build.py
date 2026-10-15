@@ -72,7 +72,7 @@ EXIT_CRASH = 70         # 未处理的异常（traceback 已打印）。70 = sys
 # 常量：原始报表的结构
 # ════════════════════════════════════════════════════════════════════════
 
-VENTAS_SHEET = "Ventas MX"          # 智利是 "Ventas CL"，见 set_site()
+VENTAS_SHEET = "Ventas MX"          # 智利 "Ventas CL"、秘鲁 "Ventas PE"，见 set_site()
 VENTAS_HEADER_ROW = 5        # 0-indexed，实际表头在第 6 行
 BILLING_HEADER_ROW = 7       # Facturación / Notas de Crédito，表头在第 8 行
 CARGOS_HEADER_ROW = 5        # Reporte_Cargos_Full_*，表头在第 6 行
@@ -92,6 +92,9 @@ MONTH_FULL_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo",
 FILE_MONTH_TOKENS = {
     "ene": 1, "enero": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
     "jul": 7, "ago": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dic": 12,
+    # 秘鲁把九月叫 Setiembre。IDG_PE 2026-09 的账单文件名实测仍是 "Sept2026"，
+    # 但平台若哪天按本地拼法给出 "Set2026"，也要认得。
+    "set": 9,
 }
 
 # Ventas 列名。各店的导出列数不一致（例如 EWTTO 多一列"换货运费"），所以一律按列名取，
@@ -253,6 +256,9 @@ STATUS_ZH = {
     "Procesando en la bodega": ("仓库处理中", "—", "—"),
     # ↓ 实际数据里出现、平台文案的变体或细分说法
     "Cancelada": ("订单已取消", "待定", "未发出，库存无损"),
+    # 秘鲁 IDG_PE 2026-09 见到的两种取消说法
+    "Venta cancelada": ("销售已取消", "待定", "未发出，库存无损"),
+    "Cancelada. Tu transportista debe devolverte el paquete": ("已取消，承运商需把包裹退回给你", "买家", "包裹退回卖家，待验货"),
     "Devolución en camino sin costo de envío": ("退货在途（免运费）", "待定", "待质检"),
     "Devolución en preparación sin costo de envío": ("退货准备中（免运费）", "待定", "待质检"),
     "Devolución en camino. Revisaremos el producto": ("退货在途，将进行质检", "待定", "待质检"),
@@ -407,7 +413,49 @@ SITE_PROFILES = {
         # 没有"代扣代缴税金"这一行，见 sheet_pl / 桥 E 的智利版说明。
         "WITHHOLDING": False,
         "TAXCOL_CN": "佣金列中的退货处理费等", "TAX_SHORT": "退货处理费等",
+        "VAT_NAME": "IVA", "TAX_AUTH": "SII",
     },
+    "pe": {
+        "VENTAS_SHEET": "Ventas PE",
+        "VENTAS_GLOB": "*Ventas_PE*.xlsx",
+        "CUR": "PEN", "CUR_CN": "秘鲁索尔", "COUNTRY_CN": "秘鲁",
+        # 索尔有分（céntimos）：金额格式、精度和容差都和墨西哥一样。IDG_PE
+        # 2026-09 实测 Ventas、账单、MercadoPago 都是两位小数（118.00、-14.16）。
+        "MNY": '#,##0.00;(#,##0.00);-',
+        "MONEY_DEC": 2,
+        "TOL_CENT": 0.01,
+        "CN_TOL": 0.05,
+        "BRIDGE_A_TOL": 0.05,
+        "COUPON_TOL": 0.02,
+        "ZERO_TOL": 0.005,
+        # 秘鲁的增值税叫 IGV（Impuesto General a las Ventas），18%，向 SUNAT 申报。
+        "IVA_RATE": 0.18,
+        # 账单按自然月：账单页写"Cierre 30/set/2026"；IDG_PE 实测 Sept 账单计费日
+        # 09-01..09-30、Oct 账单 10-01 起。和墨西哥一样一个会计月一张账单。
+        "BILL_CYCLE_DAY": 1,
+        # 秘鲁平台**不代扣、也不 percibe**。IDG_PE 2026-09 实测：MercadoPago 流水
+        # （settlement / reserve-release）TAXES_AMOUNT 全部为 0，没有 retención /
+        # percepción 的交易类型或列；Ventas 的 Cargo por venta e impuestos 与账单
+        # 纯佣金逐单相等（= 售价 × 类目费率，118 × 12% = 14.16，不另加 IGV）。
+        # 所以和智利一样走"无代扣"那一套（桥 E 换成"无代扣"核对）。
+        "WITHHOLDING": False,
+        "TAXCOL_CN": "佣金列中的退货处理费等", "TAX_SHORT": "退货处理费等",
+        "VAT_NAME": "IGV", "TAX_AUTH": "SUNAT",
+        # 秘鲁没有 Full 仓：库存、仓储费、Full 费用、退货质检这些报表平台不提供
+        # （库存页 404）。相关页写"本国没有 Full"，不当成缺文件。
+        "HAS_FULL": False,
+        # 秘鲁 Ventas 的 "Descuentos y bonificaciones" 列**有值**（墨西哥/智利导出
+        # 为空列）：IDG_PE 2026-09 是 69 单 Mercado Envíos Flex 的配送补贴，合计
+        # 427.37，与 MercadoPago 流水里 9 月的 69 笔 CASHBACK 分毫不差。这是平台
+        # 付给卖家的钱，不是卖家承担的优惠券 —— 见 load_ventas。
+        "BONIF_COL": True,
+    },
+}
+# 后来才有的键：没写的站点取这里的值（墨西哥的值 = 原来的行为）。
+SITE_DEFAULTS = {
+    "VAT_NAME": "IVA", "TAX_AUTH": "SAT",
+    "HAS_FULL": True,
+    "BONIF_COL": False,
 }
 
 
@@ -426,6 +474,7 @@ def set_site(code):
         raise ValueError("未知站点 %r，可用：%s" % (code, ", ".join(sorted(SITE_PROFILES))))
     g = globals()
     g["SITE"] = code
+    g.update(SITE_DEFAULTS)
     g.update(SITE_PROFILES[code])
     # Ventas 的金额列名带币种后缀：Ingresos por productos (MXN) / (CLP)
     g["V_REVENUE"] = _ventas_col("Ingresos por productos")
@@ -440,6 +489,56 @@ def set_site(code):
 
 def is_cl():
     return SITE == "cl"
+
+
+def is_pe():
+    return SITE == "pe"
+
+
+# ── 秘鲁沿用智利"不代扣"那一套说明文字 ──────────────────────────────────
+# 无代扣分支（桥 E/F、② 备查项、① 注释、⑩ 待办、no_withholding 校验……）的
+# 文字是为智利写的，里面直接写着"智利 / IVA / SII / DTE / 19/119"。秘鲁的税务
+# 结构经实测和智利相同（见 SITE_PROFILES["pe"]），只是名字不同，所以不复制一份
+# 秘鲁版文字，而是在写出工作簿和校验结果时把这几个专名换掉（localize）。
+# 只对秘鲁生效：墨西哥、智利的输出一个字不变（golden 测试逐格比对）。
+# 新写智利专属文字时注意：这里换不掉的说法（例如"截账日"那一套）要自己按
+# 站点分支，别指望这张表。
+LOCALIZE_FROM_CL = {
+    "pe": [
+        ("智利", "秘鲁"),
+        ("19/119", "18/118"),
+        ("而不是 1.19", "而不是 1.18"),
+        ("比索", "索尔"),
+        ("SII", "SUNAT"),
+        ("（DTE）", "（CPE，comprobantes de pago electrónicos）"),
+    ],
+}
+_IVA_RE = re.compile(r"(?<![A-Za-z])IVA(?![A-Za-z])")
+
+
+def localize(text):
+    """把为智利写的说明换成本站点的专名（秘鲁：智利→秘鲁、IVA→IGV、SII→SUNAT）。
+    墨西哥/智利原样返回；非字符串原样返回。"""
+    pairs = LOCALIZE_FROM_CL.get(SITE)
+    if not pairs or not isinstance(text, str):
+        return text
+    for a, b in pairs:
+        text = text.replace(a, b)
+    return _IVA_RE.sub(VAT_NAME, text)
+
+
+def localize_workbook(wb):
+    """写盘前对整本工作簿做 localize（只改文字单元格，公式原样）。"""
+    if not LOCALIZE_FROM_CL.get(SITE):
+        return
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if isinstance(v, str) and not v.startswith("="):
+                    nv = localize(v)
+                    if nv != v:
+                        c.value = nv
 
 
 BILL_OPEN_RE = re.compile(r"podr[ií]a tener cambios hasta el cierre", re.I)
@@ -848,6 +947,17 @@ def load_ventas(folder):
     # 卖家承担的优惠券：平台把 Descuentos y bonificaciones 整列导成空白，
     # 只能用 Total 与各明细列的差额倒推。Total 为空的行（换货第二行）不参与。
     tot_raw = pd.to_numeric(df[V_TOTAL], errors="coerce") if V_TOTAL in df.columns else pd.Series(float("nan"), index=df.index)
+    if BONIF_COL:
+        # 秘鲁：Descuentos y bonificaciones 列有值，正数是平台付给卖家的
+        # Mercado Envíos Flex 配送补贴（MercadoPago 里是单独一笔 CASHBACK）。
+        # 它是卖家的运费收入，所以并进运费收入列 —— 这样桥 A、损益表、⑦ SKU、
+        # ⑧ 趋势全部沿用同一条恒等式，不必为秘鲁多开一列；原值留在 bonif /
+        # ship_income_buyer 两列里供说明用。负数（若平台哪天在这一列记卖家
+        # 优惠券）不并，照旧由下面的 Total 倒推落进优惠券。
+        b = num(df, V_DISCOUNT)
+        df["bonif"] = b.where(b > 0, 0.0)
+        df["ship_income_buyer"] = num(df, V_SHIP_INCOME)
+        df[V_SHIP_INCOME] = df["ship_income_buyer"] + df["bonif"]
     recomputed = (num(df, V_REVENUE) + num(df, V_SHIP_INCOME) + num(df, V_COMMISSION)
                   + num(df, V_SHIP_COST) + num(df, V_REFUND))
     coupon = -(tot_raw.fillna(0.0) - recomputed)
@@ -1755,6 +1865,11 @@ def derive(store, folder, p0, p1):
     m["units"] = float(num(A, V_UNITS).sum())
     m["ing"] = float(num(A, V_REVENUE).sum())
     m["env_ing"] = float(num(A, V_SHIP_INCOME).sum())
+    if BONIF_COL:
+        # 秘鲁：运费收入里并进了 Flex 配送补贴（见 load_ventas），拆开记一笔供说明
+        m["bonif"] = float(num(A, "bonif").sum())
+        m["bonif_n"] = int((num(A, "bonif") > ZERO_TOL).sum())
+        m["env_ing_buyer"] = m["env_ing"] - m["bonif"]
     m["com_imp"] = float(-num(A, V_COMMISSION).sum())      # 佣金 + 代扣税（Ventas 口径）
     m["env_cost"] = float(-num(A, V_SHIP_COST).sum())
     m["refund"] = float(-num(A, V_REFUND).sum())
@@ -2170,6 +2285,8 @@ def validate(stores, tol=None):
                             % (fmt(m["cargos_full_report_total"]), fmt(m["full_bill_total"]), fmt(d))))
         else:
             out.append(_chk("cargos_full", name, "Full 费用报表 vs 账单", True,
+                            ("%s没有 Full 仓，平台不提供 Full 费用报表，这一项不适用"
+                             % COUNTRY_CN) if not HAS_FULL else
                             ("缺 %s 的 Reporte_Cargos_Full（本月横跨两期账单，两期都要有），跳过"
                              % "、".join(S["cargos_full_missing"]))
                             if S.get("cargos_full_missing") else
@@ -2188,9 +2305,13 @@ def validate(stores, tol=None):
                                "；另有 %d 单对不上收款号" % (MO["unlinked"] + MO["no_cash"])
                                if MO["unlinked"] + MO["no_cash"] else "",
                                MO["span"])
-                            + ("。其中 %d 单（合计 %s）的差额正好等于买家另付的运费 —— 智利运费在 "
-                               "MercadoPago 是单独一笔 SETTLEMENT_SHIPPING，收款号不同、账单的 Pago "
-                               "列关联不到，不是少付；其余 %d 单需人工核对"
+                            + (("。其中 %d 单（合计 %s）的差额正好等于该单的运费收入 —— 秘鲁买家另付的运费"
+                                "（SETTLEMENT_SHIPPING）和 Flex 配送补贴（CASHBACK）在 MercadoPago 都是"
+                                "单独一笔，收款号不同、账单的 Pago 列关联不到，不是少付；其余 %d 单需人工核对"
+                                if BONIF_COL else
+                                "。其中 %d 单（合计 %s）的差额正好等于买家另付的运费 —— 智利运费在 "
+                                "MercadoPago 是单独一笔 SETTLEMENT_SHIPPING，收款号不同、账单的 Pago "
+                                "列关联不到，不是少付；其余 %d 单需人工核对")
                                % (MO["ship_explained"][0], fmt(MO["ship_explained"][1]),
                                   k - MO["ship_explained"][0])
                                if MO.get("ship_explained") and MO["ship_explained"][0] else ""),
@@ -2291,6 +2412,8 @@ def validate(stores, tol=None):
                 ("另有 %d 单金额对不上已知模式，未计入调整，需人工核对。"
                  % len(c["mismatch"])) if c["mismatch"] else "")),
             severity="warn"))
+    for c in out:
+        c["name"], c["detail"] = localize(c["name"]), localize(c["detail"])
     return out
 
 
@@ -2491,7 +2614,18 @@ def sheet_readme(wb, stores, ctx):
                  "一笔退货会同时产生：销售报表的“Anulaciones y reembolsos”（退给买家的钱）、"
                  "账单里的“Anulación del cargo”（平台退还的佣金/运费）、以及贷记单 Nota de Crédito（另开红字发票）。"
                  "只看其中一套，退货损失就会算错。"))
-    if coupon_stores:
+    if BONIF_COL:
+        rows.append(("", "⑤ “Descuentos y bonificaciones”列里是平台给的 Flex 配送补贴",
+                     "墨西哥等国的这一列导出为空，%s的这一列有值：是平台付给卖家的 Mercado Envíos Flex "
+                     "配送补贴（本期 %s），在 MercadoPago 里是单独一笔 CASHBACK。它是卖家的钱，不是卖家承担的"
+                     "优惠券，本报表把它并进【运费收入】（损益表“运费收入”行的说明里拆开写了）。卖家自负的优惠券"
+                     "仍用 Total 倒推：本期 %s。"
+                     % (COUNTRY_CN,
+                        per_store(stores, lambda S: "%d 单、%s" % (S["m"].get("bonif_n", 0),
+                                                                fmt(S["m"].get("bonif", 0.0))), "、"),
+                        per_store(stores, lambda S: "%d 笔、%s" % (S["m"]["coupon_n"],
+                                                                fmt(S["m"]["coupon"])), "、"))))
+    elif coupon_stores:
         cs = coupon_stores[0]
         den = "、".join("%s×%d 笔" % (fmt(k, 0), v)
                         for k, v in sorted(cs["m"]["coupon_denoms"].items(), reverse=True))
@@ -2573,10 +2707,12 @@ def sheet_readme(wb, stores, ctx):
          % ("代扣税解释" if WITHHOLDING else "佣金列口径差与“智利不代扣税”的证据（F 含税口径提示）")),
         (SHEET_NAMES[3], "本期账单全部费用科目（西班牙语原文 + 中文），标明结算通道。"),
         (SHEET_NAMES[4], "按订单状态、按金额、按平台/卖家责任划分。"),
-        (SHEET_NAMES[5], "Full 仓退货逐件质检结果与退货原因，含可回收/彻底损失判定。"),
+        (SHEET_NAMES[5], "Full 仓退货逐件质检结果与退货原因，含可回收/彻底损失判定。"
+         if HAS_FULL else "%s没有 Full 仓，本页不适用。" % COUNTRY_CN),
         (SHEET_NAMES[6], "按 SKU 的收入、费用、退货与贡献；五张表：表一正常订单、表二~表四三类异常明细、表五 SKU 真实盈利（最终口径）。单位采购成本只在表五填。"),
         (SHEET_NAMES[7], "销售报表窗口内各月的销售、费率、退货率走势。"),
-        (SHEET_NAMES[8], "Full 仓库存结构、动销与周转，并把平台的近 30 天销量与销售报表逐 SKU 核对。"),
+        (SHEET_NAMES[8], "Full 仓库存结构、动销与周转，并把平台的近 30 天销量与销售报表逐 SKU 核对。"
+         if HAS_FULL else "%s没有 Full 仓，平台不提供库存报表，本页不适用。" % COUNTRY_CN),
         (SHEET_NAMES[9], "本期校验结果、数据缺失项和需要你补充/核实的事项。"),
     ]:
         rows.append(("", nm, desc))
@@ -2585,8 +2721,9 @@ def sheet_readme(wb, stores, ctx):
     rows.append(("S", "六、一个容易搞错的概念：到账净额 ≠ 利润", ""))
     rows.append(("", "到账净额是现金指标",
                  "销售报表的 Total（%s 本期 %s）只是订单层面进你 MercadoPago 账户的钱。"
-                 "广告费、Full 仓储与揽收费、页面维护费都不在里面 —— 它们是月底汇总后从同一个余额里另外扣走的（%s扣了 %s）。"
-                 % (M["store"], fmt(mm["total"]), mm["pay_date"] or "结算日", fmt(mm["pay_auto"]))))
+                 "广告费、%s页面维护费都不在里面 —— 它们是月底汇总后从同一个余额里另外扣走的（%s扣了 %s）。"
+                 % (M["store"], fmt(mm["total"]), "Full 仓储与揽收费、" if HAS_FULL else "",
+                    mm["pay_date"] or "结算日", fmt(mm["pay_auto"]))))
     rows.append(("", "利润指标是经营贡献毛利",
                  "%s 本期 %s。算法：到账净额 ＋ 加回%s %s − 退货处理费 %s − 广告 %s − Full 仓费用 %s − 页面费 %s。"
                  "完整推导见【%s】桥 D。"
@@ -2615,18 +2752,25 @@ def sheet_readme(wb, stores, ctx):
         d = mm["storage_bill"] - mm["storage_accrual"]
         storage_note += ("另有一张独立的仓储费报表按实际占用日算出 %s，两者差 %s，原因是账单按计费日、报表按占用日，跨月错了一两天。"
                          "本报表统一采用账单口径，因为那才是真正扣钱的金额。" % (fmt(mm["storage_accrual"]), fmt(d)))
-    rows.append(("", "仓储费怎么归集的", storage_note))
+    if not HAS_FULL:
+        rows.append(("", "Full 仓", no_full_text().replace("本页不适用，不是数据缺失。",
+                                                         "损益表里的 Full 各行恒为 0，相关核对不适用。")))
+        storage_note = None
+    if storage_note:
+        rows.append(("", "仓储费怎么归集的", storage_note))
     full_items = [(FEE_BY_ES[es][0], v) for es, v in mm["bill_fee_net"].items()
                   if FEE_BY_ES[es][1] in ("storage", "fulfillment", "penalty") and abs(v) > ZERO_TOL]
     full_items.sort(key=lambda x: -abs(x[1]))
-    rows.append(("", "Full 仓相关费用",
-                 "%s，合计 %s。%s"
-                 % ("、".join("%s %s" % (n, fmt(v)) for n, v in full_items) or "本期无",
-                    fmt(mm["full_bill_total"]),
-                    ("已与 %s 的各张明细表逐项核对，差异 %s。"
-                     % (os.path.basename(M["files"]["cargos_full"]),
-                        fmt(mm["cargos_full_report_total"] - mm["full_bill_total"]))
-                     if M["files"].get("cargos_full") else "本期未下载到 Full 费用明细报表，无法交叉核对。"))))
+    if HAS_FULL:
+        rows.append(("", "Full 仓相关费用",
+                     "%s，合计 %s。%s"
+                     % ("、".join("%s %s" % (n, fmt(v)) for n, v in full_items) or "本期无",
+                        fmt(mm["full_bill_total"]),
+                        ("已与 %s 的各张明细表逐项核对，差异 %s。"
+                         % (os.path.basename(M["files"]["cargos_full"]),
+                            fmt(mm["cargos_full_report_total"] - mm["full_bill_total"]))
+                         if M["files"].get("cargos_full") else "本期未下载到 Full 费用明细报表，无法交叉核对。"))))
+
     rows.append(("", "", ""))
     rows.append(("S", "七、重要提示", ""))
 
@@ -2653,9 +2797,10 @@ def sheet_readme(wb, stores, ctx):
     else:
         notes.append("智利平台不代扣税，本报表没有“代扣代缴税金”行。收入为含税（IVA %s）口径，"
                      "GMV 中所含 IVA 在【%s】备查项列示，仅供参考。⚠ 会计判断（请交智利会计师确认）："
-                     "① 销项 IVA 由卖家自行向 SII 申报缴纳；② 平台费用发票（佣金、配送、广告、Full）"
+                     "① 销项 IVA 由卖家自行向 SII 申报缴纳；② 平台费用发票（佣金、配送、广告%s）"
                      "所含 IVA 能否作为进项抵扣；③ 账单金额是否含 IVA —— 平台导出的账单里没有单列 IVA。"
-                     % (pct(IVA_RATE, 0), SHEET_NAMES[1]))
+                     % (pct(IVA_RATE, 0), SHEET_NAMES[1], "、Full" if HAS_FULL else ""))
+    if not WITHHOLDING and any(cycle_day(S) != 1 for S in stores):
         notes.append("智利的平台账单不按自然月出，而且每家店切期日不同（%s）。本报表的会计月是"
                      "自然月：账单级费用按每一行的计费日归月，所以本月的费用取自两张账单（%s）。"
                      % (per_store(stores, lambda S: "按 %s，“%s”账单 = %s–%s" % (
@@ -2664,6 +2809,15 @@ def sheet_readme(wb, stores, ctx):
                          S["bill_cycles"][0][3].strftime("%m/%d")), "；"),
                         "＋".join("%s %d" % (MONTH_FULL_ES[mth], y)
                                  for y, mth, _a, _b in main_store(stores)["bill_cycles"])))
+    elif not WITHHOLDING:
+        notes.append("%s的平台账单按自然月出（账单页的截账日“Cierre”是每月最后一天），"
+                     "和墨西哥一样一个会计月对应一张账单；账单级费用仍按每一行的计费日归月。"
+                     % COUNTRY_CN)
+    if BONIF_COL:
+        notes.append("运费收入里含平台付给卖家的 Flex 配送补贴（Ventas 的“Descuentos y bonificaciones”列，"
+                     "本期 %s），MercadoPago 里是单独一笔 CASHBACK。⚠ 会计判断：这笔补贴按运费收入"
+                     "还是按平台返利/其他收入入账，开票和 %s 处理请交会计师确认。"
+                     % (per_store(stores, lambda S: fmt(S["m"].get("bonif", 0.0)), "、"), VAT_NAME))
     no_mp = [S["store"] for S in stores if not S.get("mp")]
     if no_mp:
         notes.append("%s 本期没有 MercadoPago 资金流水（常见原因是该登录账号无报表权限），"
@@ -2702,11 +2856,21 @@ PL_NOTES_NO_WITHHOLDING = {
 }
 
 
+# 秘鲁：Descuentos y bonificaciones 列的 Flex 配送补贴并进了运费收入（见 load_ventas）
+PL_NOTE_ENV_BONIF = ("买家另行支付的运费 ＋ 平台付给卖家的 Mercado Envíos Flex 配送补贴（Ventas 的"
+                     "“Descuentos y bonificaciones”列，MercadoPago 里是单独一笔 CASHBACK）。"
+                     "两部分各多少见 ① 页注释")
+
+
 def build_pl_rows():
     """PL_LINES + 按 FEE_CATALOG 顺序生成的账单级费用行 + PL_TAIL。行序恒定。"""
     rows = list(PL_LINES)
     if not WITHHOLDING:
         rows = [(k, lab, es, kind, PL_NOTES_NO_WITHHOLDING.get(k, note))
+                for k, lab, es, kind, note in rows]
+    if BONIF_COL:
+        rows = [(k, lab, es + " ＋ Descuentos y bonificaciones", kind, PL_NOTE_ENV_BONIF)
+                if k == "env_ing" else (k, lab, es, kind, note)
                 for k, lab, es, kind, note in rows]
     for es, zh, bucket, order_level in FEE_CATALOG:
         if order_level:
@@ -2768,8 +2932,11 @@ def pl_memo_no_withholding(stores):
          "上表的收入与费用逐项加总后与销售报表 Total 列的差额。为 0 表示无任何未解释差额。"),
         ("本期账单实际支付（按计费日归本月）", "Pago con débito automático / Pago voluntario",
          lambda S: S["m"]["pay_auto"], None,
-         "智利账单不按自然月出（本店切期见【①】），本月的费用分属两张账单；这里取两张账单的付款明细里"
-         "付给本月计费日费用的部分，与上表的勾稽见【%s】桥 B。" % SHEET_NAMES[2]),
+         ("智利账单不按自然月出（本店切期见【①】），本月的费用分属两张账单；这里取两张账单的付款明细里"
+          "付给本月计费日费用的部分，与上表的勾稽见【%s】桥 B。" % SHEET_NAMES[2])
+         if any(cycle_day(S) != 1 for S in stores) else
+         ("本月账单（按自然月出）实际付掉的金额（自动扣款或主动付款，不含贷记单），与上表"
+          "“月度账单费用小计”的勾稽见【%s】桥 B。" % SHEET_NAMES[2])),
         ("本期贷记单（平台退还）", "Notas de crédito",
          lambda S: S["m"]["pay_nc"], None,
          "计费日在本月的贷记单行，针对取消/退货订单退还的佣金与运费，已在“退款与取消（净）”中抵减。"),
@@ -3042,7 +3209,9 @@ def _bridge_head(wb, stores, ctx):
     head()
     a1 = line("A1", "商品销售收入 (GMV)", V(lambda S: S["m"]["ing"]),
               "%s → Ingresos por productos，按下单日归集" % VENTAS_SHEET)
-    line("A2", "＋ 运费收入", V(lambda S: S["m"]["env_ing"]), "%s → Ingresos por envío" % VENTAS_SHEET)
+    line("A2", "＋ 运费收入", V(lambda S: S["m"]["env_ing"]),
+         "%s → Ingresos por envío%s" % (VENTAS_SHEET, " ＋ Descuentos y bonificaciones（Flex 配送补贴）"
+                                          if BONIF_COL else ""))
     line("A3", "− 平台销售佣金", V(lambda S: -S["m"]["com_gross"]),
          "账单 Facturación → Cargo por venta（纯佣金，含联盟佣金，不含税）")
     line("A4", "− 平台配送费", V(lambda S: -S["m"]["env_cost"]),
@@ -3060,6 +3229,9 @@ def _bridge_head(wb, stores, ctx):
     cs = [S for S in stores if S["m"]["coupon_n"] > 0]
     coupon_note = ("★ 平台把 Descuentos y bonificaciones 这一列导出成了空白，所以这笔钱在任何明细列里都看不到，"
                    "只能用 Total 倒推。已交叉验证：账单佣金 ÷（原价 − 券额）＝ 标准费率。")
+    if BONIF_COL:
+        coupon_note = ("%s的 Descuentos y bonificaciones 列有值，但那是平台给的 Flex 配送补贴（已并入 A2 运费收入），"
+                       "不是卖家优惠券。卖家自负的优惠券仍用 Total 倒推。" % COUNTRY_CN)
     if cs:
         coupon_note += "本期 " + "；".join(
             "%s %d 笔、合计 %s（面额 %s）" % (
@@ -3106,7 +3278,9 @@ def _bridge_head(wb, stores, ctx):
             cross.append(("V1.%d" % i, "订单 %s" % oid, vt, mp,
                           "销售报表把它记成 0，平台却有到账 —— 可能是退款/争议后来按卖家有利结案"
                           if abs(vt) <= CN_TOL and mp > 0 else
-                          "差额＝买家另付的运费（单独一笔 SETTLEMENT_SHIPPING，收款号不同）"
+                          ("差额＝该单运费收入（买家运费 SETTLEMENT_SHIPPING / Flex 配送补贴 CASHBACK，"
+                           "单独一笔，收款号不同）" if BONIF_COL else
+                           "差额＝买家另付的运费（单独一笔 SETTLEMENT_SHIPPING，收款号不同）")
                           if oid in MO.get("ship_ids", ()) else "逐单核对"))
         if len(MO["differ"]) > 15:
             cross.append(("…", "另有 %d 单不一致，全部清单见【%s】"
@@ -3297,7 +3471,9 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
          "★ 同样不在销售报表里。%s"
          % ("已与 Reporte_Cargos_Full 逐项核对，差异 %s"
             % fmt(mm["cargos_full_report_total"] - mm["full_bill_total"])
-            if M["files"].get("cargos_full") else "本期未下载到 Full 费用明细报表，无法交叉核对"))
+            if M["files"].get("cargos_full") else
+            "本期未下载到 Full 费用明细报表，无法交叉核对" if HAS_FULL else
+            "%s没有 Full 仓，恒为 0" % COUNTRY_CN))
     line("D6", "− 官方店页面维护费", V(lambda S: -S["m"]["subscription_net"]), "Mi página 月费")
     # 新增的 "misc" 大类必须在桥 D 里有一行，否则 D7 的合计会和损益表对不上。
     line("D6a", "− 其他账单费用（信誉保障计划等）", V(lambda S: -S["m"]["misc_net"]),
@@ -3424,15 +3600,19 @@ def _bridge_tail(stores, ctx, sh, ws, H, n):
                   "智利平台不代扣税：这一列在正常订单上就是纯佣金，退货订单上还并进了退货处理费"
                   "（本期差额 %s）。照墨西哥的做法把差额当税加回而不扣退货处理费，利润会被高估。见桥 E。"
                   % per_store(stores, lambda S: fmt(S["m"]["tax_ret"]), " / "))
+    if not WITHHOLDING and any(cycle_day(S) != 1 for S in stores):
         mis[3] = ("❌ 拿一张账单当一个月",
                   "智利账单不按自然月出，%s：“%s”账单装的是 %s 的费用。直接拿一张账单当本月会错开好几天；"
                   "本报表按每一行的计费日把两张账单拆回自然月，订单级费用另按订单号跨账期关联。见桥 B、桥 C。"
                   % (("%s 按 %s" % (M["store"], cycle_cn(cycle_day(M)))), MONTH_FULL_ES[ctx["p0"].month],
                      "%s–%s" % (M["bill_cycles"][0][2].strftime("%m/%d"),
                                 M["bill_cycles"][0][3].strftime("%m/%d"))))
+    if not WITHHOLDING:
         mis[4] = ("❌ 以为 IVA 平台已经代缴了",
                   "智利平台不代扣（MercadoPago 流水 TAXES_AMOUNT 为 0），GMV 里的 IVA（本期 %s）全额由卖家自行申报。"
                   % fmt(tot(lambda S: S["m"]["iva_in_gmv"])))
+    if not HAS_FULL:
+        mis = [x for x in mis if "Cargos_Full" not in x[0]]
     for lab, note in mis:
         r = state["r"]
         ws.cell(row=r, column=2, value=lab).font = F(10, True, C_RED)
@@ -3491,9 +3671,9 @@ def _bridge_tax_no_withholding(stores, ctx, ws, H, n, banner):
          "若要编制正式的不含税损益表，应以此为收入起点", kind="t")
     line("F4", "需要会计判断的地方", [None] * n,
          "⚠ 以下不是平台数据能回答的，请交智利会计师：① 销项 IVA 的申报（含开了 factura 的 B2B 订单、"
-         "退货与取消的冲减）；② 平台费用（佣金、配送、广告、Full）的发票里含不含 IVA、能否作为进项抵扣 —— "
+         "退货与取消的冲减）；② 平台费用（佣金、配送、广告%s）的发票里含不含 IVA、能否作为进项抵扣 —— "
          "平台导出的账单只给一个“Valor del cargo”，没有单列 IVA；③ 退货处理费、信誉保障计划扣款等"
-         "科目的税务性质。本报表的经营贡献毛利是含税口径，没有扣任何税。",
+         "科目的税务性质。本报表的经营贡献毛利是含税口径，没有扣任何税。" % ("、Full" if HAS_FULL else ""),
          kind="chk", total=False)
 
 
@@ -3837,11 +4017,25 @@ def sheet_returns_money(wb, stores, ctx):
 # ⑥ 退货质检明细
 # ════════════════════════════════════════════════════════════════════════
 
+def no_full_text():
+    """没有 Full 仓的国家（秘鲁），⑥ ⑨ 页和 ① 页用的一句话。"""
+    return ("%s没有 Full 仓（平台在本国不提供 Full 履约，库存报表页 404）：没有仓储费、Full 揽收/"
+            "退仓/罚金等费用，也没有 Full 退货质检和库存报表。本页不适用，不是数据缺失。"
+            % COUNTRY_CN)
+
+
 def sheet_triage(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[5])
     ws["A1"] = "Full 仓退货质检明细与原因分析"
     ws["A1"].font = F(14, True, C_NAVY)
     ws.row_dimensions[1].height = 24
+    if not HAS_FULL:
+        ws["A2"] = no_full_text()
+        ws["A2"].font = F(10, False, C_GREY)
+        ws["A4"] = ("退货本身（退款金额、订单状态、平台/卖家责任）照常在【%s】分析；"
+                    "退回的货直接回到卖家手里，可否再售需卖家自己记录。" % SHEET_NAMES[4])
+        ws["A4"].font = F(10, False, C_GREY)
+        return
     have = [S for S in stores if len(S["returns"])]
     none = [S["store"] for S in stores if not len(S["returns"])]
     cover = "；".join(
@@ -5080,6 +5274,13 @@ def sheet_inventory(wb, stores, ctx):
     ws["A1"] = "库存与动销分析"
     ws["A1"].font = F(14, True, C_NAVY)
     ws.row_dimensions[1].height = 24
+    if not HAS_FULL:
+        ws["A2"] = no_full_text()
+        ws["A2"].font = F(10, False, C_GREY)
+        ws["A4"] = ("库存在卖家自己的仓库里，平台不提供库存快照。各 SKU 的销量见【%s】，"
+                    "库存与周转请用自有仓库的进销存数据。" % SHEET_NAMES[6])
+        ws["A4"].font = F(10, False, C_GREY)
+        return
     have = [S for S in stores if len(S.get("stock", []))]
     none = [S["store"] for S in stores if not len(S.get("stock", []))]
     snaps = "；".join("%s 快照于 %s" % (S["store"],
@@ -5436,8 +5637,11 @@ def sheet_gaps(wb, stores, ctx):
                          fmt(sum(x[2] for x in zero)),
                          "；".join("%s：%s → %s" % (o, fmt(v), fmt(mp)) for o, v, mp in dif[:40]),
                          "；…另 %d 单" % (len(dif) - 40) if len(dif) > 40 else ""),
-                      ("其中 %d 单（%s）的差额等于买家另付的运费：智利运费在 MercadoPago 是单独一笔"
-                       "（SETTLEMENT_SHIPPING），不是少付，可忽略。其余的" % (
+                      (("其中 %d 单（%s）的差额等于该单的运费收入：秘鲁买家另付的运费（SETTLEMENT_SHIPPING）"
+                        "和 Flex 配送补贴（CASHBACK）在 MercadoPago 都是单独一笔，不是少付，可忽略。其余的"
+                        if BONIF_COL else
+                        "其中 %d 单（%s）的差额等于买家另付的运费：智利运费在 MercadoPago 是单独一笔"
+                        "（SETTLEMENT_SHIPPING），不是少付，可忽略。其余的") % (
                            MO["ship_explained"][0], fmt(MO["ship_explained"][1]))
                        if MO.get("ship_explained") and MO["ship_explained"][0] else "")
                       + "在卖家后台按订单号查这些订单的退款 / 争议处理结果，确认哪一边是对的。",
@@ -5503,7 +5707,7 @@ def sheet_gaps(wb, stores, ctx):
                           "每月固定在月结后 15 天再导一次 Returns，用【订单号】与销售报表关联，"
                           "才能把退货损失准确归到销售月份。",
                           "本期退货损失可能被低估（部分本期订单的退货尚未质检完）。"))
-        if not S["files"].get("cargos_full"):
+        if not S["files"].get("cargos_full") and HAS_FULL:
             items.append(("中", "缺少 Full 费用明细报表（%s）" % S["store"],
                           "没有找到本期的 Reporte_Cargos_Full 文件，无法与账单的 Full 科目交叉核对。",
                           "在 Full 后台重新导出本期的 Cargos Full 报表。",
@@ -5552,9 +5756,27 @@ def sheet_gaps(wb, stores, ctx):
                       % (store_count_cn(stores), pct(IVA_RATE, 0),
                          fmt(sum(S["m"]["iva_in_gmv"] for S in stores))),
                       "请智利会计师确认：① 销项 IVA 的申报口径（含 B2B 开票订单、退货冲减）；"
-                      "② 平台费用（佣金、配送、广告、Full、退货处理费、信誉保障计划扣款）的发票是否含 IVA、"
-                      "能否作为进项抵扣；③ 需不需要从 SII 下载平台开给你的电子发票（DTE）逐张核对。",
+                      "② 平台费用（佣金、配送、广告%s、退货处理费、信誉保障计划扣款）的发票是否含 IVA、"
+                      "能否作为进项抵扣；③ 需不需要从 SII 下载平台开给你的电子发票（DTE）逐张核对。"
+                      % ("、Full" if HAS_FULL else ""),
                       "本报表的经营贡献毛利是含税口径、未扣任何税；税后利润取决于上述判断。"))
+        if is_pe():
+            # 秘鲁的电子发票按 SUNAT 的系列号分：F 开头是 factura（能抵进项 IGV），
+            # B 开头是 boleta de venta（开给最终消费者，不能抵）。IDG_PE 2026-09 的
+            # 平台账单全部是 B001-…，说明平台多半没按 RUC 给这家店开 factura。
+            for S in stores:
+                inv = S["billing"][F_INVOICE].astype(str).str.strip() \
+                    if F_INVOICE in S["billing"].columns else pd.Series(dtype=str)
+                ser = inv[inv.str.match(r"^[A-Z]\d{3}-\d+$")].str[0].value_counts()
+                if ser.get("B", 0) and not ser.get("F", 0):
+                    items.append(("中", "平台费用开的是 boleta 不是 factura（%s）" % S["store"],
+                                  "本期账单 %d 行的发票号（N° de factura fiscal）都是 B 开头（如 %s），"
+                                  "按 SUNAT 的编号规则这是 boleta de venta，不是 factura。"
+                                  % (int(ser["B"]), inv[inv.str.startswith("B")].iloc[0]),
+                                  "请会计师确认：boleta 上的 IGV 一般不能作为进项（crédito fiscal）抵扣；"
+                                  "若公司有 RUC，查一下卖家账号里登记的开票资料，看能否让平台改开 factura。",
+                                  "平台费用（本期账单 %s）里的 IGV 能不能抵扣，取决于这一点。"
+                                  % fmt(S["m"]["bill_total"])))
         for S in stores:
             if cycle_day(S) != 1 and not S["m"].get("pay_complete"):
                 items.append(("中", "桥 B 付款记录不全（%s）" % S["store"],
@@ -5746,6 +5968,7 @@ def build_workbook(stores, ctx, out_path):
     sheet_trend(wb, stores, ctx)
     sheet_inventory(wb, stores, ctx)
     sheet_gaps(wb, stores, ctx)
+    localize_workbook(wb)
     d = os.path.dirname(os.path.abspath(out_path))
     if d and not os.path.isdir(d):
         os.makedirs(d)
@@ -5833,7 +6056,7 @@ def parse_store_arg(v):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Mercado Libre 月度财务报表生成器（墨西哥 / 智利）",
+        description="Mercado Libre 月度财务报表生成器（墨西哥 / 智利 / 秘鲁）",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--month", required=True, help="会计期间，如 2026-08")
     ap.add_argument("--store", action="append", required=True, type=parse_store_arg,
@@ -5845,10 +6068,10 @@ def main(argv=None):
                          "就不写出文件，退出码 %d" % EXIT_STRICT_ABORT)
     ap.add_argument("--no-recalc", action="store_true", help="跳过 LibreOffice 重算")
     ap.add_argument("--tol", type=float, default=None,
-                    help="桥A 残差容差，默认按站点：墨西哥 0.05，智利 1 比索")
+                    help="桥A 残差容差，默认按站点：墨西哥/秘鲁 0.05，智利 1 比索")
     ap.add_argument("--build-date", default=None, help="覆盖编制日期（用于可复现测试）")
     ap.add_argument("--site", type=str.lower, choices=sorted(SITE_PROFILES), default=None,
-                    help="国家站点 mx / cl。不给时取第一家店下载目录 run_meta.json 里的 site"
+                    help="国家站点 mx / cl / pe。不给时取第一家店下载目录 run_meta.json 里的 site"
                          "（老目录没有这个字段，按 mx）")
     a = ap.parse_args(argv)
 
@@ -5924,7 +6147,7 @@ def main(argv=None):
         print("  %s  %-12s %-22s %s" % (mark, c["store"][:12], c["name"], c["detail"]))
         if not c["ok"] and not c["skipped"]:
             for line in check_hints(c, by_store.get(c["store"])):
-                print("        %s" % line)
+                print("        %s" % localize(line))
     failed = [c for c in checks if not c["ok"] and c["severity"] == "error"]
     print("  —— error 级未通过 %d 项；warn 级未通过 %d 项" % (
         len(failed), sum(not c["ok"] and c["severity"] == "warn" for c in checks)))

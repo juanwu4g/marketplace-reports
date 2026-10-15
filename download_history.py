@@ -179,7 +179,7 @@ def probe_limits(driver):
             let e=arguments[0];
             for(let i=0;i<8&&e;i++){e=e.parentElement;if(!e)break;
               const m=(e.innerText||'').replace(/\\s+/g,' ').match(
-                /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Sept?iembre|Octubre|Noviembre|Diciembre)\\s*\\d*/i);
+                /(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Sep?tiembre|Octubre|Noviembre|Diciembre)\\s*\\d*/i);
               if(m)return m[0].trim();}
             return '?';""", b)
         months.append(t)

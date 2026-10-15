@@ -714,7 +714,9 @@ def diagnose(result, args, diag, owed):
     文件已经在盘上了，解释失败的代码自己失败，不能反过来算作下载失败。
     """
     try:
-        result["expected"] = download_diag.expected_forms(args)
+        result["expected"] = download_diag.expected_forms(
+            args, has_full=meli_site.get(result.get("site") or meli_site.DEFAULT)
+            .get("has_full", True))
         result["flags"] = dict(diag.flags)
         result["cautions"] = list(diag.cautions)
         result["missing"] = download_diag.diagnose_store(

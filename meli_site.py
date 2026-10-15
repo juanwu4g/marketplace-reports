@@ -58,7 +58,7 @@ SITES = {
         "platform_hint": "秘鲁",
         "tz": "America/Lima", "utc_offset": -5,
         # 秘鲁把九月写成 "Setiembre"（账单卡片、明细页标题、日期 "30/set/2026"）
-        "september": "setiembre", "sep_abbr": "set",
+        "september": "setiembre",
         # 销售 Excel 的下载通知过一阵就清空：申请完必须当场取（run_downloads）
         "ventas_collect_now": True,
         # 秘鲁没有 Full 仓：库存报表页（space_management）是 404，不去下载

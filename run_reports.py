@@ -7,7 +7,7 @@
     python run_reports.py --stores BOCINA_TA02 UNIT_TA04
     python run_reports.py --no-per-store         # 只出汇总
     python run_reports.py --dry-run              # 只列出会用哪个下载目录
-    python run_reports.py --region CL            # 智利店铺（默认 MX 墨西哥）
+    python run_reports.py --region CL            # 智利店铺（默认 MX 墨西哥）；秘鲁 --region PE
 
 店铺清单来自 config.json 的白名单，和下载流程同一个来源，不在这里另写一份。
 每家店用它**最近一个文件齐全**的下载目录 —— 不是无脑取最新，因为一次
@@ -162,9 +162,9 @@ def main():
                     help="会计期间，如 2026-08；默认为上一个完整月份")
     ap.add_argument("--stores", nargs="+", default=None,
                     help="店铺名；默认取 config.json 白名单里的全部")
-    ap.add_argument("--region", type=str.upper, choices=["MX", "CL"],
+    ap.add_argument("--region", type=str.upper, choices=["MX", "CL", "PE"],
                     default="MX",
-                    help="哪个国家：MX 墨西哥（默认）/ CL 智利。决定不给 --stores 时"
+                    help="哪个国家：MX 墨西哥（默认）/ CL 智利 / PE 秘鲁。决定不给 --stores 时"
                          "出哪些店、汇总表叫什么")
     ap.add_argument("--out-dir", default=OUT_DIR, help="报表输出目录")
     ap.add_argument("--no-per-store", action="store_true", help="不出单店报表")

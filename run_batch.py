@@ -91,7 +91,7 @@ def resolve_stores(args):
 
 
 # 清洗（downloads/mx_sales）读的是 "Ventas MX" 表，只认墨西哥的导出。
-REGION_SKIP_NOTE = "清洗目前只支持墨西哥，智利店铺跳过这一步；不影响报表"
+REGION_SKIP_NOTE = "清洗目前只支持墨西哥，其他国家的店铺跳过这一步；不影响报表"
 
 
 def cleaning_applies(names):
