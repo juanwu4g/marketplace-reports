@@ -22,8 +22,7 @@ DEFAULT_REPORT_DIR = os.path.join(ROOT, "downloads", "data", "reports", "financi
 SETTINGS = os.path.join(ROOT, "gui_settings.json")
 RUNNER = os.path.join(ROOT, "run_monthly.py")
 
-# 窗口打开时停在哪一页。ML报表.cmd 不带参数 = 立即运行；启动.cmd、定时设置.cmd
-# 各带一个，生产机器上的快捷方式和 README 里写的都还管用。
+# 窗口打开时停在哪一页。ML报表.cmd = 立即运行；--tab 可以直接打开别的页。
 TABS = ("run", "human", "schedule")
 TAB_ALIASES = {"run": "run", "launch": "run", "启动": "run",
                "human": "human", "人工": "human",

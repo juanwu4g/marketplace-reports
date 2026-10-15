@@ -386,7 +386,7 @@ MODULES = {"tkinter": tk, "tkinter.ttk": ttk, "tkinter.font": font,
 def install():
     saved = dict((k, sys.modules.get(k)) for k in MODULES)
     sys.modules.update(MODULES)
-    for k in ("ml_app", "log_view", "gui", "schedule_gui"):
+    for k in ("ml_app", "log_view"):
         sys.modules.pop(k, None)
     return saved
 
@@ -397,5 +397,5 @@ def uninstall(saved):
             sys.modules.pop(k, None)
         else:
             sys.modules[k] = v
-    for k in ("ml_app", "log_view", "gui", "schedule_gui"):
+    for k in ("ml_app", "log_view"):
         sys.modules.pop(k, None)

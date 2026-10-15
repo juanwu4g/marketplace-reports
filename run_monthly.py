@@ -13,7 +13,7 @@
 文件名还叫 run_monthly 是因为生产机器上已经登记的计划任务调的是
 run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一次运行**的入口：
 
-    ML报表.cmd（启动.cmd） -> ml_app.py -> run_monthly.py --entrance manual ...
+    ML报表.cmd           -> ml_app.py -> run_monthly.py --entrance manual ...
     计划任务（在同一个窗口里设置） -> run_monthly.cmd --entrance scheduled
     命令行                          -> run_monthly.py（--entrance 默认 cli）
 

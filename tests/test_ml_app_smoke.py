@@ -176,10 +176,9 @@ def test_pick_tab_and_legacy_entrances(app):
     assert ml_entrance.pick_tab(["--tab", "schedule"]) == "schedule"
     assert ml_entrance.pick_tab(["--tab=human"]) == "human"
     assert ml_entrance.pick_tab(["定时"]) == "schedule"
-    import gui
-    import schedule_gui
-    assert gui.TAB == "run" and schedule_gui.TAB == "schedule"
-    assert callable(gui.main) and callable(schedule_gui.main)
+    # 启动.cmd / 定时设置.cmd 和它们的 gui.py / schedule_gui.py 已并入 ML报表.cmd
+    assert not os.path.exists(os.path.join(ml_entrance.ROOT, "gui.py"))
+    assert not os.path.exists(os.path.join(ml_entrance.ROOT, "启动.cmd"))
 
 
 def test_live_run_shows_in_banner_and_log_columns(app):

@@ -50,7 +50,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 ENTRANCES = ("manual", "scheduled", "cli")
 ENTRANCE_ZH = {"manual": "手动", "scheduled": "定时", "cli": "命令行"}
 ENTRANCE_WHAT = {
-    "manual": "有人在「ML 报表」窗口（ML报表.cmd / 启动.cmd）里点按钮跑的",
+    "manual": "有人在「ML 报表」窗口（ML报表.cmd）里点按钮跑的",
     "scheduled": "Windows 计划任务拉起的（到点自动跑，或在窗口的「每月自动运行」"
                  "里点了「现在就跑一次」/「试跑一次」）",
     "cli": "有人直接敲命令（或双击 run_monthly.cmd）跑的",
@@ -650,7 +650,7 @@ def request_stop(run_id, who="", log_dir=None):
     """请那一轮停下来。它每秒会看一次这个文件，看到就杀掉子进程树并收尾。
 
     用文件而不是直接杀进程：点"中止"的窗口和起那一轮的往往不是同一个（定时
-    跑起来的，在「启动」窗口里点停），手里没有进程句柄；而且让它自己停，锁、
+    跑起来的，在窗口里点「中止这一轮」），手里没有进程句柄；而且让它自己停，锁、
     摘要、日志才收得干净。
     """
     p = run_paths(run_id, log_dir)["stop"]

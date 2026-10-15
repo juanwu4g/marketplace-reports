@@ -300,7 +300,7 @@ def _cmd(name):
     return raw, raw.decode("utf-8")
 
 
-LAUNCHERS = ["ML报表.cmd", "启动.cmd", "定时设置.cmd", "run_monthly.cmd"]
+LAUNCHERS = ["ML报表.cmd", "run_monthly.cmd"]
 
 
 @pytest.mark.parametrize("name", LAUNCHERS)
@@ -316,8 +316,7 @@ def test_launchers_are_ascii_and_their_messages_exist(name):
         assert os.path.exists(os.path.join(ROOT, ref.replace("\\", os.sep))), ref
 
 
-@pytest.mark.parametrize("name,tab", [("ML报表.cmd", "run"), ("启动.cmd", "run"),
-                                      ("定时设置.cmd", "schedule")])
+@pytest.mark.parametrize("name,tab", [("ML报表.cmd", "run")])
 def test_launchers_open_the_one_window_on_the_right_tab(name, tab):
     raw, text = _cmd(name)
     lines = text.splitlines()
