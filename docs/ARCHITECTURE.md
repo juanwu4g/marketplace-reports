@@ -27,7 +27,9 @@ launcher/              Chinese messages shown by the .cmd files (see launcher/RE
 core/                  shared by every platform — no platform names in here, ideally
   paths.py             ROOT = the repository root. Ask here, never use __file__.
   console.py           UTF-8 console guard for Chinese Windows
-  store_config.py      reads config.json: allowlist, batches, regions
+  markets.py           the registry: platforms (ML, FA …) x countries = markets ("FA-CL")
+  store_config.py      reads config.json: allowlist, which market each store is, batches per market
+  report_kit.py        the report family's frame: styles, Sheet, checks, names, recalc
   ziniao_client.py     Ziniao client lifecycle, HTTP IPC, open/close store, Selenium attach
   site_time.py         "today" in the selling country's timezone
   runlog.py            the six-column run log, run records, stop requests, exit-code wording
@@ -39,6 +41,7 @@ core/                  shared by every platform — no platform names in here, i
                        window logic that is testable without tkinter
 
 platforms/
+  falabella/           Falabella Chile: same contract as mercadolibre (FORMS.md, README.md)
   mercadolibre/        one platform = one package
     FORMS.md           every downloaded form: where it is, how it is obtained, its columns
     README.md          platform notes: sites, quirks per country, what is not downloaded
@@ -118,7 +121,8 @@ script that the runner or the window starts, start it the same way.
 |---|---|
 | **store** | one Ziniao browser profile = one seller account in one country |
 | **platform** | the marketplace (MercadoLibre, TikTok Shop …) = one package under `platforms/` |
-| **region / site** | the country of a store. In `config.json` it is `stores.regions`; inside MercadoLibre it selects the site (`mx`, `cl`, `pe`) in `meli_site.py` |
+| **market** | one platform in one country, written `ML-MX`, `FA-CL` (`core/markets.py`). Every store belongs to exactly one, declared in `config.json` `stores.catalog`; batches are per market (`stores.batches["FA-CL"]`). Old configs (`regions`, `batch`, `batches` by country) still mean MercadoLibre |
+| **region / site** | the country of a store (the country half of its market); inside MercadoLibre it selects the site (`mx`, `cl`, `pe`) in `meli_site.py` |
 | **form** | one downloadable report (e.g. MercadoLibre "Reporte de Facturación"). Catalogued per platform in its `FORMS.md` |
 | **route** | the browser steps that obtain one family of forms (billing, ventas, stock, MercadoPago) |
 | **owed** | a form that was requested but not ready yet; collected later by the catch-up pass |
@@ -127,24 +131,21 @@ script that the runner or the window starts, start it the same way.
 
 ---
 
-## 5. Extension points — what changes when platform #2 arrives
+## 5. Extension points — state after platform #2 (Falabella)
 
-The move into `core/` and `platforms/` is done. These couplings are known and are
-**meant to be removed while building the second platform**, not designed up front
-(building one real example first is cheaper than guessing the abstraction):
+| Where | State |
+|---|---|
+| stores | **done** — markets (platform x country) in `core/markets.py`; `store_config` resolves a store's market, batches per market, fails closed on unknown codes or mixed batches; each platform's batch refuses other platforms' stores and cross-checks Ziniao's platform name before opening |
+| `core/download_diag.py` | **done enough** — cause codes, evidence, `diagnose_store` are shared; a platform passes its own expected form ids, owed entries may carry `form`, records may carry `in_report`. MercadoLibre's form constants are still in the module (harmless) |
+| report kit | **done** — `core/report_kit.py` holds the family frame (styles, `Sheet`, `check`, sheet names, workbook/alert names, recalc). MercadoLibre imports it; golden tests 0 diff |
+| `core/run_monthly.py` `PLATFORM_PKG` | **to do (phase 3)** — iterate markets instead of countries (`store_config.markets_configured()`), start `platforms.<pkg>.run_batch / run_reports` with `--market`; alert file per market (`report_kit.alert_file_name`) |
+| window | **to do (phase 3)** — the country list becomes the market list (`markets.label`) |
+| canonical tables | not yet — Falabella's report reads its own files directly; moving both platforms onto common order / fee / payout tables stays a later step |
 
-| Where | Today | With several platforms |
-|---|---|---|
-| `core/run_monthly.py` `PLATFORM_PKG` | always `platforms.mercadolibre` | pick the package per store's platform; run platforms one after another like countries today |
-| `core/store_config.py` regions | a store has a country | a store has (platform, country); Ziniao's platform name can fill the platform |
-| `core/download_diag.py` | knows MercadoLibre form ids (`STOCK_FORMS`, MercadoPago kinds, `NOT_IN_REPORT`) | each platform declares its expected forms and which forms the report does not read; the cause codes and evidence logic stay in core |
-| `platforms/mercadolibre/report_build.py` | builds the whole workbook, incl. styles and sheet layout | split: a shared **report kit** in core (styles, sheet scaffolding, check list, ⑩ to-do sheet) + per-platform rules. See `REPORT_FAMILY.md` |
-| canonical tables | not yet | each platform translates its raw files into common order / fee / payout tables; one report builder draws the family layout from those |
-| window | the country list is MercadoLibre's countries | country choice becomes (platform, country) |
-
-Order of work for platform #2: follow `NEW_PLATFORM_SOP.md`; when its downloads
-work, extract the report kit from `report_build.py` and build the new platform's
-report on it, with MercadoLibre's golden tests proving nothing moved.
+A platform package provides: `run_batch` (same CLI: `--month`, `--stores`,
+`--market`, `--collect-only`; exit codes 0–4; last line `[BATCH_SUMMARY_JSON]`),
+`run_reports` (same CLI and exit codes), `FORMS.md`, `README.md` with the
+accounting rules.
 
 ---
 

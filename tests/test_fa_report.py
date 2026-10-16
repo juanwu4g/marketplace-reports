@@ -275,3 +275,13 @@ def test_run_reports_folder_and_exit_codes(folder, tmp_path, monkeypatch):
 def test_names():
     assert report_kit.combined_workbook_name("cl", "fa", MONTH) == "CL_FA_全店汇总_2026-09.xlsx"
     assert report_kit.alert_file_name("CL", "FA", MONTH) == "！报表异常_CL_FA_202609.txt"
+
+
+def test_files_from_a_later_run_of_the_same_month(folder, tmp_path):
+    later = os.path.join(os.path.dirname(folder), "20261016_180000_m202609")
+    os.makedirs(later)
+    os.replace(os.path.join(folder, "Product_details_1.xlsx"), os.path.join(later, "Product_details_1.xlsx"))
+    os.makedirs(os.path.join(os.path.dirname(folder), "20261016_190000_m202608"))   # other month: ignored
+    r, out = build(folder, tmp_path)
+    c = {x["key"]: x for x in r["checks"]}
+    assert c["file_stock"]["ok"]

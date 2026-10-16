@@ -142,13 +142,41 @@ def money_col(s):
                          errors="coerce").fillna(0.0)
 
 
+def _same_month(folder):
+    """This folder first, then the store's other folders of the same month, newest
+    first. A later `run_batch --only stock` (or a rerun of one route) writes a new
+    folder with just those files; the report should still find them."""
+    root, name = os.path.split(os.path.abspath(folder))
+    suffix = name[-8:] if re.search(r"_m\d{6}$", name) else None
+    sib = sorted(glob.glob(os.path.join(root, "*" + suffix)), reverse=True) if suffix else []
+    return [folder] + [d for d in sib if os.path.abspath(d) != os.path.abspath(folder)]
+
+
 def _first(folder, pattern):
-    hits = sorted(glob.glob(os.path.join(folder, pattern)))
-    return hits[-1] if hits else None
+    for d in _same_month(folder):
+        hits = sorted(glob.glob(os.path.join(d, pattern)))
+        if hits:
+            return hits[-1]
+    return None
 
 
 def _all(folder, pattern):
-    return sorted(glob.glob(os.path.join(folder, pattern)))
+    """All files of one kind from ONE folder (the first that has any): order
+    pieces or invoice periods must not be mixed across runs."""
+    for d in _same_month(folder):
+        hits = sorted(glob.glob(os.path.join(d, pattern)))
+        if hits:
+            return hits
+    return []
+
+
+def rel(path, folder):
+    """File name, plus its folder when it comes from another run of the same month."""
+    if not path:
+        return ""
+    d = os.path.dirname(os.path.abspath(path))
+    return os.path.basename(path) if d == os.path.abspath(folder) else \
+        "%s（取自 %s）" % (os.path.basename(path), os.path.basename(d))
 
 
 def read_meta(folder):
@@ -608,7 +636,7 @@ def sheet_readme(wb, stores, ctx):
                         S.get("tx_updated") or "?", len(f.get("order") or []),
                         "、".join(os.path.basename(p) for p in f.get("billing1") or []) or "缺",
                         os.path.basename(f["billing2"]) if f.get("billing2") else "缺",
-                        os.path.basename(f["stock"]) if f.get("stock") else "缺",
+                        rel(f.get("stock"), S["folder"]) if f.get("stock") else "缺",
                         len(f.get("pdf") or []))))
     rows.append(("", "", ""))
     rows.append(("S", "四、本期要点", ""))

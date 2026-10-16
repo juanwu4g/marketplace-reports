@@ -13,7 +13,10 @@ structure as `platforms/mercadolibre/FORMS.md`.
 - Source of the routes: the owner's intake workbook (7 forms with screenshots,
   taken from an English UI — **the stores run in Spanish; use the screenshots only
   as a map**), then probed live
-- Last verified: **2026-10-16**, by hand-driven probes. No download code exists yet.
+- Last verified: **2026-10-16**, by hand-driven probes, then by `run_batch` on DAB
+  (all forms) and AIS.
+- Entry points: `python -m platforms.falabella.run_batch --month YYYY-MM --stores …`,
+  `python -m platforms.falabella.run_downloads --store … [--only order billing …]`
 - Host: `https://sellercenter.falabella.com` (one host for CL/PE/CO; the payments
   page has a CHILE / PERU / COLOMBIA switch, CHILE selected)
 
@@ -190,7 +193,12 @@ Route: `/index/dashboard` (close `#dismiss`), then `/fulfillment` (lands on
 at the bottom in "Exportaciones" ("Products Export", `Finalizado` within seconds,
 newest first); its link points to
 `storage.googleapis.com/fullfillment-by-storage-production/fby-exports/Product_details_<id>.xlsx`.
-Scroll the link into view, then a real click downloads it. Other tabs (Solicitudes,
+Scroll the link into view, then a real click downloads it — in a fresh
+profile. After a few downloads from `storage.googleapis.com` Chrome's "multiple
+automatic downloads" guard swallowed the click silently in every batch run on
+2026-10-16 (no tab, no file) while the object answered HTTP 200; DevTools has no
+switch for that guard. The route therefore falls back to fetching the same public
+URL directly (that bucket only) and records `stock_fetched_direct` in run_meta. Other tabs (Solicitudes,
 Retiros, Movimientos de Inventario, Colecciones, Desempeño) are not needed yet.
 
 File: sheet `Product details`, header row 1: `Marca, Categoria (JSON), Codigo

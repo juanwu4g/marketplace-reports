@@ -212,7 +212,7 @@ def orders_chunk(ctx, form, a, b):
     listing = lambda: d.execute_script(
         "var h=document.querySelector(arguments[0]);var r=h&&h.shadowRoot;"
         "if(!r)return '';var t=r.querySelector('.rdt_Table');"
-        "return (t?t.innerText:'')+'|'+(r.innerText.indexOf('No tienes órdenes')>=0?'EMPTY':'');",
+        "return (t?t.innerText:'')+'|'+((r.textContent||'').indexOf('No tienes órdenes')>=0?'EMPTY':'');",
         ORDERS_HOST)
     time.sleep(3)
     pk.wait_for(lambda: re.search(r"\d{9,}|EMPTY", listing() or ""), timeout=40, poll=2)
@@ -436,9 +436,18 @@ def stock(ctx):
         raise pk.PageError("Fulfillment 'Descargar' dropdown not found")
     exports = lambda: d.execute_script(_EXPORTS) or []
     before = (exports() or [[None, None]])[0][1]
-    pk.real_click(d, header[0])
-    item = pk.need(d, "[data-testid=test_list] a", "Todos los productos", timeout=8,
-                   what="'Todos los productos'")
+    item = None
+    for _ in range(3):              # the first click is lost while the page is still loading
+        pk.real_click(d, header[0])
+        got = pk.wait_for(lambda: pk.find(d, "[data-testid=test_list] a", "Todos los productos"),
+                          timeout=6)
+        if got:
+            item = got[0]
+            break
+        time.sleep(3)
+        header = pk.find(d, "[data-testid=test_dropdown-header]", "Descargar") or header
+    if item is None:
+        raise pk.PageError("'Todos los productos' not found after opening 'Descargar' 3 times")
     requested = time.time()
     pk.real_click(d, item)
     newest = None
