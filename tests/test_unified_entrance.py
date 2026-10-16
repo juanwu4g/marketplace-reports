@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""统一入口（ML报表.cmd / ml_app.py）背后的规则：全部国家、计划任务怎么登记、
+"""统一入口（月度报表.cmd / app.py）背后的规则：全部国家、计划任务怎么登记、
 旧任务怎么处理、确认框写什么、按钮亮不亮、双击的 .cmd 长什么样。"""
 import datetime
 import io
@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from core import ml_entrance as E
+from core import entrance as E
 from core import region_choice as RC
 from core import run_monthly
 from core import runlog
@@ -62,10 +62,10 @@ def test_preview_runs_once_per_country(cfg):
 # ------------------------------------------------------------ 计划任务
 
 def test_all_task_name_and_arguments():
-    assert RC.task_name("ALL") == "ML月度报表"
+    assert RC.task_name("ALL") == "月度报表"
     assert RC.task_name("MX") == "MX月度报表"                # 生产上的名字不动
     assert RC.task_args("ALL") == "--entrance scheduled --region ALL"
-    assert RC.rehearsal_name("ALL") == "ML月度报表-试跑"
+    assert RC.rehearsal_name("ALL") == "月度报表-试跑"
     assert RC.rehearsal_args("ALL") == "--entrance scheduled --region ALL --step report"
     a = run_monthly.parse_args(RC.task_args("ALL").split())
     assert (a.entrance, a.region, a.month, a.stores) == ("scheduled", "ALL", None, None)
@@ -84,7 +84,7 @@ def _st(day="15", time="02:00", args="--entrance scheduled --region MX",
 
 
 def _states(**kw):
-    d = {"ML月度报表": None, "MX月度报表": None, "CL月度报表": None, "PE月度报表": None}
+    d = {"月度报表": None, "MX月度报表": None, "CL月度报表": None, "PE月度报表": None}
     d.update(kw)
     return d
 
@@ -103,7 +103,7 @@ def test_overview_production_today_only_the_mexican_task():
     assert ov["legacy"] == [("MX", "MX月度报表", mx)]
     assert "MX月度报表（每月 15 号 02:00）" in ov["headline"]
     assert ov["kind"] == "warn"
-    assert any("ML月度报表" in t and "替换" in t for _, t in ov["notes"])
+    assert any("月度报表" in t and "替换" in t for _, t in ov["notes"])
     q = RC.replace_question(ov["legacy"])
     assert "MX月度报表（墨西哥，每月 15 号 02:00）" in q
     assert "「是」" in q and "「否」" in q and "「取消」" in q
@@ -119,7 +119,7 @@ def test_overview_two_old_tasks_that_clash():
 
 def test_overview_new_task_plus_leftover_old_one_is_red():
     main = _st(args="--entrance scheduled --region ALL", limit="PT12H")
-    ov = RC.schedule_overview(_states(**{"ML月度报表": main, "MX月度报表": _st()}), 2)
+    ov = RC.schedule_overview(_states(**{"月度报表": main, "MX月度报表": _st()}), 2)
     assert ov["headline"] == "● 已设置：每月 15 号 02:00 自动跑全部国家"
     assert ov["kind"] == "bad"
     assert any("MX月度报表" in t and "两次" in t for k, t in ov["notes"] if k == "bad")
@@ -127,14 +127,14 @@ def test_overview_new_task_plus_leftover_old_one_is_red():
 
 def test_overview_new_task_alone_is_green():
     main = _st(args="--entrance scheduled --region ALL", limit="PT12H")
-    ov = RC.schedule_overview(_states(**{"ML月度报表": main}), 2)
+    ov = RC.schedule_overview(_states(**{"月度报表": main}), 2)
     assert ov["kind"] == "good" and ov["notes"] == []
 
 
 def test_overview_new_task_with_wrong_args_or_short_limit():
-    ov = RC.schedule_overview(_states(**{"ML月度报表": _st(limit="PT12H")}), 2)
+    ov = RC.schedule_overview(_states(**{"月度报表": _st(limit="PT12H")}), 2)
     assert any(k == "bad" and "不是全部国家" in t for k, t in ov["notes"])
-    ov = RC.schedule_overview(_states(**{"ML月度报表": _st(
+    ov = RC.schedule_overview(_states(**{"月度报表": _st(
         args="--entrance scheduled --region ALL", limit="PT6H")}), 3)
     assert any(k == "warn" and "6 小时" in t and "18 小时" in t for k, t in ov["notes"])
     assert RC.registered_limit({"XML": ""}) is None
@@ -300,7 +300,7 @@ def _cmd(name):
     return raw, raw.decode("utf-8")
 
 
-LAUNCHERS = ["ML报表.cmd", "run_monthly.cmd"]
+LAUNCHERS = ["月度报表.cmd", "run_monthly.cmd"]
 
 
 @pytest.mark.parametrize("name", LAUNCHERS)
@@ -316,14 +316,14 @@ def test_launchers_are_ascii_and_their_messages_exist(name):
         assert os.path.exists(os.path.join(ROOT, ref.replace("\\", os.sep))), ref
 
 
-@pytest.mark.parametrize("name,tab", [("ML报表.cmd", "run")])
+@pytest.mark.parametrize("name,tab", [("月度报表.cmd", "run")])
 def test_launchers_open_the_one_window_on_the_right_tab(name, tab):
     raw, text = _cmd(name)
     lines = text.splitlines()
     assert lines[0] == "@echo off"
     assert any(l.startswith("title ") for l in lines)
-    assert '-m core.ml_app --check' in text                    # 先自检，出错才停住
-    assert 'start "" ".venv\\Scripts\\pythonw.exe" -m core.ml_app --tab %s' % tab in text
+    assert '-m core.app --check' in text                    # 先自检，出错才停住
+    assert 'start "" ".venv\\Scripts\\pythonw.exe" -m core.app --tab %s' % tab in text
     assert "pause" in text and ":broken" in text and ":novenv" in text
 
 
@@ -347,13 +347,13 @@ def test_runner_cmd_never_pauses_for_the_scheduled_task():
 
 
 def test_one_powershell_call_reads_every_task():
-    out = ("BEGIN=ML月度报表\nEXISTS=0\n"
+    out = ("BEGIN=月度报表\nEXISTS=0\n"
            "BEGIN=MX月度报表\nEXISTS=1\nSTATE=Ready\nNEXT=2026/11/15 2:00:00\n"
            "LAST=2026/10/15 2:00:00\nRESULT=1\nXML=<Task> <CalendarTrigger>"
            "<StartBoundary>2026-09-01T02:00:00</StartBoundary> <Day>15</Day>"
            "</CalendarTrigger> <Arguments>--entrance scheduled</Arguments> </Task>\n")
     got = win_tasks.split_states(out)
-    assert got["ML月度报表"] is None
+    assert got["月度报表"] is None
     mx = got["MX月度报表"]
     assert (mx["DAY"], mx["TIME"], mx["RESULT"]) == ("15", "02:00", "1")
     assert RC.args_region(mx["ARGS"]) == "MX"            # 旧任务没有 --region
@@ -361,8 +361,19 @@ def test_one_powershell_call_reads_every_task():
     orig = win_tasks.ps
     try:
         win_tasks.ps = lambda s, timeout=120: (script.append(s) or (0, out))
-        states = win_tasks.task_states(["ML月度报表", "MX月度报表", "CL月度报表"])
+        states = win_tasks.task_states(["月度报表", "MX月度报表", "CL月度报表"])
     finally:
         win_tasks.ps = orig
     assert len(script) == 1 and script[0].count("BEGIN=") == 3
     assert states["CL月度报表"] is None and states["MX月度报表"]["DAY"] == "15"
+
+
+def test_old_all_countries_task_name_is_listed_as_legacy():
+    # multi-region 版本登记的是 ML月度报表；换到现在的 月度报表 之后它要被列出来，
+    # 否则全部国家每月会跑两次
+    from core import region_choice as RC
+    st = {"DAY": "15", "TIME": "02:00", "ARGS": "--entrance scheduled --region ALL"}
+    ov = RC.schedule_overview({RC.ALL_TASK: dict(st), "ML月度报表": dict(st)}, n_regions=3)
+    assert [n for _, n, _ in ov["legacy"]] == ["ML月度报表"]
+    assert ov["kind"] == "bad" and "ML月度报表" in ov["notes"][-1][1]
+    assert ("ALL", "ML月度报表") in RC.legacy_tasks() and RC.ALL_TASK == "月度报表"

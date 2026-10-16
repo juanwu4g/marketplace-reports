@@ -189,7 +189,7 @@ def task_xml(args=TASK_ARGS, day=None, hour=0, minute=0, time_limit=TIME_LIMIT,
         '<?xml version="1.0" encoding="UTF-16"?>'
         '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
         "<RegistrationInfo><Description>"
-        "每月自动下载上个月的数据并生成财务报表。由 ML报表.cmd（ml_app.py）创建。"
+        "每月自动下载上个月的数据并生成财务报表。由 月度报表.cmd（app.py）创建。"
         "</Description></RegistrationInfo>"
         "<Triggers>%s</Triggers>"
         "<Principals><Principal id=\"Author\">"
@@ -334,8 +334,8 @@ def run_task(name):
 
 def all_task_states():
     """全部国家那个任务 + 每个国家的旧任务：{任务名: 现状或 None}。"""
-    return task_states([region_choice.ALL_TASK] + [region_choice.task_name(r)
-                                                  for r in region_choice.REGIONS])
+    return task_states([region_choice.ALL_TASK] + [n for _, n in
+                                                  region_choice.legacy_tasks()])
 
 
 def rehearse(region):

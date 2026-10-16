@@ -4,7 +4,7 @@ accepted workbook cell by cell (values, formulas as text, number formats).
 
 The data are real exports with customer details, so they live OUTSIDE the repo:
 
-    $MELI_GOLDEN_ROOT (default ~/meli-golden)/
+    $REPORT_GOLDEN_ROOT (default ~/report-golden)/
         mx/BOCINA_TA02/                 the store's download folder for 2026-09
         mx/BOCINA_TA02.baseline.json    the accepted workbook, dumped
         cl/DAB_CL/ … cl/DAB_CL.baseline.json
@@ -33,7 +33,7 @@ if __name__ == "__main__":                              # run as a script from t
 
 from platforms.mercadolibre import report_build
 
-ROOT = os.environ.get("MELI_GOLDEN_ROOT", os.path.expanduser("~/meli-golden"))
+ROOT = os.environ.get("REPORT_GOLDEN_ROOT", os.path.expanduser("~/report-golden"))
 BUILD_DATE = "2026-10-14"
 
 # case id -> (store name as in config.json, site, month)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""「ML 报表」统一窗口背后不碰 tkinter 的那一半。
+"""「月度报表」统一窗口背后不碰 tkinter 的那一半。
 
-窗口（ml_app.py）一 import 就要 tkinter，跑测试的机器上没有；所以凡是能写成
+窗口（app.py）一 import 就要 tkinter，跑测试的机器上没有；所以凡是能写成
 "给参数、得结果"的东西都放在这里：界面偏好、用哪个解释器、要跑多久、确认框
 里写什么、按钮该不该亮、起一轮的命令行、「需要人工处理」那一页的文字。
 
@@ -22,7 +22,7 @@ DEFAULT_REPORT_DIR = os.path.join(ROOT, "downloads", "data", "reports", "financi
 SETTINGS = os.path.join(ROOT, "gui_settings.json")
 RUNNER = os.path.join(ROOT, "run_monthly.py")
 
-# 窗口打开时停在哪一页。ML报表.cmd = 立即运行；--tab 可以直接打开别的页。
+# 窗口打开时停在哪一页。月度报表.cmd = 立即运行；--tab 可以直接打开别的页。
 TABS = ("run", "human", "schedule")
 TAB_ALIASES = {"run": "run", "launch": "run", "启动": "run",
                "human": "human", "人工": "human",
@@ -272,7 +272,7 @@ def status_line(st, records=(), now=None):
 # ────────────────────────────────────────────────────────── 双击之前的自检
 
 def self_check(out=None):
-    """ML报表.cmd 打开窗口之前先跑一遍（python -m core.ml_app --check）。
+    """月度报表.cmd 打开窗口之前先跑一遍（python -m core.app --check）。
 
     pythonw 出错时什么都不显示，用户只会觉得"双击没反应"。这里用带控制台的
     python 把会让窗口打不开的几种情况先查一遍，查到就说一句人话（不甩整屏
@@ -297,7 +297,7 @@ def self_check(out=None):
     check("界面库 tkinter", tk_ok,
           "重新安装 Python（勾选 tcl/tk and IDLE），再重建 .venv。")
     if not problems:                    # 没有 tkinter 时这一项必然也失败，不重复说
-        check("窗口程序文件", lambda: __import__("core.ml_app"),
+        check("窗口程序文件", lambda: __import__("core.app"),
               "程序文件不全或被改坏了，从仓库重新拉一份。")
     check("报表依赖（pandas 等）", lambda: __import__("core.run_monthly"),
           "在本目录执行 .venv\\Scripts\\pip install -r requirements.txt")

@@ -15,7 +15,7 @@ plug in next to it instead of becoming separate projects.
 ## 1. Folder layout
 
 ```
-ML报表.cmd             double-click: the one window (core/ml_app.py)
+月度报表.cmd             double-click: the one window (core/app.py)
 run_monthly.cmd        the runner; Windows scheduled tasks call this file
 run_monthly.py         thin wrapper -> core/run_monthly.py   (kept for old commands)
 list_stores.py         thin wrapper -> platforms/mercadolibre/list_stores.py
@@ -34,8 +34,8 @@ core/                  shared by every platform — no platform names in here, i
   download_diag.py     the "why was this not downloaded" step (cause codes, evidence)
   pending_store.py     reports requested but not yet collected ("owed")
   run_monthly.py       THE runner: lock, plan, child processes, summary, alert file
-  ml_app.py            the window (tkinter glue only)
-  ml_entrance.py, region_choice.py, win_tasks.py, log_view.py, ui_style.py
+  app.py            the window (tkinter glue only)
+  entrance.py, region_choice.py, win_tasks.py, log_view.py, ui_style.py
                        window logic that is testable without tkinter
 
 platforms/
@@ -70,7 +70,7 @@ point at them.
 
 ```
 Task Scheduler ─► run_monthly.cmd ─► python run_monthly.py ─► core/run_monthly.py
-the window (ML报表.cmd) ─────────────────────────────────────┘   (same code, --entrance manual)
+the window (月度报表.cmd) ─────────────────────────────────────┘   (same code, --entrance manual)
 
 core/run_monthly.py, per country, in this order:
   1. download   python -m platforms.mercadolibre.run_batch   --month M [--stores …]
@@ -103,8 +103,8 @@ script that the runner or the window starts, start it the same way.
    from them.
 5. **Golden files.** `tests/test_golden.py` rebuilds real store-months (Mexico,
    Chile, Peru) and compares them cell by cell with the accepted workbooks. The
-   data contain customer details and live outside git, in `~/meli-golden/`
-   (or `$MELI_GOLDEN_ROOT`); without them the cases skip — run with `-rs` to see.
+   data contain customer details and live outside git, in `~/report-golden/`
+   (or `$REPORT_GOLDEN_ROOT`); without them the cases skip — run with `-rs` to see.
    A change that moves a number must be deliberate and approved; then
    `python tests/test_golden.py --rebaseline <case>`.
 6. **Every report that is missing has a cause code** (`core/download_diag.py`).
@@ -140,7 +140,7 @@ The move into `core/` and `platforms/` is done. These couplings are known and ar
 | `core/download_diag.py` | knows MercadoLibre form ids (`STOCK_FORMS`, MercadoPago kinds, `NOT_IN_REPORT`) | each platform declares its expected forms and which forms the report does not read; the cause codes and evidence logic stay in core |
 | `platforms/mercadolibre/report_build.py` | builds the whole workbook, incl. styles and sheet layout | split: a shared **report kit** in core (styles, sheet scaffolding, check list, ⑩ to-do sheet) + per-platform rules. See `REPORT_FAMILY.md` |
 | canonical tables | not yet | each platform translates its raw files into common order / fee / payout tables; one report builder draws the family layout from those |
-| window labels | "ML 报表", MercadoLibre countries | country choice becomes (platform, country) |
+| window | the country list is MercadoLibre's countries | country choice becomes (platform, country) |
 
 Order of work for platform #2: follow `NEW_PLATFORM_SOP.md`; when its downloads
 work, extract the report kit from `report_build.py` and build the new platform's

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""一个够用的假 tkinter：让 ml_app.py / log_view.py 在没有 tkinter 的机器上
+"""一个够用的假 tkinter：让 app.py / log_view.py 在没有 tkinter 的机器上
 把窗口"搭"起来，按钮回调能点 —— 看的是 Python 层面有没有写错（拼错的属性、
 传错的参数、少了的分支），不是长得好不好看。长相要在 Windows 上看截图。
 
@@ -386,7 +386,7 @@ MODULES = {"tkinter": tk, "tkinter.ttk": ttk, "tkinter.font": font,
 def install():
     saved = dict((k, sys.modules.get(k)) for k in MODULES)
     sys.modules.update(MODULES)
-    for k in ("core.ml_app", "core.log_view"):
+    for k in ("core.app", "core.log_view"):
         sys.modules.pop(k, None)
     return saved
 
@@ -397,5 +397,5 @@ def uninstall(saved):
             sys.modules.pop(k, None)
         else:
             sys.modules[k] = v
-    for k in ("core.ml_app", "core.log_view"):
+    for k in ("core.app", "core.log_view"):
         sys.modules.pop(k, None)

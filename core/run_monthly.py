@@ -13,7 +13,7 @@
 文件名还叫 run_monthly 是因为生产机器上已经登记的计划任务调的是
 run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一次运行**的入口：
 
-    ML报表.cmd           -> ml_app.py -> run_monthly.py --entrance manual ...
+    月度报表.cmd           -> app.py -> run_monthly.py --entrance manual ...
     计划任务（在同一个窗口里设置） -> run_monthly.cmd --entrance scheduled
     命令行                          -> run_monthly.py（--entrance 默认 cli）
 
@@ -644,7 +644,7 @@ def human_line(need):
     for a in need:
         if a["store"] not in stores:
             stores.append(a["store"])
-    return ("%d 家店铺需要人工处理：%s。处理完双击 ML报表.cmd，在「需要人工处理」"
+    return ("%d 家店铺需要人工处理：%s。处理完双击 月度报表.cmd，在「需要人工处理」"
             "那一页点「重跑这些店铺并重出全部报表」。"
             % (len(stores), "；".join(
                 "%s（%s）" % (s, "、".join(sorted(set(
@@ -735,7 +735,7 @@ def describe_batch(path):
     if waiting:
         n = sum(len(missing(r)) for r in waiting)
         attention.append("%d 张不影响报表的文件没下到（平台还在生成，或是报表不读的"
-                         "那几种）：%s。需要的话过几个小时在 ML报表.cmd 窗口点「补取欠的"
+                         "那几种）：%s。需要的话过几个小时在 月度报表.cmd 窗口点「补取欠的"
                          "报表」。" % (n, names(waiting)))
     tr = doc.get("transform")
     if isinstance(tr, dict) and not tr.get("skipped") and tr.get("ok") is False:
@@ -786,7 +786,7 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
                                  runlog.ENTRANCE_WHAT.get(entrance, "")), ""]
     body += lines
     body += ["", "完整日志：%s" % (log_path or runlog.runs_dir(LOG_DIR)),
-             "也可以双击 ML报表.cmd，在窗口右边的「运行日志」里挑这一轮来看。",
+             "也可以双击 月度报表.cmd，在窗口右边的「运行日志」里挑这一轮来看。",
              "处理办法见 README.md 第 12 节《出问题先做这三步》。"]
     text = "\n".join(body)
     try:
@@ -835,7 +835,7 @@ def parse_args(argv=None):
                     help="报表输出目录。不给就用主界面里选的，再不行用默认目录")
     ap.add_argument("--entrance", choices=list(runlog.ENTRANCES), default="cli",
                     help="谁起的这一轮，只影响日志里的「入口」一列："
-                         "manual ML 报表窗口 / scheduled 计划任务 / cli 命令行")
+                         "manual 月度报表窗口 / scheduled 计划任务 / cli 命令行")
     ap.add_argument("--max-hours", type=float, default=MAX_HOURS, metavar="N",
                     help="下载这一步最多跑 N 小时，到点掐断并接着出报表"
                          "（默认 %g，0 = 不限）" % MAX_HOURS)

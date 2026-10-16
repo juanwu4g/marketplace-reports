@@ -61,5 +61,5 @@ Open accountant questions per country are listed in the run reports' ⑩ sheet.
 
 `tests/test_cl_*.py`, `tests/test_pe_*.py` (synthetic data) and
 `tests/test_golden.py` (golden: real Mexican, Chilean and Peruvian store-months
-rebuilt cell by cell against the accepted workbooks; data in `~/meli-golden/`,
+rebuilt cell by cell against the accepted workbooks; data in `~/report-golden/`,
 outside git).

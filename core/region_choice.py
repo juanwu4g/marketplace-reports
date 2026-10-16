@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""「ML 报表」窗口里"选哪个国家"、"计划任务怎么登记"的那部分逻辑。
+"""「月度报表」窗口里"选哪个国家"、"计划任务怎么登记"的那部分逻辑。
 
-放在这里而不是 ml_app.py 里，是因为窗口一 import 就要 tkinter，而跑测试的
+放在这里而不是 app.py 里，是因为窗口一 import 就要 tkinter，而跑测试的
 机器上没有 tkinter。窗口里只剩摆控件、调这里的函数；规则（店铺清单、全部
 国家、任务名、任务参数、旧任务怎么处理、两个任务会不会撞车、补跑传哪个区域）
 都在这里，有测试钉着。
@@ -23,7 +23,7 @@ ALL_LABEL = "全部国家"
 
 # 推荐的那个计划任务：一个任务跑全部国家。按国家分开的任务（MX月度报表 …）
 # 两个时间挨得近就撞锁、后到的被跳过；一个任务从根上没有这个问题。
-ALL_TASK = "ML月度报表"
+ALL_TASK = "月度报表"
 
 # 计划任务名。墨西哥那个名字生产机器上已经登记过，**不能改**：改了等于
 # 新建一个任务，旧的那个还在，每月跑两次。
@@ -62,7 +62,7 @@ def choice_labels():
 
 def remembered_choice(settings):
     """「立即运行」上次选的范围。没记过就是全部国家 —— 这个窗口就是给"所有
-    ML 店铺一起出报表"用的。"""
+    店铺一起出报表"用的。"""
     r = str((settings or {}).get("region") or "").upper()
     return r if r in REGIONS or r == ALL else ALL
 
@@ -113,7 +113,7 @@ def stores(region):
 
 
 def window_title(region):
-    """旧「启动」窗口的标题（现在的统一窗口叫 MercadoLibre 月度报表）。"""
+    """旧「启动」窗口的标题（现在的统一窗口叫 月度报表）。"""
     return "meli-mx-pipeline —— %s店铺报表" % label(region)
 
 
@@ -182,6 +182,17 @@ def rerun_plan(picked):
 
 
 # ────────────────────────────────────────────────────────── 计划任务
+
+# 以前用过、现在不再登记的"全部国家"任务名（multi-region 版本叫 ML月度报表）。
+# 这台电脑上要是还登记着，和旧的按国家任务一样：列出来、提醒、由人删。
+OLD_ALL_TASKS = ("ML月度报表",)
+
+
+def legacy_tasks():
+    """所有算"旧任务"的 (区域或 ALL, 任务名)：每个国家一个，加上旧名字的全部国家任务。"""
+    return ([(r, task_name(r)) for r in REGIONS]
+            + [(ALL, n) for n in OLD_ALL_TASKS])
+
 
 def task_name(region):
     if region == ALL:
@@ -329,8 +340,7 @@ def schedule_overview(states, n_regions=1):
     * 全部国家那个任务的超时比现在需要的短（后来又加了国家）：提示重新登记。
     """
     main = states.get(ALL_TASK)
-    legacy = [(r, task_name(r), states.get(task_name(r))) for r in REGIONS
-              if states.get(task_name(r))]
+    legacy = [(r, n, states.get(n)) for r, n in legacy_tasks() if states.get(n)]
     notes = []
     if main:
         if args_region(main.get("ARGS")) != ALL:

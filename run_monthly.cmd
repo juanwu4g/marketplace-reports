@@ -17,7 +17,7 @@ chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 set "ML_INTERACTIVE="
 if "%~1"=="" set "ML_INTERACTIVE=1"
-if defined ML_INTERACTIVE title ML Reports - running
+if defined ML_INTERACTIVE title Monthly Reports - running
 
 if not exist ".venv\Scripts\python.exe" goto novenv
 if defined ML_INTERACTIVE type "launcher\run_start.txt"

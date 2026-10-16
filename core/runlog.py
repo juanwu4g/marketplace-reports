@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """运行日志的统一格式，以及读它的全部非界面逻辑。
 
-「ML 报表」窗口、计划任务和命令行，跑的是同一个 run_monthly.py；它每跑
+「月度报表」窗口、计划任务和命令行，跑的是同一个 run_monthly.py；它每跑
 一次，就在 logs/runs/ 下写一组文件：
 
     logs/runs/<run_id>.log     给人看的日志，本模块定义的固定六列
@@ -50,7 +50,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 ENTRANCES = ("manual", "scheduled", "cli")
 ENTRANCE_ZH = {"manual": "手动", "scheduled": "定时", "cli": "命令行"}
 ENTRANCE_WHAT = {
-    "manual": "有人在「ML 报表」窗口（ML报表.cmd）里点按钮跑的",
+    "manual": "有人在「月度报表」窗口（月度报表.cmd）里点按钮跑的",
     "scheduled": "Windows 计划任务拉起的（到点自动跑，或在窗口的「每月自动运行」"
                  "里点了「现在就跑一次」/「试跑一次」）",
     "cli": "有人直接敲命令（或双击 run_monthly.cmd）跑的",

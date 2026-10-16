@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""「ML 报表」—— MercadoLibre 全部国家月度报表的统一窗口。
+"""「月度报表」—— MercadoLibre 全部国家月度报表的统一窗口。
 
-    双击 ML报表.cmd        （打开「立即运行」页；唯一的双击入口）
-    或   .venv\\Scripts\\pythonw -m core.ml_app [--tab run|human|schedule]
+    双击 月度报表.cmd        （打开「立即运行」页；唯一的双击入口）
+    或   .venv\\Scripts\\pythonw -m core.app [--tab run|human|schedule]
 
     ┌ 顶部横幅：现在在跑什么（国家 · 月份 · 步骤 · 店铺 · 已运行多久）  [中止这一轮] ┐
     ├ 左：三页                         │ 右：运行日志（任何入口起的都能看）        │
@@ -11,11 +11,11 @@
 
 这个窗口只做三件事：把参数拼成 run_monthly.py 的命令行（或把它登记成计划
 任务）、把那一轮的日志文件实时贴出来、把结果说清楚。**所有真正的逻辑都在
-原来的脚本里**；窗口里能写成纯函数的规则都在 ml_entrance.py / region_choice.py
+原来的脚本里**；窗口里能写成纯函数的规则都在 entrance.py / region_choice.py
 / runlog.py，有测试钉着。这里只剩摆控件。
 
 以前是两个窗口（启动 / 定时设置），各有一份日志查看器，按国家各登记一个计划
-任务。现在一个窗口、一个推荐的计划任务（ML月度报表，--region ALL）。旧的按
+任务。现在一个窗口、一个推荐的计划任务（月度报表，--region ALL）。旧的按
 国家任务（生产上的 MX月度报表）只显示、不自动删，由人点「替换」或「删除」。
 
 几个刻意的设计（从旧窗口继承）：
@@ -36,16 +36,16 @@ import threading
 import traceback
 
 if __name__ == "__main__" and "--check" in sys.argv:
-    # ML报表.cmd 打开窗口之前的自检，必须在 import tkinter 之前：缺 tkinter 时
-    # 要说一句人话，而不是甩一屏 traceback。见 ml_entrance.self_check。
+    # 月度报表.cmd 打开窗口之前的自检，必须在 import tkinter 之前：缺 tkinter 时
+    # 要说一句人话，而不是甩一屏 traceback。见 entrance.self_check。
     from core import console  # noqa: F401  中文输出编码保护
-    from core import ml_entrance
-    sys.exit(ml_entrance.self_check())
+    from core import entrance
+    sys.exit(entrance.self_check())
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from core import ml_entrance as E
+from core import entrance as E
 from core import region_choice as RC
 from core import runlog
 from core import ui_style as S
@@ -56,10 +56,10 @@ from core.run_monthly import resolve_out_dir
 
 ROOT = E.ROOT
 LOG_DIR = os.path.join(ROOT, "logs")
-TITLE = "MercadoLibre 月度报表"
+TITLE = "月度报表"
 LEFT_W = 560          # 左边那一栏的宽度（像素）
 WRAP = LEFT_W - 60    # 左边说明文字的折行宽度
-WHO = "ML报表窗口"     # 写进中止请求：是哪个窗口点的
+WHO = "月度报表窗口"     # 写进中止请求：是哪个窗口点的
 
 
 def hint(parent, text="", var=None, wrap=WRAP, **kw):
@@ -720,23 +720,23 @@ class App(object):
                                                     padx=(S.GAP, 0))
             self.sched_buttons.append(b)
 
-        f = section(page, "按国家登记的旧任务")
-        hint(f, "以前每个国家一个任务。这里只列出来，不会自动删除 —— 换成上面那个任务"
-                "之后再删。").pack(anchor="w", pady=(0, S.SMALL))
+        f = section(page, "旧任务")
+        hint(f, "以前每个国家一个任务（或用旧名字登记的全部国家任务）。这里只列出来，"
+                "不会自动删除 —— 换成上面那个任务之后再删。").pack(anchor="w", pady=(0, S.SMALL))
         self.legacy_box = ttk.Frame(f)
         self.legacy_box.pack(fill="x")
         self.legacy_rows = {}
-        for r in RC.REGIONS:
+        for _, name in RC.legacy_tasks():
             row = ttk.Frame(self.legacy_box)
             row.pack(fill="x", pady=1)
-            ttk.Label(row, text=RC.task_name(r), width=14).pack(side="left")
+            ttk.Label(row, text=name, width=14).pack(side="left")
             var = tk.StringVar(value="…")
             ttk.Label(row, textvariable=var, style="Hint.TLabel").pack(
                 side="left", fill="x", expand=True)
             b = ttk.Button(row, text="删除", width=6, state="disabled",
-                           command=lambda name=RC.task_name(r): self.do_delete_legacy(name))
+                           command=lambda name=name: self.do_delete_legacy(name))
             b.pack(side="right")
-            self.legacy_rows[r] = (var, b)
+            self.legacy_rows[name] = (var, b)
 
         f = section(page, "这台电脑")
         row = ttk.Frame(f)
@@ -841,9 +841,9 @@ class App(object):
             ttk.Label(self.sched_notes, text=("⚠ " if kind != "good" else "") + text,
                       foreground=S.FG[kind], wraplength=WRAP, justify="left"
                       ).pack(anchor="w", pady=1)
-        legacy = dict((r, st) for r, _, st in ov["legacy"])
-        for r, (var, b) in self.legacy_rows.items():
-            st = legacy.get(r)
+        legacy = dict((name, st) for _, name, st in ov["legacy"])
+        for name, (var, b) in self.legacy_rows.items():
+            st = legacy.get(name)
             var.set("%s　%s" % (RC.task_when(st), RC.task_verdict(st.get("RESULT")))
                     if st else "未登记")
             b.configure(state="normal" if st else "disabled")
@@ -991,7 +991,7 @@ class App(object):
     def do_delete_legacy(self, name):
         if not messagebox.askokcancel(
                 "删除旧任务",
-                "删除按国家登记的旧任务「%s」？\n\n%s"
+                "删除旧任务「%s」？\n\n%s"
                 % (name, "全部国家的任务（%s）已登记，它会接着跑这个国家。"
                    % RC.ALL_TASK if (self.overview or {}).get("main")
                    else "注意：全部国家的任务还没登记 —— 删掉之后这个国家就不会"

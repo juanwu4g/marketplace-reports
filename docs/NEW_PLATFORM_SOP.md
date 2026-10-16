@@ -115,7 +115,7 @@ the sheets' bodies, not in a different layout.
 - tests with **synthetic** fixtures (`tests/test_<platform>_*.py`). Real exports
   contain customer personal data and must never be committed.
 - add a golden case once finance has accepted one real month: copy that store's
-  download folder to `~/meli-golden/<country>/<store>/`, add it to `CASES` in
+  download folder to `~/report-golden/<country>/<store>/`, add it to `CASES` in
   `tests/test_golden.py`, run `python tests/test_golden.py --rebaseline <case>`
 
 ## 6. Plug into the runner and the window (developer)

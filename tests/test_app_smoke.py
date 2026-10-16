@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""「ML 报表」窗口的冒烟测试：用假 tkinter 把窗口搭起来、点几个按钮。
+"""「月度报表」窗口的冒烟测试：用假 tkinter 把窗口搭起来、点几个按钮。
 
 不起任何真进程：起一轮（spawn_detached）、计划任务（schtasks）、打开店铺
 全都换成假的。看的是 Python 层面有没有写错，不是长相。
@@ -32,8 +32,8 @@ def app(tmp_path, monkeypatch):
         monkeypatch.setattr(store_config, "_stores", lambda: d)
         logs = str(tmp_path / "logs")
         monkeypatch.setattr(runlog, "LOG_DIR", logs)
-        from core import ml_entrance
-        monkeypatch.setattr(ml_entrance, "SETTINGS", str(tmp_path / "gui_settings.json"))
+        from core import entrance
+        monkeypatch.setattr(entrance, "SETTINGS", str(tmp_path / "gui_settings.json"))
         spawned = []
 
         class P(object):
@@ -46,10 +46,10 @@ def app(tmp_path, monkeypatch):
             spawned.append(cmd)
             return P()
         monkeypatch.setattr(runlog, "spawn_detached", fake_spawn)
-        from core import ml_app
-        monkeypatch.setattr(ml_app, "LOG_DIR", logs)
+        from core import app as app_mod
+        monkeypatch.setattr(app_mod, "LOG_DIR", logs)
         root = fake_tk.Tk()
-        a = ml_app.App(root, tab="run")
+        a = app_mod.App(root, tab="run")
         a.spawned = spawned
         a.fake_root = root
         a.logs = logs
@@ -59,7 +59,7 @@ def app(tmp_path, monkeypatch):
 
 
 def test_window_builds_with_all_countries_by_default(app):
-    assert app.fake_root.title() == "MercadoLibre 月度报表"
+    assert app.fake_root.title() == "月度报表"
     assert app.choice == "ALL"
     assert app.region_box.get() == "全部国家"
     assert app.scope_var.get() == "墨西哥 2 家、智利 2 家，共 4 家"
@@ -142,20 +142,20 @@ def test_schedule_overview_renders(app):
               "PE月度报表": None}
     app._show_schedule(states)
     assert app.sched_head.get().startswith("● 现在用的是按国家登记的旧任务")
-    var, btn = app.legacy_rows["MX"]
+    var, btn = app.legacy_rows["MX月度报表"]
     assert var.get().startswith("每月 15 号 02:00") and btn.cget("state") == "normal"
-    assert app.legacy_rows["CL"][0].get() == "未登记"
+    assert app.legacy_rows["CL月度报表"][0].get() == "未登记"
     assert (app.day.get(), app.hour.get()) == (15, 2)
 
 
 def test_preview_lists_one_command_per_country(app, monkeypatch):
-    from core import ml_app
+    from core import app as app_mod
     ran = []
 
     class R(object):
         stdout = "ok".encode("utf-8")
 
-    monkeypatch.setattr(ml_app.subprocess, "run", lambda cmd, **k: ran.append(cmd) or R())
+    monkeypatch.setattr(app_mod.subprocess, "run", lambda cmd, **k: ran.append(cmd) or R())
 
     class T(object):
         def __init__(self, target=None, daemon=None):
@@ -163,7 +163,7 @@ def test_preview_lists_one_command_per_country(app, monkeypatch):
 
         def start(self):
             self.target()
-    monkeypatch.setattr(ml_app.threading, "Thread", T)
+    monkeypatch.setattr(app_mod.threading, "Thread", T)
     app.btn_preview.invoke()
     app.fake_root.pump()
     assert [c[-2:] if "--region" in c else c[-1:] for c in ran] == [
@@ -171,14 +171,14 @@ def test_preview_lists_one_command_per_country(app, monkeypatch):
 
 
 def test_pick_tab_and_legacy_entrances(app):
-    from core import ml_entrance
-    assert ml_entrance.pick_tab([]) == "run"
-    assert ml_entrance.pick_tab(["--tab", "schedule"]) == "schedule"
-    assert ml_entrance.pick_tab(["--tab=human"]) == "human"
-    assert ml_entrance.pick_tab(["定时"]) == "schedule"
-    # 启动.cmd / 定时设置.cmd 和它们的 gui.py / schedule_gui.py 已并入 ML报表.cmd
-    assert not os.path.exists(os.path.join(ml_entrance.ROOT, "gui.py"))
-    assert not os.path.exists(os.path.join(ml_entrance.ROOT, "启动.cmd"))
+    from core import entrance
+    assert entrance.pick_tab([]) == "run"
+    assert entrance.pick_tab(["--tab", "schedule"]) == "schedule"
+    assert entrance.pick_tab(["--tab=human"]) == "human"
+    assert entrance.pick_tab(["定时"]) == "schedule"
+    # 启动.cmd / 定时设置.cmd 和它们的 gui.py / schedule_gui.py 已并入 月度报表.cmd
+    assert not os.path.exists(os.path.join(entrance.ROOT, "gui.py"))
+    assert not os.path.exists(os.path.join(entrance.ROOT, "启动.cmd"))
 
 
 def test_live_run_shows_in_banner_and_log_columns(app):

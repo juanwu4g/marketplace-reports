@@ -180,7 +180,7 @@ personal login will not work with this API.
 | `run_downloads.py` | Single-store entry point, and `run_store()` — the pipeline both entry points share. |
 | `run_batch.py` | Multi-store entry point. One client session, serial stores, isolated failures, summary JSON. |
 | `run_monthly.py` | **The one runner.** Both windows, the scheduled task and the command line start it; it runs `run_batch.py` then `run_reports.py` as subprocesses. Lock, run log, summary, alert file, download deadline. See §10.5. |
-| `ml_app.py` | The one window (`ML报表.cmd`): run now, needs-human-action, monthly schedule, live log. Starts `run_monthly.py --entrance manual …` detached and registers the Task Scheduler task that runs `run_monthly.cmd --entrance scheduled --region ALL`. Logic lives in `ml_entrance.py` / `region_choice.py` / `win_tasks.py`. |
+| `app.py` | The one window (`月度报表.cmd`): run now, needs-human-action, monthly schedule, live log. Starts `run_monthly.py --entrance manual …` detached and registers the Task Scheduler task that runs `run_monthly.cmd --entrance scheduled --region ALL`. Logic lives in `entrance.py` / `region_choice.py` / `win_tasks.py`. |
 | `runlog.py` | The run-log format (six columns), run records, "is a run in progress", stop requests, exit-code wording. No tkinter. |
 | `log_view.py` | The log viewer both windows embed. Tk glue only; the logic is in `runlog.py`. |
 | `download_diag.py` | Why a report was not downloaded: evidence capture, the closed `CAUSES` table, the list of expected forms. Imports neither selenium nor tkinter. |
@@ -929,8 +929,8 @@ registered scheduled tasks call `run_monthly.cmd`, and renaming it would break
 them all.
 
 ```
-ML报表.cmd    -> ml_app.py         -> run_monthly.py --entrance manual ...
-Task Scheduler (registered from ML报表.cmd) -> run_monthly.cmd --entrance scheduled
+月度报表.cmd    -> app.py         -> run_monthly.py --entrance manual ...
+Task Scheduler (registered from 月度报表.cmd) -> run_monthly.cmd --entrance scheduled
 by hand                            -> run_monthly.py        (--entrance defaults to cli)
 ```
 

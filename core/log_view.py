@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""运行日志查看器：「ML 报表」窗口右边那一栏。
+"""运行日志查看器：「月度报表」窗口右边那一栏。
 
     view = LogView(parent, on_state=callback)
     view.pack(fill="both", expand=True)

@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from platforms.mercadolibre import report_build as rb
 
 # 真实下载目录在仓库外（含客户数据），和 test_golden.py 用同一个位置。
-_GOLDEN = os.environ.get("MELI_GOLDEN_ROOT", os.path.expanduser("~/meli-golden"))
+_GOLDEN = os.environ.get("REPORT_GOLDEN_ROOT", os.path.expanduser("~/report-golden"))
 DAB = os.environ.get("MELI_CL_DAB_DIR", os.path.join(_GOLDEN, "cl", "DAB_CL"))
 TEC = os.environ.get("MELI_CL_TEC_DIR", os.path.join(_GOLDEN, "cl", "Tecnohub_CL"))
 DAB_NAME, TEC_NAME = "DAB_CL (Coco) 子账号", "Tecnohub_CL (个人店)"

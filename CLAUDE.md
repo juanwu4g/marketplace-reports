@@ -33,7 +33,7 @@ Chinese. Developer docs are English.
 - **Never commit `config.json` or anything under `downloads/` or `logs/`** —
   credentials and customer personal data. Tests use synthetic fixtures.
 - **Numbers must not move silently.** `tests/test_golden.py` rebuilds real
-  store-months (data outside git in `~/meli-golden/`, private) cell by cell. Only
+  store-months (data outside git in `~/report-golden/`, private) cell by cell. Only
   rebaseline after the owner/finance accept a change. Accounting rule changes are
   the owner's decision — ask, don't decide.
 - `run_monthly.cmd` stays at the root (scheduled tasks call it). `.cmd` files are
@@ -45,10 +45,10 @@ Chinese. Developer docs are English.
 ## Commands
 
 ```
-# tests (Ubuntu dev box; the venv lives in the old checkout)
-/home/hat/meli-mx-pipeline/.venv/bin/python -m pytest tests -q
-cd downloads && /home/hat/meli-mx-pipeline/.venv/bin/python -m pytest tests -q
-/home/hat/meli-mx-pipeline/.venv/bin/python -m pytest tests/test_golden.py -rs   # see which golden cases ran
+# tests (Ubuntu dev box)
+.venv/bin/python -m pytest tests -q
+cd downloads && ../.venv/bin/python -m pytest tests -q
+.venv/bin/python -m pytest tests/test_golden.py -rs   # see which golden cases ran
 
 # Windows / production
 .venv\Scripts\python run_monthly.py --region CL --stores "<store>" --month 2026-09
@@ -65,8 +65,8 @@ cd downloads && /home/hat/meli-mx-pipeline/.venv/bin/python -m pytest tests -q
   `~/meli-mx-unify`, `~/meli-ml-multi` (multi-region).
 - Windows test VM: `~/vm/win11/` (start `run-vm.sh`; SSH `-p 2222` with
   `id_ed25519`; VNC 127.0.0.1:5901). Test folder for this branch
-  `C:\Users\meli\meli-platforms`; copy code with `~/vm/win11/syncp`, run on the VM
+  `C:\Users\meli\marketplace-reports`; copy code with `~/vm/win11/syncp`, run on the VM
   desktop with `~/vm/win11/pljob <name> <script> args…` (log in
   `logs\job_<name>.log`, ends with `EXIT=<code>`). Ziniao cannot open windows from
   the SSH session — use the job helpers.
-- Golden data: `~/meli-golden/{mx,cl,pe}/<store>/` + `<case>.baseline.json`.
+- Golden data: `~/report-golden/{mx,cl,pe}/<store>/` + `<case>.baseline.json`.
