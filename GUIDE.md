@@ -4,7 +4,7 @@ Automating the 紫鸟 (Ziniao) SuperBrowser to pull sales data from MercadoLibre
 and other stores.
 
 > **Status:** all four routes (billing, ventas, stock, mercadopago) verified
-> end-to-end against `BOCINA_SM` on 2026-09-02. See FORMS.md for the 15 forms. Sections marked **TODO** are scaffolding to be filled in
+> end-to-end against `BOCINA_SM` on 2026-09-02. See platforms/mercadolibre/FORMS.md for the 15 forms. Sections marked **TODO** are scaffolding to be filled in
 > as the extraction work continues.
 
 ---
@@ -26,6 +26,12 @@ copy config.example.json config.json               # then fill in credentials
 `bootstrap.py` exits non-zero and prints a fix for anything missing. Get it to
 `environment OK` before running anything else.
 
+⚠️ **On Chinese Windows, run `set PYTHONUTF8=1` before the first `pip install`.**
+The pip bundled with Python 3.11.9 reads `requirements.txt` in the system
+encoding (GBK), and the file carries UTF-8 Chinese comments, so a fresh install
+dies with a GBK decode error before installing anything. Verified on a fresh
+machine.
+
 ---
 
 ## 1.5 Which command do I run?
@@ -33,7 +39,7 @@ copy config.example.json config.json               # then fill in credentials
 **The one command that does everything, start to finish, unattended:**
 
 ```bash
-.venv\Scripts\python run_batch.py --workbooks
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --workbooks
 ```
 
 That opens every store in `config.json` → `stores.allowed`, one at a time,
@@ -45,20 +51,26 @@ Drop `--workbooks` for the raw files plus cleaned tables, without the workbooks.
 
 | Command | Downloads? | Cleans? | Workbook? |
 |---|---|---|---|
-| `python run_batch.py --workbooks` | **yes**, every allowed store | **yes** | **yes**, one per store |
-| `python run_batch.py` | yes | yes | no |
-| `python run_batch.py --no-transform` | yes | no | no |
-| `python run_batch.py --dry-run` | no | no | no |
-| `python run_batch.py --collect-only` | **only what's owed** | yes | no |
-| `python run_downloads.py` | **one** store only | no | no |
+| `python -m platforms.mercadolibre.run_batch --workbooks` | **yes**, every allowed store | **yes** | **yes**, one per store |
+| `python -m platforms.mercadolibre.run_batch` | yes | yes | no |
+| `python -m platforms.mercadolibre.run_batch --no-transform` | yes | no | no |
+| `python -m platforms.mercadolibre.run_batch --dry-run` | no | no | no |
+| `python -m platforms.mercadolibre.run_batch --collect-only` | **only what's owed** | yes | no |
+| `python -m platforms.mercadolibre.run_downloads` | **one** store only | no | no |
 | `cd downloads && python -m mx_sales build` | no | yes | no |
+
+**These are the building blocks.** A production run — either window, the
+scheduled task, or `run_monthly.cmd` by hand — goes through one runner,
+`run_monthly.py`, which calls `run_batch.py --month …` and then `run_reports.py`
+and owns the lock, the run log, the alert file and the download deadline. See
+§10.5.
 
 Add `--stores NEW_STORE` to any of the batch forms to run one store only —
 that is the whole recipe for onboarding a new store, once its name is in
 `stores.allowed`:
 
 ```bash
-.venv\Scripts\python run_batch.py --stores NEW_STORE --workbooks
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --stores NEW_STORE --workbooks
 ```
 
 ### The two things people get wrong
@@ -111,9 +123,12 @@ is recorded as a store error; the downloads and cleaned tables are unaffected.
 
 ```
 downloads/<STORE>/<YYYYmmdd_HHMMSS>/    the raw files, plus REPORT.md describing them
+downloads/<STORE>/<stamp>/run_meta.json what was expected, what is missing and why
+downloads/<STORE>/<stamp>/_diag/        evidence for each report that did not arrive
 downloads/data/processed/<report>/      cleaned Parquet
 downloads/data/mx_sales.duckdb          views over the Parquet
-logs/batch_<stamp>.json                 per-store status, for scheduled runs
+logs/batch_<stamp>.json                 per-store status, missing reports by cause
+logs/runs/<run_id>.log / .json          one pair per run of the runner (§10.5)
 ```
 
 Useful options, all shared by both entry points: `--only billing|ventas|stock|mercadopago`,
@@ -147,6 +162,12 @@ personal login will not work with this API.
 
 ## 3. Files in this project
 
+> **Where files live (since 2026-10):** shared modules are in `core/`, MercadoLibre
+> modules in `platforms/mercadolibre/`; file names are unchanged. Scripts are started
+> as modules, e.g. `python -m platforms.mercadolibre.run_batch`. The root keeps the
+> `.cmd` files, `config.json`, `downloads/`, `logs/` and three forwarding scripts
+> (`run_monthly.py`, `list_stores.py`, `open_store.py`). See `docs/ARCHITECTURE.md`.
+
 | File | Purpose |
 |---|---|
 | `bootstrap.py` | Environment check / driver download. Run this first on any new machine. |
@@ -158,12 +179,17 @@ personal login will not work with this API.
 | `mercadopago.py` | MercadoPago reports (6 types, 4 UI flavours): request / probe / fetch. |
 | `run_downloads.py` | Single-store entry point, and `run_store()` — the pipeline both entry points share. |
 | `run_batch.py` | Multi-store entry point. One client session, serial stores, isolated failures, summary JSON. |
+| `run_monthly.py` | **The one runner.** Both windows, the scheduled task and the command line start it; it runs `run_batch.py` then `run_reports.py` as subprocesses. Lock, run log, summary, alert file, download deadline. See §10.5. |
+| `app.py` | The one window (`月度报表.cmd`): run now, needs-human-action, monthly schedule, live log. Starts `run_monthly.py --entrance manual …` detached and registers the Task Scheduler task that runs `run_monthly.cmd --entrance scheduled --region ALL`. Logic lives in `entrance.py` / `region_choice.py` / `win_tasks.py`. |
+| `runlog.py` | The run-log format (six columns), run records, "is a run in progress", stop requests, exit-code wording. No tkinter. |
+| `log_view.py` | The log viewer both windows embed. Tk glue only; the logic is in `runlog.py`. |
+| `download_diag.py` | Why a report was not downloaded: evidence capture, the closed `CAUSES` table, the list of expected forms. Imports neither selenium nor tkinter. |
 | `run_report.py` | Writes `REPORT.md` into each run folder. Presentation only — never touches the browser. |
-| `pending_store.py` | Reports requested but not yet collected (`logs/pending.json`). Survives a crash or reboot. |
+| `pending_store.py` | Reports requested but not yet collected (`logs/pending.json`); entries that age out are archived to `logs/pending_expired.json`. Survives a crash or reboot. |
 | `transform.py` | The seam to `downloads/mx_sales`: runs its CLI as a subprocess after a batch. |
 | `downloads/mx_sales/` | **Separate project** (own README, pyproject, tests): cleans the raw exports to Parquet + DuckDB. |
 | `downloads/data/` | That project's output: `processed/<report>/` Parquet and `mx_sales.duckdb`. |
-| `logs/` | **Gitignored.** `batch_<stamp>.json`, one per batch run. |
+| `logs/` | **Gitignored.** `batch_<stamp>.json`, one per batch run; `runs/<run_id>.log` + `.json`, one pair per run of the runner; `current.json` while a run is in progress; `pending.json`, `pending_expired.json`; `report_diag/`. |
 | `report_build.py` | The monthly financial report generator: 10 sheets, P&L → bridges → fees → returns → SKU → trend → inventory → checks. Standalone, imports nothing from this project. |
 | `financial_report.py` | The seam to `report_build.py`: picks each store's newest *complete* run folder and runs it as a subprocess. |
 | `run_reports.py` | Entry point for the monthly reports: one workbook per store plus an all-store roll-up. |
@@ -174,7 +200,7 @@ personal login will not work with this API.
 | `requirements.txt` | Pinned runtime deps. |
 | `.venv/` | **Gitignored.** Project-local Python environment. |
 | `webdriver/` | **Gitignored.** Optional fallback chromedrivers. |
-| `FORMS.md` | Catalogue of every downloaded form: source page, how obtained, file structure. |
+| `platforms/mercadolibre/FORMS.md` | Catalogue of every downloaded form: source page, how obtained, file structure. |
 | `GUIDE.md` | This file. |
 
 TODO — add rows as exporters / parsers land.
@@ -195,6 +221,13 @@ The store name lived in six hardcoded places until 2026-09-01. It now lives in
 
 `default` is used when `--store` is omitted. `allowed` is the **only** set of
 stores that may be opened; an empty list means unrestricted.
+
+One optional key sits beside them: `"no_full": ["STORE", …]` names stores that
+have **no Full warehouse**. Their missing stock reports are then classified
+`NOT_AVAILABLE` instead of needing attention (§10, "Why a report is missing").
+`--no-full-stores STORE …` does the same for one invocation. The script never
+guesses this: on the page, "no Full" and "the stock menu did not render" are
+both an empty menu.
 
 **Why this matters.** `getBrowserList` returns every store the enterprise
 account can see — 93 on this account — and its records carry **no permission
@@ -392,15 +425,15 @@ the vendor's.
 ## 9. Data extraction
 
 Four download routes are implemented — three from MercadoLibre's left-tab menu
-and one from MercadoPago. Entry point: `run_downloads.py`. **FORMS.md is the
+and one from MercadoPago. Entry point: `run_downloads.py`. **platforms/mercadolibre/FORMS.md is the
 per-form reference**; this section covers only the mechanics.
 
 ```bash
-.venv\Scripts\python run_downloads.py                      # all four routes
-.venv\Scripts\python run_downloads.py --only ventas        # route 2 only
-.venv\Scripts\python run_downloads.py --only billing --months 2
-.venv\Scripts\python run_downloads.py --skip-current       # skip the EN CURSO month
-.venv\Scripts\python run_downloads.py --store EWTTO_SM     # must be on the allowlist
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads                      # all four routes
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --only ventas        # route 2 only
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --only billing --months 2
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --skip-current       # skip the EN CURSO month
+.venv\Scripts\python -m platforms.mercadolibre.run_downloads --store EWTTO_SM     # must be on the allowlist
 ```
 
 ### The run has three phases
@@ -531,10 +564,10 @@ TODO - still to decide:
 `run_batch.py` walks several stores in one client session.
 
 ```bash
-.venv\Scripts\python run_batch.py                       # every store in stores.batch
-.venv\Scripts\python run_batch.py --stores BOCINA_SM EWTTO_SM
-.venv\Scripts\python run_batch.py --only ventas --limit 2
-.venv\Scripts\python run_batch.py --dry-run             # list the stores, open nothing
+.venv\Scripts\python -m platforms.mercadolibre.run_batch                       # every store in stores.batch
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --stores BOCINA_SM EWTTO_SM
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --only ventas --limit 2
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --dry-run             # list the stores, open nothing
 ```
 
 It takes every `--only` / `--months` / `--collect-timeout` option
@@ -646,7 +679,13 @@ them, and the next run re-requested from scratch.
 `pending_store.py` is that record. It is written **the moment each store
 finishes**, not at the end of the batch, so a crash midway cannot lose the
 reports already requested. An entry is removed only when its file is on disk, or
-when the range turns out to hold no movements and will never produce one.
+when the range turns out to hold no movements and will never produce one. A
+probe that raises does **not** remove the entry — it used to, and one page
+hiccup meant nobody ever went back for that report.
+
+Each entry also carries what the last probe saw (`probes`, `first_probe_at`,
+`last_probe_at`, `last_state`, `last_status_text`, `evidence`, `cause`), which
+is what the batch's diagnosis reads.
 
 An entry is not a handle into a browser session - it is the text of a table row
 (report type, url, the exact period string), which is how `mercadopago.probe()`
@@ -656,13 +695,15 @@ process dying, or the machine rebooting.
 To pick up what a previous run left generating, without downloading anything:
 
 ```bash
-.venv\Scripts\python run_batch.py --collect-only
+.venv\Scripts\python -m platforms.mercadolibre.run_batch --collect-only
 ```
 
 It opens only the stores that actually owe something. Entries older than
 `pending_store.MAX_AGE_DAYS` (7) are pruned at the start of every batch, since
 an entry nobody has collected in a week is far more likely to be a stale record
-than a live report.
+than a live report. Pruned entries are not dropped silently: each is marked
+`cause: EXPIRED`, appended to `logs/pending_expired.json`, and listed in the
+batch output with its store, form, request time, probe count and last state.
 
 ### Failure isolation
 
@@ -680,17 +721,92 @@ Isolating is not hiding — everything lands in the summary and the exit code:
 
 | Code | Meaning |
 |---|---|
-| 0 | every store `ok` |
-| 1 | at least one store `failed` or `partial` |
+| 0 | every store `ok` and nothing expected is missing |
+| 1 | finished, needs attention: some store `partial` / `failed`, or reports still owed, or cleaning partially failed for this run's files |
+| 2 | hard failure: Ziniao client error, or **no** store at all reached `ok` / `partial`, so nothing fresh was downloaded |
 | 3 | a named store is not on the allowlist |
 | 4 | `config.json` unreadable, or the batch list empty |
+
+A store "needs attention" when it has route errors, still owes a report, or is
+missing any expected report for a reason other than `NO_DATA` /
+`NOT_AVAILABLE`. `run_downloads.py` follows the same rule for its one store: it
+exits 1 on a route error or on a missing report that needs attention.
+
+The last stdout line of a batch is `[BATCH_SUMMARY_JSON] <path>`; the runner
+reads the summary from there and filters the line out of the human log.
+
+### Why a report is missing
+
+A run used to end with `尚未就绪` eleven cycles in a row and `仍欠 2 张` — no
+reason, although at the moment it gave up the code usually *knew* the reason
+(the row's state, a disabled button, a login page). `download_diag.py` keeps it:
+
+- `expected_forms(args)` works out what this run **should** produce
+  (`ventas`, `billing/2026-07` or `billing/1`…, `stock/…`, `mercadopago/<kind>`),
+  so "missing" is computed rather than inferred from whichever warnings
+  happened to print. A billing period that has not started yet is not expected.
+- At the moment a report is given up on, `capture_evidence()` records the page
+  address, title, `<html lang>`, visible banners, the row's status and a
+  screenshot into `<download folder>/_diag/<HHMMSS>_<form>.json` + `.png`. It
+  never raises and never waits.
+- `classify()` — a pure function, no browser — turns that evidence into exactly
+  one cause code from a closed set:
+
+| Cause | Meaning | Whose problem | Retry helps? | What the operator does |
+|---|---|---|---|---|
+| `STORE_OPEN_FAILED` | The store browser did not open, or dropped mid-run | Ziniao | yes | Check the Ziniao client is logged in and the store opens by hand, then rerun the store |
+| `LANGUAGE_WRONG` | The page is not in Spanish, so controls matched by Spanish text are not found | account | no | Set the account language back to Español in that store's browser, then rerun |
+| `NO_PERMISSION` | This login has no permission to view reports | account | no | Ask the account admin to grant report permissions under Colaboradores |
+| `PAGE_BLOCKED` | Not the expected page (login, verification or error page) | account | yes | Enter the store by hand, finish the login/verification, confirm the page opens, rerun |
+| `PLATFORM_ERROR` | The platform returned a 5xx error page (temporary outage) | platform | yes | Rerun the store a little later; if it persists, check the platform's status or open the page by hand |
+| `UI_NOT_FOUND` | Right page, but the control to click is missing or not clickable | script | no | Send the evidence screenshot to the maintainer: most likely a redesign, selectors need changing |
+| `REQUEST_NOT_REGISTERED` | Generate was clicked, but the platform's list does not show the report | platform | yes | Rerun the store to request again; if it recurs, generate it once by hand on the page |
+| `STILL_GENERATING` | The platform is still generating it | platform | yes | Run `run_batch.py --collect-only` later |
+| `PLATFORM_DELAYED` | The platform says data is still processing, wait some hours | platform | yes | Run `run_batch.py --collect-only` in a few hours |
+| `NO_DATA` | No data in the range; the platform will not produce a report | platform | no | Nothing |
+| `NOT_AVAILABLE` | Not offered: period not started / no such period / store has no Full | platform | no | Nothing; if you believe it should exist, check the evidence |
+| `DOWNLOAD_NOT_LANDED` | Report ready and download clicked, but no file landed | Ziniao | yes | Rerun to collect; if it recurs check disk space, download-folder permissions and the browser's download blocking |
+| `FILE_REJECTED` | The file arrived but is unusable (empty, or no longer in the folder) | platform | yes | Download that report again |
+| `INTERNAL_ERROR` | The script itself failed | script | yes | Send the exception to the maintainer; one rerun is reasonable |
+| `EXPIRED` | Not collected within the retention period; no longer tracked | script | no | Request the report again if still needed |
+| `UNKNOWN` | The evidence cannot tell the cause apart | script | yes | Open the evidence file and screenshot and judge by hand |
+
+`NO_DATA` and `NOT_AVAILABLE` need nobody to do anything — the absence is
+correct — so they do not make a store `partial` and do not move the exit code.
+Every other cause does.
+
+The diagnosis runs twice: once per store when it finishes, and once more for
+the whole batch **after the late pass**, when a report that could only be
+called `UNKNOWN` after one in-session probe usually has enough probes behind it
+to be told apart. It only uses evidence already captured — no store is reopened
+just to diagnose. The result is printed under `未下载的报表与原因` (one line per
+store and cause, then a count by cause), and written to:
+
+| Where | What |
+|---|---|
+| `REPORT.md` in the run folder | a `未下载 —— 原因` table: form, period, cause, retry?, next step, evidence file. Rewritten after the late pass, including for folders from an earlier run |
+| `run_meta.json` in the run folder | `expected`, `missing` (the records, with evidence), `flags`, `cautions` |
+| `logs/batch_<stamp>.json` | per-store `expected` / `missing` / `flags` / `cautions`, plus `missing_by_cause`, `stores_total` / `stores_ok` / `stores_attention` / `stores_failed`, `cleaning`, `expired`, `exit_code` |
+| `logs/pending.json` | on each owed entry: `probes`, `absent_probes`, `first_probe_at`, `last_probe_at`, `last_state`, `last_status_text`, `evidence`, `cause` |
+| `logs/pending_expired.json` | entries pruned after `MAX_AGE_DAYS`, marked `cause: EXPIRED` |
+
+`flags` carries `ip_check_failed`, `range_clamped` and `locale`. `cautions` is
+for downloads that succeeded but deserve a look — today only
+`adopted_existing_row`: MercadoPago showed no new row after a request, so the
+existing row was matched instead and the file may be an **earlier** report.
+Both the requested and the adopted period are recorded, and the batch prints
+them under `已下载但要留意`.
 
 ### Every run writes its own REPORT.md
 
 `run_store()` drops `REPORT.md` into `downloads/<STORE>/<stamp>/` beside the
 files, so the folder still explains itself when the terminal output is long
 gone: run parameters, every file with its route and size, and separate sections
-for `No data`, `Still owed` and `Errors`.
+for `No data`, `Still owed` and `Errors`, plus a `未下载 —— 原因` section (the
+table described under "Why a report is missing") with files collected in the
+late pass, any `adopted_existing_row` cautions and run flags beneath it. The
+batch replaces just that section after the late pass, since conclusions change
+once owed reports arrive.
 
 It is written for both entry points, since both go through `run_store()`. It
 never raises — a run that landed 18 files must not be reported as failed because
@@ -703,12 +819,15 @@ the billing files went.
 ### The run summary
 
 Each batch writes `logs/batch_<stamp>.json` — per store: status, file count,
-errors, what was still generating, output folder, duration. A scheduled run
-throws stdout away, so without this a silent failure is invisible until someone
-notices missing data.
+errors, what is still owed, what is missing and why, output folder, duration;
+and for the batch: counts by cause, counts of stores by state, the cleaning
+state and the exit code. A scheduled run throws stdout away, so without this a
+silent failure is invisible until someone notices missing data.
 
-Statuses are `ok`, `partial` (files landed, some route errored), `failed`,
-`not-allowed`.
+Statuses are `ok`, `partial` (files landed, but a route errored **or an
+expected report is missing or still owed**), `failed`, `not-allowed`. A store
+with reports still owed used to be `ok`; so did a store whose billing or stock
+route delivered nothing without raising.
 
 MercadoPago has two ways of refusing to build a report, and both used to be
 polled for the full 1800s because the row looks like one still generating:
@@ -767,7 +886,23 @@ Three decisions behind that shape:
 
 If the stores all downloaded but the transform failed, the exit code is 1 and
 the summary says which half broke — the files are on disk either way, and
-`cd downloads && python -m mx_sales build` re-runs just the transform.
+`cd downloads && python -m mx_sales build` re-runs just the transform. A
+cleaning failure is never counted as a store failure; it is reported in its own
+`cleaning` field.
+
+**Only this run's files count.** `build` walks the whole tree every time, so
+one old file that cannot be cleaned used to make every later batch exit 1 — on
+2026-10-09, 28 of 902 files failed, all of them September exports. The batch
+now passes its run folders (this run's, plus any earlier folder the late pass
+dropped a file into) as `transform.build(current_runs=…)` →
+`build --current-run <folder>`. Failures elsewhere are printed as a `note:` and
+returned as `failed_older`; if they are the only failures, the transform
+counts as ok. What gets cleaned does not change — only how it is reported.
+
+Those 28 files failed because the Ventas, Facturación and Notas de crédito
+readers read the header from a fixed row, and MercadoLibre pushes the table
+down a row when it puts a banner on top. The readers now locate the header by
+column names (see `downloads/README.md`).
 
 **Coverage is currently 2 of ~15 report types** (`ventas_mx`, `facturacion`).
 The rest download fine and are simply not cleaned yet; `python -m mx_sales
@@ -784,6 +919,167 @@ discover --unmatched` lists them. Adding one is a module under
   on"*, on a machine that stays logged in and never sleeps.
 - **Alerting.** Non-zero exit plus the summary JSON is the minimum; mailing the
   summary is the obvious follow-up.
+
+---
+
+## 10.5 The runner: `run_monthly.py`
+
+Every production run goes through `run_monthly.py`. The name is historical —
+registered scheduled tasks call `run_monthly.cmd`, and renaming it would break
+them all.
+
+```
+月度报表.cmd    -> app.py         -> run_monthly.py --entrance manual ...
+Task Scheduler (registered from 月度报表.cmd) -> run_monthly.cmd --entrance scheduled
+by hand                            -> run_monthly.py        (--entrance defaults to cli)
+```
+
+Neither window spawns `run_batch.py` / `run_reports.py` itself any more. The
+three paths differ in `--entrance` only, and that argument affects nothing but
+the entrance column of the log. Before, the manual window chained the two
+scripts itself and **omitted `--month` for the default month**, while the
+scheduled task always passed it — and `run_batch.py` with and without `--month`
+are two different download routes (Ventas window, how the billing page is
+reached, the folder suffix). "Fine by hand, broken at night" could not be
+reproduced from the window. The runner now **always** passes an explicit
+`--month` to `run_batch.py`.
+
+| Option | Meaning |
+|---|---|
+| `--month YYYY-MM` | target month, default the previous month |
+| `--step both\|download\|report\|collect` | run one step only; `collect` = `run_batch.py --collect-only` |
+| `--stores NAME …` | only these stores. Both children get `--stores`, and `run_reports.py` gets `--no-combined`: the roll-up's file name is fixed, so a two-store roll-up would overwrite the real one |
+| `--out-dir DIR` | report output folder; otherwise the one chosen in the manual window (`gui_settings.json`), otherwise the default |
+| `--entrance manual\|scheduled\|cli` | who started the run; default `cli` |
+| `--max-hours N` | download deadline, default 5, `0` = none |
+| `--dry-run` | print what would run |
+
+What lives in the runner, once, for every entrance:
+
+- **The lock** (`logs/monthly.lock`, created with `O_EXCL`). A second run exits
+  5. A lock whose PID is gone is taken over at once.
+- **No report after a hard download failure.** Download exit 0 or 1 → reports
+  are built (gaps show on sheet ⑩). Exit 2 / 3 / 4 → they are not: building
+  then would produce a normal-looking workbook from an older folder.
+- **Its own download deadline.** Task Scheduler's limit kills the whole chain —
+  no report, no alert, no trace. At `--max-hours` the runner kills the download
+  child and everything it started, **still builds the reports and writes the
+  alert**, and exits 7. Task Scheduler's 6-hour limit remains only as a backstop
+  for the runner itself hanging.
+- **The alert file** `！报表异常_<YYYYMM>.txt` in the report folder (plus the
+  optional webhook), for manual runs too. It is written when data will be
+  missing from the reports or a report was not written: a hard download
+  failure, stores failed / partial / still owed reports, the deadline, a report
+  step exiting ≥ 2, or the runner itself crashing. A report step exiting 1
+  (checks failed) does not alert, nor does a cleaning-only problem, an operator
+  abort or a skipped run.
+
+### Runs do not depend on a window
+
+The manual window starts the runner as a detached process
+(`runlog.spawn_detached`); closing the window does not stop the run. The viewer
+reads the log **file**, not a pipe, so either window attaches to whatever run
+is in progress — including a scheduled run that started on its own — and
+reattaches after being reopened. While a run is in progress
+(`logs/current.json` exists and its PID is alive) both windows lock their run
+buttons, whoever started it: a second download would restart the Ziniao client
+under the first.
+
+Stopping is a file, not a signal: either window writes
+`logs/runs/<run_id>.stop`, the runner checks for it every half second, kills
+its child's process tree, records `aborted`, releases the lock and exits 6. If
+the runner has not stopped within 20 s (`runlog.STOP_GRACE`), or was already
+stalled, the window kills it by PID and finishes the bookkeeping for it.
+
+A run whose heartbeat (`current.json` mtime, touched every 20 s) is older than
+180 s while its process is still alive is shown as **not responding** rather
+than as finished: it still holds the lock and Ziniao, so the buttons stay
+locked and the stop button force-stops it.
+
+### Run logs
+
+```
+logs/runs/<YYYYMMDD_HHMMSS>_<entrance>.log     the human log
+logs/runs/<YYYYMMDD_HHMMSS>_<entrance>.json    summary: steps, exit codes, seconds, alert text, commands
+logs/runs/<run_id>.stop                        only while a stop is requested
+logs/current.json                              only while a run is in progress
+```
+
+`<entrance>` is `manual`, `scheduled` or `cli`. `logs/monthly_<YYYYMM>.log` /
+`.json` are no longer written.
+
+Every line has six columns separated by ` | `:
+
+```
+2026-10-13 14:05:01 | 定时 | 下载 | BOCINA_TA02 | 警告 | 没有出现新行……
+time                | entrance | step | store or - | level | message
+```
+
+| Column | Values |
+|---|---|
+| entrance | `手动` (manual window) / `定时` (scheduled task, including "run now" and the rehearsal from the scheduling window) / `命令行` (typed, or `run_monthly.cmd` double-clicked) |
+| step | `启动` / `下载` / `补收` / `清洗` / `报表` / `收尾` |
+| store | the store name, or `-` |
+| level | `信息` / `警告` / `错误` |
+
+The entrance is on **every line**, not only in the header, because what gets
+forwarded when something breaks is a dozen lines from the middle. The three
+ways to tell the two entrances apart: that column, the file name, and the
+coloured badge at the top-left of the viewer (also each entry of its run
+picker).
+
+The file opens with a header block (step `启动`): entrance, run id, month,
+stores, steps, each command line, output folder, download deadline, machine and
+user, Python, commit, log path.
+
+The children's output is not rewritten. `runlog.LineClassifier` reads each line
+of `run_batch.py` / `run_reports.py` and decides step, store and level from
+the banners they already print; a line it cannot place is logged as `信息`
+unchanged. The viewer filters by store and by level and can pin any past run.
+
+A scheduled task registered **before** this change has no `--entrance
+scheduled` in its action. It still runs the same process, but its lines say
+`命令行`. Re-register once in the scheduling window ("设为每月自动跑"); the
+window's status line says so until you do.
+
+### Exit codes
+
+`run_batch.py` is in §10. `run_reports.py`:
+
+| Code | Meaning |
+|---|---|
+| 0 | every requested report written, all error-level checks pass, no source flagged incomplete by the platform |
+| 1 | every requested report **written**, but something to look at: checks failed, formula errors, incomplete Ventas data, or a roll-up missing a store that had no usable folder |
+| 2 | at least one requested report **not written** (crash, timeout, `--strict` abort, write failure, a store with no usable download folder), or no store usable at all |
+| 3 | a store is not on the allowlist |
+| 4 | config error |
+
+The line between 1 and 2 is only whether the file was actually written this
+time. Both used to be 1, so the runner could not tell "bridge B failed as it
+does every month" from "there is no report".
+
+`run_monthly.py` returns the worst of its children's 0–4, plus:
+
+| Code | Meaning |
+|---|---|
+| 5 | another run holds the lock; this one was skipped |
+| 6 | aborted by the operator |
+| 7 | download deadline exceeded; reports were built from what had arrived |
+
+A child killed by a signal or crashing with an out-of-range code is recorded
+as 2.
+
+### Report stage
+
+- Each failed check is printed **once**, in its own report's `[校验]` block,
+  with its troubleshooting hint directly beneath; the final summary adds one
+  compact line per report (`未过 N 项：…` / `提醒 N 项：…` with the stores).
+- A diagnostics file is written **only when a report was not written**, to
+  `logs/report_diag/<report>.<stamp>.log`. The `<out-dir>/diagnostics/` folders
+  of earlier versions are no longer produced and can be deleted.
+- `--strict` now also blocks a Ventas export the platform itself flags as
+  incomplete (`ventas_incomplete`, a warn-level check everywhere else). A
+  strict abort leaves no file and counts as "not written" (exit 2).
 
 ---
 

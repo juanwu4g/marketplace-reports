@@ -39,6 +39,27 @@ python -m mx_sales query "SELECT * FROM ventas_mx LIMIT 5"
 
 Drop `--file` to process everything discovered under the raw directory.
 
+`build` walks the whole raw tree every time, so a file that cannot be cleaned
+fails every later build too. `--current-run <folder name>` (repeatable; a full
+path works, only the last segment is used) says which run folders were just
+downloaded:
+
+```bash
+python -m mx_sales build --current-run 20261013_090000_m202609
+```
+
+Failures in any other folder are then printed as a short `note:` instead of
+`ERROR` lines. The exit code does **not** change with the flag — `1` still means
+"some file failed" — so a caller that does not pass it sees what it always did.
+The split is in the one machine-readable line `build` prints,
+`[BUILD_RESULT_JSON] {"written": …, "failed": [{"report", "file", "error",
+"current"}, …], "current_runs": […]}`. `transform.build(current_runs=…)` at the
+repository root reads it and treats a build whose only failures are older files
+as ok (`failed_current` / `failed_older` / `older_only` in its result).
+
+Exit codes of `build`: `0` everything processed; `1` some files failed, the rest
+were written and the warehouse refreshed; `2` nothing usable.
+
 ## What the cleaning handles
 
 Found in the real exports, all covered by tests:
@@ -48,11 +69,23 @@ Found in the real exports, all covered by tests:
 | Blanks written as a single space, so every column looks fully populated | every report |
 | Two-row header with repeating names (`Unidades` under three groups) | Ventas MX |
 | Header row at a different offset in each report (row 3, 6, 8 or 10) | all XLSX |
+| Header row that **moves**: ML inserts a banner row above the table (it does on exports it flags as incomplete) and everything shifts down one | Ventas MX, Facturación, Notas de crédito |
 | Spanish long-form dates, some with no year (`11 de agosto`) | Ventas MX |
 | 16-digit order ids arriving as `float64` | Facturación |
 | Composite fields (`RFC: …`, `S01 Sin efectos fiscales.`, `Color : Negro \| …`) | Ventas MX |
 | One order spanning several rows (packages, exchanges) | Ventas MX |
 | The same report re-downloaded across snapshots | all |
+
+The moving header is handled by anchoring on column names rather than a row
+number (`readers.excel.find_anchor_row` / `locate_header_row`): the header is the
+first row within the top 20 that holds every anchor — `# de venta` and
+`Fecha de venta` for Ventas MX, `Detalle` and `Valor del cargo` for Facturación
+and Notas de crédito (which share a loader). Names are compared slugified, so
+accents, case and padding do not matter. For Ventas MX the group row keeps its
+distance above the header. The fixed positions remain only as the fallback when
+no row matches; Ventas MX then fails with a message saying what was looked for
+and which columns were read instead, rather than a bare list of missing slugs.
+Reading fixed rows failed 28 of 902 production files.
 
 Year-less dates are resolved against the sale date on the same row, choosing the
 nearest year — which handles both a December sale delivered in January and an exchange

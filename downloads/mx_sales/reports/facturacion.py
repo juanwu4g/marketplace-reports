@@ -17,11 +17,16 @@ import pandas as pd
 
 from mx_sales.clean.numbers import to_numeric
 from mx_sales.clean.text import blank_to_na
-from mx_sales.readers.excel import read_sheet
+from mx_sales.readers.excel import locate_header_row, read_sheet
 from mx_sales.reports.base import ReportSpec, require_columns
 
 SHEET_NAME = "REPORT"
+
+#: Where the header usually sits (0-indexed). A fallback only, for the same reason as in
+#: ``ventas_mx``: a notice row inserted above the table moves it. The header is located
+#: by :data:`HEADER_ANCHORS` -- the two columns ``transform`` requires.
 HEADER_ROW = 7
+HEADER_ANCHORS = ("Detalle", "Valor del cargo")
 
 #: ``Detalle`` value -> canonical fee key. Matched case-insensitively on a prefix, so
 #: ML's wording drift ("Cargo por envíos de Mercado Libre" vs "... de Mercado Envíos")
@@ -77,7 +82,7 @@ NUMERIC_COLUMNS = (
 
 
 def load(path: Path) -> pd.DataFrame:
-    return read_sheet(path, SHEET_NAME, header_row=HEADER_ROW)
+    return read_sheet(path, SHEET_NAME, header_row=HEADER_ROW, anchors=HEADER_ANCHORS)
 
 
 def load_display(path: Path) -> pd.DataFrame:
@@ -87,7 +92,8 @@ def load_display(path: Path) -> pd.DataFrame:
     Sheets that mirror the export back to the reader need the wording ML actually printed,
     so this keeps it. Padding columns Excel leaves behind are dropped.
     """
-    frame = pd.read_excel(path, sheet_name=SHEET_NAME, header=HEADER_ROW)
+    header = locate_header_row(path, SHEET_NAME, HEADER_ANCHORS, default=HEADER_ROW)
+    frame = pd.read_excel(path, sheet_name=SHEET_NAME, header=header)
     keep = [c for c in frame.columns if not str(c).startswith("Unnamed")]
     return frame[keep].dropna(how="all").reset_index(drop=True)
 

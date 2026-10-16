@@ -18,11 +18,21 @@ export ("one bad export must not sink the run"), but this used to collapse any
 error into a single non-zero code, so a caller had no way to tell 1 bad file out
 of 55 from a run that produced nothing -- and reported both as "cleaning
 failed".
+
+``build`` walks the whole raw tree every time, so a file that cannot be cleaned
+fails every later build too. ``--current-run <folder name>`` says which run
+folders are the ones just downloaded: failures elsewhere are then printed as a
+short note instead of ``ERROR`` lines, and the ``[BUILD_RESULT_JSON]`` line marks
+each failed file ``current`` or not. The exit code does not change with the
+flag -- 1 still means "some file failed" -- so that a caller which does not pass
+it sees exactly what it always did; the caller that does pass it reads the
+split from the JSON line.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import traceback
@@ -49,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--report", help="limit to one report, e.g. ventas_mx")
     build_parser.add_argument("--file", help="process a single download (name or relative path)")
     build_parser.add_argument("--no-warehouse", action="store_true", help="skip DuckDB view refresh")
+    build_parser.add_argument(
+        "--current-run", action="append", default=None, metavar="FOLDER",
+        help="name of a run folder downloaded just now (repeatable); failures in any "
+             "other folder are reported as older ones, in a note",
+    )
 
     query_parser = subparsers.add_parser("query", help="run SQL against the warehouse")
     query_parser.add_argument("sql", help="SQL to execute, e.g. 'SELECT * FROM ventas_mx LIMIT 5'")
@@ -67,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "discover":
         return _discover(args.unmatched)
     if args.command == "build":
-        return _build(args.report, args.file, warehouse_refresh=not args.no_warehouse)
+        return _build(args.report, args.file, warehouse_refresh=not args.no_warehouse,
+                      current_runs=args.current_run)
     if args.command == "query":
         print(warehouse.query(args.sql).to_string(index=False))
         return 0
@@ -101,7 +117,18 @@ def _discover(show_unmatched: bool) -> int:
     return 0
 
 
-def _build(report: str | None, only: str | None, *, warehouse_refresh: bool) -> int:
+#: Prefix of the one machine-readable line ``build`` prints. ``transform.py`` at the
+#: repository root reads it; keep the two in step.
+BUILD_RESULT_MARKER = "[BUILD_RESULT_JSON] "
+
+
+def _build(
+    report: str | None,
+    only: str | None,
+    *,
+    warehouse_refresh: bool,
+    current_runs: list[str] | None = None,
+) -> int:
     results = pipeline.run(report, only=only)
     if not results:
         print("nothing to do: no raw files matched a registered report")
@@ -112,22 +139,55 @@ def _build(report: str | None, only: str | None, *, warehouse_refresh: bool) -> 
     written = sum(result.files for result in results)
     failed = sum(len(result.errors) for result in results)
 
+    # Without --current-run every failure is this run's, which is what it always meant.
+    # A full path is accepted too: only the folder name identifies the run.
+    runs = None if current_runs is None else frozenset(
+        name for name in (run.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+                          for run in current_runs) if name
+    )
+    failures: list[dict] = []
+    for result in results:
+        for relative, error in zip(result.failed_files, result.errors):
+            failures.append({
+                "report": result.report,
+                "file": relative,
+                "error": error,
+                "current": runs is None or pipeline.from_runs(relative, runs),
+            })
+    older = [f for f in failures if not f["current"]]
+
     for result in results:
         note = f", {len(result.errors)} FAILED" if result.errors else ""
         print(f"{result.report}: {result.rows} rows from {result.files} file(s)"
               f"{note} -> {result.output}")
-        for error in result.errors:
-            print(f"  ERROR {error}")
+        for failure in failures:
+            if failure["report"] == result.report and failure["current"]:
+                print(f"  ERROR {failure['error']}")
+
+    if older:
+        # Not ERROR lines: nothing downloaded just now is wrong, and a file that fails
+        # on every build would otherwise make every month look broken.
+        print(f"note: {len(older)} file(s) from earlier runs still cannot be cleaned "
+              "(not part of this run):")
+        for failure in older:
+            print(f"  {failure['report']:<14} {failure['file']}: "
+                  f"{failure['error'].split(': ', 1)[-1]}")
 
     if warehouse_refresh:
         views = warehouse.refresh_views()
         print(f"warehouse: {SETTINGS.warehouse_path} (views: {', '.join(views) or 'none'})")
 
+    print(BUILD_RESULT_MARKER + json.dumps(
+        {"written": written, "failed": failures, "current_runs": sorted(runs or [])},
+        ensure_ascii=False,
+    ))
+
     if not failed:
         return 0
     total = written + failed
     if written:
-        print(f"{failed} of {total} file(s) failed to clean; the other {written} "
+        split = f" ({failed - len(older)} from this run, {len(older)} older)" if runs is not None else ""
+        print(f"{failed} of {total} file(s) failed to clean{split}; the other {written} "
               f"were written and the warehouse was refreshed")
         return 1
     print(f"all {total} file(s) failed to clean; nothing was written")
