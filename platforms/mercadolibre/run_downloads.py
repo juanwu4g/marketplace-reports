@@ -465,6 +465,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     caller looping over stores keeps going.
     """
     store_config.require_allowed(store_name)
+    store_config.require_platform([store_name], "ML")
     out_dir = out_dir or run_folder(store_name)
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir)
@@ -482,6 +483,8 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
 
     store = client.find_store(store_name)
     print("店铺：%s（%s）" % (store.get("browserName"), store.get("platform_name")))
+    # 紫鸟说的平台和 config 对不上（一家 Falabella 店误配成美客多）就不开店。
+    store_config.check_ziniao_platform(store_name, store.get("platform_name"), "ML")
 
     # 站点决定域名、界面语言和币种。必须排在任何路线之前：模块级 URL 在批量
     # 跑时会带着上一家店的站点进来，墨西哥店之后跑智利店就会开错域名。

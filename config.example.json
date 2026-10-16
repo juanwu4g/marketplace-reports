@@ -16,8 +16,36 @@
   "_user_info": "Enterprise login (企业登录). The account needs WebDriver permission enabled in the ziniao console.",
   "stores": {
     "default": "BOCINA_SM",
-    "allowed": ["BOCINA_SM"],
-    "batch": []
+    "allowed": [
+      "BOCINA_SM",
+      "Tecnohub_CL (个人店)",
+      "DAB_CL-Fala (Coco)"
+    ],
+    "catalog": {
+      "BOCINA_SM": {
+        "platform": "ML",
+        "country": "MX"
+      },
+      "Tecnohub_CL (个人店)": {
+        "platform": "ML",
+        "country": "CL"
+      },
+      "DAB_CL-Fala (Coco)": {
+        "platform": "FA",
+        "country": "CL"
+      }
+    },
+    "batches": {
+      "ML-MX": [
+        "BOCINA_SM"
+      ],
+      "ML-CL": [
+        "Tecnohub_CL (个人店)"
+      ],
+      "FA-CL": [
+        "DAB_CL-Fala (Coco)"
+      ]
+    }
   },
-  "_stores": "default = store used when --store is omitted. allowed = the only stores that may be opened; empty list means unrestricted. batch = the stores run_batch.py walks, in order; empty means all of allowed."
+  "_stores": "default = store used when --store is omitted. allowed = the only stores that may be opened (empty = unrestricted, never do that). catalog = which market each store belongs to: platform code (ML = MercadoLibre, FA = Falabella; see core/markets.py) and country (ISO code). Once catalog is present every allowed store must be in it. batches = per market, which stores the monthly run walks and in which order; a market without a batch runs every allowed store of that market. Old keys still work: batch (= ML-MX), regions {store: country} (= MercadoLibre), batches {country: [...]} (= ML-<country>)."
 }

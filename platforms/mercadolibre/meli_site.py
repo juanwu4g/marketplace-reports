@@ -80,11 +80,13 @@ def get(code):
 def of_store(store_name, platform_name=None):
     """Resolve a store to its site code ("mx" / "cl" / "pe")."""
     try:
-        regions = store_config._stores().get("regions")
+        configured = store_config.configured_country(store_name)
+    except store_config.StoreConfigError:
+        raise
     except Exception:
-        regions = None          # 没有 config.json（测试、新机器）：按下面的规则判断
-    if isinstance(regions, dict) and store_name in regions:
-        code = str(regions[store_name]).lower()
+        configured = None       # 没有 config.json（测试、新机器）：按下面的规则判断
+    if configured:
+        code = str(configured).lower()
         get(code)
         return code
     for code, facts in SITES.items():
