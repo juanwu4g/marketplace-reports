@@ -3,9 +3,8 @@
 month (billed or estimated) and the notes under the table."""
 
 import pandas as pd
-from openpyxl.styles import Alignment
-from openpyxl.utils import get_column_letter
 
+from core.report_family import header_row
 from core.report_kit import (BOX, C_AMBER, C_GREY, C_NAVY, C_RED, C_SUB, F, INT, PCT, est_height,
     fill, wrap)
 
@@ -141,14 +140,7 @@ def sheet_trend(wb, stores, ctx):
             "退款金额", "退款率", "卖家优惠券", "售后订单数", "售后率",
             "到账净额", "到账率", "佣金/%s来源" % site.TAX_SHORT.rstrip("等")]
     widths = [16, 10, 9, 10, 15, 11, 14, 15, 14, 9, 10, 10, 13, 9, 12, 10, 9, 15, 9, 52]
-    for i, t in enumerate(cols, 1):
-        c = ws.cell(row=4, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
-        ws.column_dimensions[get_column_letter(i)].width = widths[i - 1]
-    ws.row_dimensions[4].height = 30
+    header_row(ws, 4, cols, widths)
     NC = len(cols)
 
     r = 5

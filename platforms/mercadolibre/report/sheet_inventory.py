@@ -5,8 +5,9 @@ import pandas as pd
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
+from core.report_family import header_row
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREEN, C_GREY, C_NAVY, C_RED, C_SUB,
-    C_WARN, F, INT, fill)
+    C_WARN, F, INT, fill, header_cells)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import SHEET_NAMES, V_SKU, V_UNITS, money, num, pct
@@ -148,14 +149,7 @@ def sheet_inventory(wb, stores, ctx):
           "待避免丢弃", "长龄单位", "平台30天销量", "自算30天销量", "销量差异",
           "近30天平均库存", "库存周转天数"]
     w1 = [18, 12, 8, 12, 10, 11, 10, 10, 14, 11, 11, 11, 10, 12, 11, 13, 13, 11, 14, 13]
-    for i, (t, w) in enumerate(zip(t1, w1), 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.row_dimensions[r].height = 30
+    header_row(ws, r, t1, w1)
     r += 1
     t1_start = r
     per_store = {}
@@ -216,14 +210,8 @@ def sheet_inventory(wb, stores, ctx):
           "待避免丢弃", "平台30天销量", "自算30天销量", "销量差异", "核对结论",
           "平台30天销售额", "本期会计月销量", "近30天平均库存", "可售天数",
           "平台售罄预估", "单位采购成本", "可售库存金额", "需要处理的事"]
-    w2 = [16, 18, 34, 11, 12, 9, 9, 13, 10, 10, 10, 10, 9, 11, 12, 12, 10, 22,
-          14, 13, 13, 10, 14, 13, 14, 40]
-    for i, (t, w) in enumerate(zip(t2, w2), 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_BAND)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
+    # 列宽由表一定下，本表不另设（表一之后的列用默认宽度）。
+    header_cells(ws, r, t2, color=C_BAND)
     ws.row_dimensions[r].height = 32
     r += 1
 
@@ -336,13 +324,7 @@ def sheet_inventory(wb, stores, ctx):
     r += 1
     t3 = ["店铺", "SKU", "商品名称", "需要处理的事", "核对结论", "可售库存",
           "平台30天销量", "自算30天销量", "可售天数", "不可售+待丢弃"]
-    w3 = [16, 18, 34, 44, 24, 11, 13, 13, 10, 13]
-    for i, (t, w) in enumerate(zip(t3, w3), 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_BAND)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
+    header_cells(ws, r, t3, color=C_BAND)
     r += 1
     if not problems:
         ws.cell(row=r, column=1, value="本期库存没有需要处理的项。").font = F(10, False, C_GREEN)

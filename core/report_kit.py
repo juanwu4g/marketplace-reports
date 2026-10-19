@@ -100,15 +100,27 @@ class Sheet(object):
 
     def header(self, row, cols, widths, height=30, color=C_NAVY):
         ws = self.ws
-        for i, t in enumerate(cols, 1):
-            c = ws.cell(row=row, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(color)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
+        header_cells(ws, row, cols, color=color)
         ws.row_dimensions[row].height = height
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
+
+
+def header_cells(ws, row, cols, first_col=1, color=C_NAVY, wrap_text=True):
+    """The cells of a table header: white bold text on `color`, centred, boxed —
+    one per entry of cols, from column first_col. Row height and column widths
+    are left to the caller (Sheet.header sets both). wrap_text=False leaves the
+    text on one line (the alignment then carries no wrap flag at all)."""
+    if wrap_text:
+        align = dict(horizontal="center", vertical="center", wrap_text=True)
+    else:
+        align = dict(horizontal="center", vertical="center")
+    for i, t in enumerate(cols, first_col):
+        c = ws.cell(row=row, column=i, value=t)
+        c.font = F(10, True, "FFFFFF")
+        c.fill = fill(color)
+        c.alignment = Alignment(**align)
+        c.border = BOX
 
 
 # ------------------------------------------------------------------ checks

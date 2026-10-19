@@ -8,7 +8,7 @@ from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREEN, C_GREY, C_NAVY, C_OK, C_RED,
-    C_SUB, C_WARN, F, est_height, fill, wrap)
+    C_SUB, C_WARN, F, est_height, fill, header_cells, wrap)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.site import is_pe
@@ -35,12 +35,7 @@ def sheet_gaps(wb, stores, ctx):
     r = 4
     ws.cell(row=r, column=1, value="一、本期校验结果").font = F(12, True, C_NAVY)
     r += 1
-    for i, t in enumerate(["结果", "店铺", "校验项", "明细", ""], 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = BOX
+    header_cells(ws, r, ["结果", "店铺", "校验项", "明细", ""], wrap_text=False)
     r += 1
     for c0 in ctx["checks"]:
         mark = "跳过" if c0["skipped"] else ("通过 ✓" if c0["ok"] else "未通过 ✗")
@@ -63,12 +58,7 @@ def sheet_gaps(wb, stores, ctx):
     r += 1
     ws.cell(row=r, column=1, value="二、数据缺口与待办").font = F(12, True, C_NAVY)
     r += 1
-    for i, t in enumerate(["优先级", "事项", "现状 / 发现", "建议动作", "对财务的影响"], 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = BOX
+    header_cells(ws, r, ["优先级", "事项", "现状 / 发现", "建议动作", "对财务的影响"], wrap_text=False)
     ws.row_dimensions[r].height = 22
     r += 1
 
@@ -316,12 +306,8 @@ def sheet_gaps(wb, stores, ctx):
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=max(5, len(cols)))
         ws.row_dimensions[r].height = est_height(intro, 150)
         r += 1
-        for i, (t, w) in enumerate(zip(cols, widths), 1):
-            c = ws.cell(row=r, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(C_BAND)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
+        header_cells(ws, r, cols, color=C_BAND)
+        for i, w in enumerate(widths, 1):        # 只加宽、不收窄：上面的表已经定过列宽
             if ws.column_dimensions[get_column_letter(i)].width < w:
                 ws.column_dimensions[get_column_letter(i)].width = w
         ws.row_dimensions[r].height = 28

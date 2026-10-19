@@ -3,10 +3,9 @@
 path, reconciled to ②."""
 
 from openpyxl.styles import Alignment
-from openpyxl.utils import get_column_letter
 
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREY, C_NAVY, C_RED, C_SUB, F, INT,
-    PCT, est_height, fill)
+    PCT, est_height, fill, header_cells)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (CHANNEL_MEANING, CHANNEL_ZH, CH_NA, CH_NO,
@@ -19,27 +18,14 @@ from platforms.mercadolibre.report.sheet_common import Sheet
 # ════════════════════════════════════════════════════════════════════════
 
 def sheet_fees(wb, stores, ctx):
-    ws = wb.create_sheet(SHEET_NAMES[3])
-    sh = Sheet.__new__(Sheet)
-    sh.ws = ws
-    ws["A1"] = "平台费用明细（%s账单，按计费日归集）" % ctx["period_cn"]
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = ("数据源：Reporte_Facturacion_MercadoLibre + Reporte_Notas_Credito。"
-                "结算通道决定这笔钱是“下单时已扣”还是“月底再扣”，混淆两者是平不了账的主因之一。"
-                "未在 FEE_CATALOG 登记的科目以红底标出。单位：%s" % site.CUR)
-    ws["A2"].font = F(9, False, C_GREY)
-    cols = ["店铺", "西班牙语科目 (Detalle)", "中文科目", "结算通道", "笔数", "金额", "占该店 GMV%"]
-    widths = [18, 52, 30, 16, 10, 16, 14]
-    for i, t in enumerate(cols, 1):
-        c = ws.cell(row=4, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
-    ws.row_dimensions[4].height = 30
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    sh = Sheet(wb, SHEET_NAMES[3], first_store_col=1, nstores=0)
+    ws = sh.ws
+    sh.title("平台费用明细（%s账单，按计费日归集）" % ctx["period_cn"],
+             "数据源：Reporte_Facturacion_MercadoLibre + Reporte_Notas_Credito。"
+             "结算通道决定这笔钱是“下单时已扣”还是“月底再扣”，混淆两者是平不了账的主因之一。"
+             "未在 FEE_CATALOG 登记的科目以红底标出。单位：%s" % site.CUR)
+    sh.header(4, ["店铺", "西班牙语科目 (Detalle)", "中文科目", "结算通道", "笔数", "金额", "占该店 GMV%"],
+              [18, 52, 30, 16, 10, 16, 14])
 
     r = 5
     chan_order = {CH_SI: 0, CH_NO: 1, CH_NA: 2}
@@ -84,12 +70,7 @@ def sheet_fees(wb, stores, ctx):
 
     ws.cell(row=r, column=2, value="按结算通道汇总").font = F(12, True, C_NAVY)
     r += 1
-    for i, t in enumerate(["店铺", "结算通道", "含义", "", "笔数", "金额", "占该店 GMV%"], 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = BOX
+    header_cells(ws, r, ["店铺", "结算通道", "含义", "", "笔数", "金额", "占该店 GMV%"], wrap_text=False)
     r += 1
     for S in stores:
         gmv = S["m"]["ing"] or 1.0
@@ -121,12 +102,7 @@ def sheet_fees(wb, stores, ctx):
     ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=7)
     ws.row_dimensions[r].height = 30
     r += 1
-    for i, t in enumerate(["店铺", "项目", "② 损益表", "④ 本页", "差", "原因"], 2):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_BAND)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
+    header_cells(ws, r, ["店铺", "项目", "② 损益表", "④ 本页", "差", "原因"], first_col=2, color=C_BAND)
     ws.row_dimensions[r].height = 24
     r += 1
 

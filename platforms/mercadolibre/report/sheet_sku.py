@@ -5,11 +5,11 @@
 import re
 
 import pandas as pd
-from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
+from core.report_family import set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAND, C_CALC, C_GREEN, C_GREY, C_INPUT, C_NAVY,
-    C_RED, C_SUB, C_WARN, F, INT, PCT, fill)
+    C_RED, C_SUB, C_WARN, F, INT, PCT, fill, header_cells)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (FEE_BY_ES, RETURN_REASON_ZH, RETURN_RESULT_ZH,
@@ -396,14 +396,12 @@ def sheet_sku(wb, stores, ctx):
     HDR = 6
 
     def header(r, main):
-        for i, (t, w) in enumerate(grid, 1):
-            c = ws.cell(row=r, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(C_NAVY if (main and i <= SKU_MAIN_NCOL) else C_BAND)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
-            if main:
-                ws.column_dimensions[get_column_letter(i)].width = w
+        # 主表头：前 SKU_MAIN_NCOL 列深蓝，其余浅一档；重复表头（main=False）全部浅一档
+        header_cells(ws, r, [t for t, _w in grid[:SKU_MAIN_NCOL]], color=C_NAVY if main else C_BAND)
+        header_cells(ws, r, [t for t, _w in grid[SKU_MAIN_NCOL:]], first_col=SKU_MAIN_NCOL + 1,
+                     color=C_BAND)
+        if main:
+            set_widths(ws, [w for _t, w in grid])
         ws.row_dimensions[r].height = 34
 
     header(HDR, True)

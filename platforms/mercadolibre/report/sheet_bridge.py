@@ -6,7 +6,7 @@ from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
 from core.report_kit import (BOX, C_BAND, C_CALC, C_GREEN, C_GREY, C_INPUT, C_NAVY, C_OK, C_RED,
-    C_SUB, C_WARN, F, INT, PCT, PCT2, PCT3, est_height, fill, wrap)
+    C_SUB, C_WARN, F, INT, PCT, PCT2, PCT3, est_height, fill, header_cells, wrap)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (CH_NA, CH_NO, CH_SI, MONTH_FULL_ES,
@@ -57,12 +57,7 @@ def _bridge_head(wb, stores, ctx):
     def head(labels=None):
         r = state["r"]
         cols = labels or (["#", "项目"] + store_cols(stores) + ["合计", "说明"])
-        for i, t in enumerate(cols, 1):
-            c = ws.cell(row=r, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(C_BAND)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = BOX
+        header_cells(ws, r, cols, color=C_BAND, wrap_text=False)
         state["r"] = r + 1
 
     def line(no, label, values, note, kind="d", total=True, fmt_code=site.MNY):

@@ -2,11 +2,11 @@
 """MercadoLibre report — ⑤ 退货退款分析 and ⑥ 退货质检明细."""
 
 import pandas as pd
-from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
+from core.report_family import header_row, set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_GREY, C_NAVY, C_OK, C_SUB, F, INT, PCT, fill,
-    wrap)
+    header_cells, wrap)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (MONEY_KEPT, MONEY_REFUNDED, RETURN_REASON_ZH,
@@ -40,15 +40,7 @@ def sheet_returns_money(wb, stores, ctx):
     cols = ["店铺", "订单状态 (Estado)", "中文含义", "单数", "件数", "原销售额", "实际退款额",
             "退款/原销售额", "资金归属", "库存处置"]
     widths = [16, 46, 30, 9, 9, 15, 15, 13, 14, 26]
-    for i, t in enumerate(cols, 1):
-        c = ws.cell(row=4, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BOX
-    ws.row_dimensions[4].height = 30
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    header_row(ws, 4, cols, widths)
 
     r = 5
     for S in stores:
@@ -102,12 +94,7 @@ def sheet_returns_money(wb, stores, ctx):
     r += 1
     n = len(stores)
     hdr = ["指标"] + store_cols(stores) + ["合计", "说明"]
-    for i, t in enumerate(hdr, 1):
-        c = ws.cell(row=r, column=i, value=t)
-        c.font = F(10, True, "FFFFFF")
-        c.fill = fill(C_NAVY)
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = BOX
+    header_cells(ws, r, hdr, wrap_text=False)
     ws.row_dimensions[r].height = 22
     r += 1
     tcol = 1 + n + 1
@@ -203,13 +190,8 @@ def sheet_triage(wb, stores, ctx):
         r += 1
         cols = ["退货原因 (Estado del producto)", "中文", "件数", "占比",
                 "其中：已退款买家", "其中：货款归卖家", "库存后果"]
-        for i, (t, w) in enumerate(zip(cols, [42, 26, 9, 10, 15, 15, 34]), 1):
-            c = ws.cell(row=r, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(C_NAVY)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
-            ws.column_dimensions[get_column_letter(i)].width = w
+        header_cells(ws, r, cols)
+        set_widths(ws, [42, 26, 9, 10, 15, 15, 34])
         r += 1
         start = r
         for k, v in R.groupby("Estado del producto").size().sort_values(ascending=False).items():
@@ -242,12 +224,7 @@ def sheet_triage(wb, stores, ctx):
         ws.cell(row=r, column=1, value="【%s】二、按质检处置结果汇总" % S["store"]).font = F(12, True, C_NAVY)
         r += 1
         cols = ["处置结果 (Resultado de la revisión)", "中文", "件数", "占比", "资金结果", "库存价值", "财务影响"]
-        for i, t in enumerate(cols, 1):
-            c = ws.cell(row=r, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(C_NAVY)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
+        header_cells(ws, r, cols)
         r += 1
         for k, v in R.groupby("Resultado de la revisión").size().sort_values(ascending=False).items():
             zh, val, fin = RETURN_RESULT_ZH.get(k, (str(k), "待确认", "待确认"))
@@ -275,12 +252,7 @@ def sheet_triage(wb, stores, ctx):
         ws.cell(row=r, column=1, value="【%s】三、逐件明细（本期质检记录）" % S["store"]).font = F(12, True, C_NAVY)
         r += 1
         cols = ["订单号", "SKU", "质检日期", "商品状态 (原因)", "质检处置结果", "资金处理", "中文说明"]
-        for i, t in enumerate(cols, 1):
-            c = ws.cell(row=r, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(C_NAVY)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
+        header_cells(ws, r, cols)
         r += 1
         for _, x in R.sort_values("fr").iterrows():
             zh = RETURN_REASON_ZH.get(x["Estado del producto"], (str(x["Estado del producto"]), ""))[0]
