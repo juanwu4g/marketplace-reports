@@ -244,6 +244,14 @@ def load_orders(paths):
     return o
 
 
+def empty_orders():
+    o = pd.DataFrame({c: pd.Series(dtype="object") for c in ORDER_COLS})
+    for c in ("Precio pagado", "Precio unitario", "Costo de envio", "Cupon/Descuentos", "Impuesto"):
+        o[c] = pd.Series(dtype="float64")
+    o["_created"] = pd.Series(dtype="datetime64[ns]")
+    return o
+
+
 def load_invoice(paths):
     frames = []
     for p in paths:
@@ -289,9 +297,15 @@ def load_store(store, folder, month):
         S["tx_outside"] = int(len(t) - len(S["tx"]))
     else:
         S["tx"] = None
+    # What the downloader found to be empty ("No tienes órdenes", no Liquidación row):
+    # an empty month, not a missing file.
+    no_data = set(r.get("form") for r in (S["meta"].get("missing") or [])
+                  if r.get("cause") == "NO_DATA")
+    order_forms = ["order/%s" % periods.period_id(x, y) for x, y in periods.order_chunks(month)]
     ops = _all(folder, "Ordenes_*.xlsx")
     S["files"]["order"] = ops
-    S["orders_all"] = load_orders(ops)
+    S["orders_none"] = not ops and all(f in no_data for f in order_forms)
+    S["orders_all"] = load_orders(ops) if ops else (empty_orders() if S["orders_none"] else None)
     if S["orders_all"] is not None:
         o = S["orders_all"]
         S["orders"] = o[(o["_created"] >= pd.Timestamp(a)) &
@@ -304,6 +318,7 @@ def load_store(store, folder, month):
     lp = _first(folder, "*FSC_LIQ*.xlsx")
     S["files"]["billing2"] = lp
     S["liq"] = load_liquidation(lp)
+    S["liq_none"] = not lp and "billing2" in no_data
     sp = _first(folder, "Product_details_*.xlsx")
     S["files"]["stock"] = sp
     S["stock"] = load_stock(sp)
@@ -500,15 +515,18 @@ def validate(stores):
         C.append(K.check("file_billing", st, "交易明细（Transacciones）在", bool(f.get("billing")),
                          "损益表的全部金额来自它" if f.get("billing") else
                          "没有 NewReportTransaction 文件：本店本月的损益表是空的，必须重新下载"))
-        C.append(K.check("file_order", st, "订单列表在", bool(f.get("order")),
+        C.append(K.check("file_order", st, "订单列表在", bool(f.get("order")) or S.get("orders_none"),
                          "%d 个文件" % len(f.get("order") or []) if f.get("order") else
+                         "本月没有订单（下载时平台显示 No tienes órdenes）" if S.get("orders_none") else
                          "没有 Ordenes 文件：桥 A、退货分析和订单口径 GMV 无法计算",
                          severity="error"))
         C.append(K.check("file_stock", st, "库存快照在", bool(f.get("stock")),
                          os.path.basename(f["stock"]) if f.get("stock") else
                          "没有 Product_details：⑨ 库存页为空", severity="warn"))
-        C.append(K.check("file_billing2", st, "Liquidación factura 在", bool(f.get("billing2")),
+        C.append(K.check("file_billing2", st, "Liquidación factura 在",
+                         bool(f.get("billing2")) or S.get("liq_none"),
                          os.path.basename(f["billing2"]) if f.get("billing2") else
+                         "本月没有平台代开的销售单据（列表里没有这个月）" if S.get("liq_none") else
                          "没有 Liquidación：桥 D 无法核对平台代开的销售单据", severity="warn"))
         C.append(K.check("tx_in_month", st, "交易明细只取本月",
                          m["lines"] > 0,
@@ -543,6 +561,11 @@ def validate(stores):
                              % (B["inv_lines"], fmt(B["inv_net"]), B["tx_lines"], fmt(B["tx_net"]),
                                 fmt(d))))
         for P in m["bridge_b_pending"]:
+            if not P["tx_lines"]:
+                C.append(K.check("bridge_b_open", st, "桥 B：账期 %s 的费用发票还没出" % P["period"],
+                                 True, "%s–%s 没有要开票的费用，不用等这张发票" % (P["from"], P["to"]),
+                                 severity="warn", skipped=True))
+                continue
             C.append(K.check("bridge_b_open", st, "桥 B：账期 %s 的费用发票还没出" % P["period"],
                              False, "%s–%s 的 %d 行应开票的费用 %s（不含 IVA）暂无发票可核对。"
                              "这些费用已按交易明细计入②，数字不受影响；发票在账期结束后（次月 21 日起）开出，"

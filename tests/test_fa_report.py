@@ -288,3 +288,35 @@ def test_files_from_a_later_run_of_the_same_month(folder, tmp_path):
     r, out = build(folder, tmp_path)
     c = {x["key"]: x for x in r["checks"]}
     assert c["file_stock"]["ok"]
+
+
+def test_a_month_without_orders_or_liquidation_is_not_an_error(folder, tmp_path):
+    """FRIZ_CL-Fala, September 2026: Falabella said "No tienes órdenes" for every
+    piece and listed no Liquidación; the downloader recorded NO_DATA. That is an
+    empty month, not a missing file."""
+    for f in os.listdir(folder):
+        if f.startswith(("Ordenes_", "S_FSC_LIQ")):
+            os.remove(os.path.join(folder, f))
+    meta = json.load(open(os.path.join(folder, "run_meta.json"), encoding="utf-8"))
+    meta["missing"] += [{"form": f, "cause": "NO_DATA"} for f in
+                        ("order/2026-09-01_2026-09-14", "order/2026-09-15_2026-09-28",
+                         "order/2026-09-29_2026-09-30", "billing2", "invoice2")]
+    json.dump(meta, open(os.path.join(folder, "run_meta.json"), "w", encoding="utf-8"))
+    r, out = build(folder, tmp_path)
+    c = {x["key"]: x for x in r["checks"]}
+    assert c["file_order"]["ok"] and "No tienes órdenes" in c["file_order"]["detail"]
+    assert c["file_billing2"]["ok"]
+    A = r["metrics"][STORE]["bridge_a"]
+    assert A["orders"] == 0 and A["earlier"] == A["sales"] and A["resid"] == 0
+    assert not [x for x in r["checks"] if not x["ok"] and x["severity"] == "error"]
+
+
+def test_missing_orders_without_a_no_data_record_is_still_an_error(folder, tmp_path):
+    for f in os.listdir(folder):
+        if f.startswith("Ordenes_"):
+            os.remove(os.path.join(folder, f))
+    meta = json.load(open(os.path.join(folder, "run_meta.json"), encoding="utf-8"))
+    meta["missing"].append({"form": "order/2026-09-01_2026-09-14", "cause": "NO_DATA"})
+    json.dump(meta, open(os.path.join(folder, "run_meta.json"), "w", encoding="utf-8"))
+    r, _ = build(folder, tmp_path)                  # only one of three pieces was empty
+    assert not {x["key"]: x for x in r["checks"]}["file_order"]["ok"]
