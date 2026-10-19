@@ -4,7 +4,7 @@ path, reconciled to ②."""
 
 from openpyxl.styles import Alignment
 
-from core.report_family import header_row
+from core.report_family import Col, Family, MONEY, header_row
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREY, C_NAVY, C_RED, C_SUB, F, INT,
     PCT, est_height, fill, header_cells, title_rows)
 
@@ -17,14 +17,26 @@ from platforms.mercadolibre.report.catalog import (CHANNEL_MEANING, CHANNEL_ZH, 
 # ④ 平台费用明细
 # ════════════════════════════════════════════════════════════════════════
 
+# 逐科目明细表的列（core/report_family.Col）：表头、列宽、数字格式、字体。
+FEE_COLS = [
+    Col("店铺", 18, font=F(10)),
+    Col("西班牙语科目 (Detalle)", 52, font=F(10)),
+    Col("中文科目", 30, font=F(10)),
+    Col("结算通道", 16, font=F(10)),
+    Col("笔数", 10, INT, font=F(10)),
+    Col("金额", 16, MONEY, font=F(10)),          # 本站点的金额格式（智利无小数）
+    Col("占该店 GMV%", 14, PCT, font=F(10)),
+]
+
+
 def sheet_fees(wb, stores, ctx):
+    fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[3])
     title_rows(ws, "平台费用明细（%s账单，按计费日归集）" % ctx["period_cn"],
                "数据源：Reporte_Facturacion_MercadoLibre + Reporte_Notas_Credito。"
                "结算通道决定这笔钱是“下单时已扣”还是“月底再扣”，混淆两者是平不了账的主因之一。"
                "未在 FEE_CATALOG 登记的科目以红底标出。单位：%s" % site.CUR)
-    header_row(ws, 4, ["店铺", "西班牙语科目 (Detalle)", "中文科目", "结算通道", "笔数", "金额",
-                       "占该店 GMV%"], [18, 52, 30, 16, 10, 16, 14])
+    header_row(ws, 4, [c.header for c in FEE_COLS], [c.width for c in FEE_COLS])
 
     r = 5
     chan_order = {CH_SI: 0, CH_NO: 1, CH_NA: 2}
@@ -38,33 +50,22 @@ def sheet_fees(wb, stores, ctx):
         start = r
         for _, x in g.iterrows():
             zh, bucket, _o, is_rev, known = classify(x["detalle"])
-            ws.cell(row=r, column=1, value=S["store"])
-            ws.cell(row=r, column=2, value=x["detalle"])
-            ws.cell(row=r, column=3, value=zh)
-            ws.cell(row=r, column=4, value=CHANNEL_ZH.get(x["channel"], x["channel"]))
-            ws.cell(row=r, column=5, value=int(x["count"])).number_format = INT
-            ws.cell(row=r, column=6, value=money(x["sum"])).number_format = site.MNY
-            ws.cell(row=r, column=7, value="=F%d/%s" % (r, gmv)).number_format = PCT
-            for c in range(1, 8):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(10)
-            if not known:
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).fill = fill(C_BAD)
-                    ws.cell(row=r, column=c).font = F(10, True, C_RED)
-            elif is_rev:
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).font = F(10, False, "8C4A00")
+            cells = fam.write_row(ws, r, FEE_COLS, (
+                S["store"], x["detalle"], zh, CHANNEL_ZH.get(x["channel"], x["channel"]),
+                int(x["count"]), money(x["sum"]), "=F%d/%s" % (r, gmv)))
+            if not known:                               # 未登记科目：红底红字
+                for c in cells:
+                    c.fill = fill(C_BAD)
+                    c.font = F(10, True, C_RED)
+            elif is_rev:                                # 冲销行：褐色字
+                for c in cells:
+                    c.font = F(10, False, "8C4A00")
             r += 1
-        ws.cell(row=r, column=1, value=S["store"])
-        ws.cell(row=r, column=3, value="账单费用合计")
-        ws.cell(row=r, column=5, value="=SUM(E%d:E%d)" % (start, r - 1)).number_format = INT
-        ws.cell(row=r, column=6, value="=SUM(F%d:F%d)" % (start, r - 1)).number_format = site.MNY
-        ws.cell(row=r, column=7, value="=F%d/%s" % (r, gmv)).number_format = PCT
-        for c in range(1, 8):
-            ws.cell(row=r, column=c).fill = fill(C_SUB)
-            ws.cell(row=r, column=c).font = F(10, True)
-            ws.cell(row=r, column=c).border = BOX
+        cells = fam.write_row(ws, r, FEE_COLS, (
+            S["store"], None, "账单费用合计", None, "=SUM(E%d:E%d)" % (start, r - 1),
+            "=SUM(F%d:F%d)" % (start, r - 1), "=F%d/%s" % (r, gmv)), fill_color=C_SUB)
+        for c in cells:
+            c.font = F(10, True)
         r += 2
 
     ws.cell(row=r, column=2, value="按结算通道汇总").font = F(12, True, C_NAVY)
