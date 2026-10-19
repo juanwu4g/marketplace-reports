@@ -18,8 +18,6 @@ from platforms.mercadolibre.report.sheet_common import (fee_rows, main_store, no
 # ① 阅读说明
 # ════════════════════════════════════════════════════════════════════════
 
-
-
 def sheet_readme(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[0])
     set_widths(ws, (4, 30, 118))

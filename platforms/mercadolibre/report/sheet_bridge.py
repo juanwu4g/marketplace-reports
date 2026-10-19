@@ -318,7 +318,6 @@ def _bridge_head(wb, stores, ctx):
                     "line": line, "gap": gap, "ncol": ncol_idx}
 
 
-
 def _bridge_tail(stores, ctx, sh, ws, H, n):
     """③ 的后半段：桥 D / E / F 与常见误算。游标沿用 _bridge_head 的 state。"""
     state = H["state"]

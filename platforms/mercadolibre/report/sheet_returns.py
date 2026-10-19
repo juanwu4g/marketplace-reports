@@ -164,7 +164,6 @@ RESULT_FILL = {"Producto para retirar en centro de distribución": C_BAD,
                "Producto quedó nuevamente para la venta": C_OK}
 
 
-
 def sheet_triage(wb, stores, ctx):
     fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[5])

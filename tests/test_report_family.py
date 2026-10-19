@@ -139,6 +139,45 @@ def test_long_table_columns():
     assert len(cells) == 5
 
 
+def test_column_alignment_and_row_overrides():
+    wb = Workbook()
+    ws = wb.active
+    fam = RF.Family([A], money=K.MNY)
+    cols = [RF.Col("说明", 30, align=K.wrap("top")), RF.Col("金额", 14, RF.MONEY, font=K.F(10))]
+    cells = fam.write_row(ws, 2, cols, ["长文字", 1.5], fill_color=K.C_BAD)
+    assert ws["A2"].alignment.wrap_text and ws["A2"].alignment.vertical == "top"
+    assert ws["B2"].alignment.wrap_text is None                  # no align: left alone
+    assert ws["B2"].number_format == K.MNY and ws["B2"].font.sz == 10
+    assert all(c.fill.fgColor.rgb.endswith(K.C_BAD) for c in cells)
+    assert RF.Col("x", 1).align is None                          # old specs unchanged
+
+
+def test_header_cells_and_title_rows():
+    wb = Workbook()
+    ws = wb.active
+    K.header_cells(ws, 3, ["a", "b"], first_col=2, color=K.C_BAND, wrap_text=False)
+    assert ws["A3"].value is None and ws["B3"].value == "a" and ws["C3"].value == "b"
+    assert ws["B3"].fill.fgColor.rgb.endswith(K.C_BAND) and ws["B3"].font.b
+    assert ws["B3"].alignment.horizontal == "center" and ws["B3"].alignment.wrap_text is None
+    assert ws.row_dimensions[3].height is None                   # height is the caller's
+    K.title_rows(ws, "标题", "说明")
+    assert ws["A1"].value == "标题" and ws.row_dimensions[1].height == 24
+    assert ws["A2"].value == "说明" and ws["A3"].value is None
+    sh = K.Sheet(wb, "s", first_store_col=2, nstores=1)
+    sh.header(5, ["x", "y"], [10, 20])
+    assert sh.ws["A5"].alignment.wrap_text and sh.ws.row_dimensions[5].height == 30
+    assert sh.ws.column_dimensions["B"].width == 20
+
+
+def test_readme_rows_alone():
+    wb = Workbook()
+    ws = wb.active
+    r = RF.readme_rows(ws, 4, [("", "", ""), ("S", "一、", ""), ("", "a", "b")])
+    assert r == 7
+    assert ws["B4"].value == "" and ws["B5"].value == "一、" and ws["C6"].value == "b"
+    assert "B5:C5" in [str(m) for m in ws.merged_cells.ranges]
+
+
 def test_readme_sections_and_warning():
     wb = Workbook()
     fam = RF.Family([A])
