@@ -10,10 +10,12 @@ platform-specific; the frame is not.
 The frame (styles, sheet names, check records, file names) is
 `core/report_kit.py`; the sheet writers built on it (readme, P&L, bridges, long
 tables, gaps) are `core/report_family.py` — see §6. Falabella's and Amazon's
-reports are built with them; MercadoLibre's `platforms/mercadolibre/report_build.py` (the original
-reference) uses the frame but still writes its own sheets — moving it onto
-`report_family` is future work, to be done with its golden tests proving zero
-diff.
+reports are built with them. MercadoLibre's (the original reference,
+`platforms/mercadolibre/report_build.py` + `platforms/mercadolibre/report/`) uses
+the frame and the family's smaller writers — sheet heads, table headers, ①'s
+rows, ②'s formulas as data, long-table rows from `Col` specs — and keeps its own
+code where its sheets are richer than the family's whole-sheet writers; §8 says
+which, sheet by sheet.
 
 ---
 
@@ -73,7 +75,7 @@ where things are.
 
 ## 3. Look
 
-| Element | Value (from `report_build.py`) |
+| Element | Value (from `core/report_kit.py`) |
 |---|---|
 | font | Arial 10; titles larger, bold |
 | title band | navy `1F3864`, white bold text |
@@ -122,7 +124,7 @@ from them:
 Fee categories (fixed list, extend with care): `commission`, `shipping`,
 `ads`, `fulfilment_storage`, `penalty`, `subscription`, `tax_withheld`,
 `other`. Each platform keeps a fee catalogue mapping its original fee names to
-these categories (MercadoLibre's is `FEE_CATALOG` in `report_build.py`); an
+these categories (MercadoLibre's is `FEE_CATALOG` in `platforms/mercadolibre/report/catalog.py`); an
 unmapped fee name is an **error** check, never silently "other".
 
 This section is the target design; MercadoLibre will be moved onto it with its
@@ -144,6 +146,19 @@ without copying layout code:
 | ④⑦⑧⑨ | `Family.table_sheet` + `write_row` | column specs `Col(header, width, fmt, border, fill, font, formula)` and the rows |
 | any sheet that does not apply | `not_applicable_sheet` | the "不适用：…" text |
 | ⑩ | `Family.gaps_sheet` | the checks; missing files come from each store's `run_meta.json`; extra note sections (e.g. tax) |
+
+A sheet whose layout is its own can still use the pieces those writers are made
+of, so it keeps the family's look without copying it:
+
+| Piece | Where | What it writes |
+|---|---|---|
+| `title_rows(ws, title, sub, sub2)` | `report_kit` (`Sheet.title` on any sheet) | A1 navy title, row 24 high; grey notes in A2 / A3 |
+| `header_cells(ws, row, cols, first_col, color, wrap_text)` | `report_kit` (inside `Sheet.header`) | header cells only: white bold on navy or band, centred, boxed |
+| `header_row(ws, row, cols, widths)` | `report_family` | `Sheet.header` on a sheet without store columns (height 30, widths) |
+| `set_widths(ws, widths)` | `report_family` | column widths from A |
+| `readme_rows(ws, r, rows)` | `report_family` (inside `readme_sheet`) | ①'s body: `("S", section, "")` heads and `(tag, label, text)` rows |
+| `pl_formula(formula, col, rows_at)`, `Span` | `report_family` (inside `pl_sheet`) | `=C5+C6-C9` / `=SUM(C5:C9)` from a formula written as data |
+| `Col(…, align=)` + `Family.write_row(…, fill_color=)` | `report_family` | one table row from column specs; `align` (e.g. `wrap()`) per column, `fill_color` for the whole row |
 
 Store columns and the 合计 column are handled by `Family`: with one store there
 is no 合计 column; with several it follows the store columns on every sheet
@@ -277,3 +292,38 @@ SC.pl_note(res), SC.source_line(table), SC.policy_line(units_basis), SC.point_li
 
 and `sku_list(store, folder, month) -> (platform, country, currency, [Item])` so
 `tools/sku_cost_template` can list its SKUs.
+
+## 8. MercadoLibre on the family
+
+MercadoLibre's builder predates `report_family`; the family's whole-sheet
+writers were distilled from it and simplified, so its sheets are richer than
+what `readme_sheet` / `pl_sheet` / `bridge_sheet` / `gaps_sheet` write. It was
+moved onto the family as far as the workbook could stay **identical** — every
+cell, style, width, merge and the XML itself, checked on the golden store-months
+of the three countries, multi-store workbooks and synthetic folders — and no
+further: changing what finance already reads is a separate decision.
+
+Code: `platforms/mercadolibre/report_build.py` (command line, assembly, recalc,
+metrics; every old `report_build.<name>` still works) on top of
+`platforms/mercadolibre/report/`: `site` (country profile; other modules read
+`site.NAME`, so values follow `set_site`) → `catalog` → `loading` → `derived`
+(`derive()`, the accounting) → `checks` → `sheet_*` (one module per sheet, ⑤⑥
+together). `tests/test_ml_report_layout.py` holds the layering.
+
+| Sheet | On the family | Its own, and why |
+|---|---|---|
+| ① | `readme_rows` for the body, `set_widths` | head (title 15 pt in A1, row 26, Ventas-incomplete banner merged A3:C3) and the red "注 n" notes — `readme_sheet` puts a 16 pt title in B1 and a single warning line |
+| ② | subtotal / computed formulas as data (`PL_FORMULAS`, `Span`, `pl_formula`); `Sheet` | the grid: 合计 column even for one store, an extra 占GMV% column, header in row 4, row-kind colours and fonts, the memo block with its sensitivity row — `pl_sheet` drops 合计 for one store and has neither |
+| ③ | `Sheet.title`, `header_cells`, `set_widths` | the bridges: numbered lines, values given as formulas, check rows in green, navy merged section bands, the MercadoPago per-order block — `bridge_sheet` lines are plain values with four styles |
+| ④ | `title_rows`, `header_row`, `header_cells`; fee table = `Col` spec + `write_row` | settlement-path summary and the ② reconciliation (merged notes, deliberately empty columns) |
+| ⑤ | `title_rows`, `header_row`, `header_cells`; status table = `Col` + `write_row` | subtotal rows and the KPI block (store columns with 合计 and ratio rows) |
+| ⑥ | `title_rows`, `header_cells`, `set_widths`; the three per-store tables = `Col` + `write_row` | subtotal row; the "no Full in this country" text (two lines at A2/A4, not `not_applicable_sheet`'s A3) |
+| ⑦ | `title_rows`, `header_cells`, `set_widths` | five tables on one 30-column grid with cross-table formulas and the cost input column — not a single `Col` table |
+| ⑧ | `title_rows`, `header_row`; trend table = `trend_cols()` + `write_row` | the rule-generated notes under the table |
+| ⑨ | `title_rows`, `header_row`, `header_cells`; 表一 and 表三 = `Col` + `write_row` | 表二 (per SKU): it sets the default font only on cells without a coloured one and colours single cells by verdict |
+| ⑩ | `title_rows`, `header_cells`, `set_widths` | check list with merged detail cells and its own colours, the prioritised to-do list, the credit-note blocks — a different layout from `gaps_sheet` (which also lists `run_meta.json` missing files; MercadoLibre's ⑩ does not) |
+
+When MercadoLibre's sheets are next redesigned (a decision for finance, since
+the workbook changes), the remaining bespoke parts are the place to move onto
+the whole-sheet writers.
+

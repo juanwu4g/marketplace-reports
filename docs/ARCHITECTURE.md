@@ -68,7 +68,16 @@ platforms/
     run_batch.py       many stores in one Ziniao session; owed-report catch-up
     run_reports.py     builds every store's workbook + the combined one
     financial_report.py  finds the right download folder, runs report_build
-    report_build.py    the workbook itself (10 sheets, checks, bridges)
+    report_build.py    the workbook's entry point: command line, assembly, recalc,
+                       metrics; every old report_build.<name> still resolves
+    report/            the workbook by layer (each imports only the ones above it):
+      site.py          country profile (currency, tolerances, tax …); set_site()
+      catalog.py       raw-file structure, FEE_CATALOG, status words, number helpers
+      loading.py       read one store's download folder
+      derived.py       derive(): one store -> its numbers (the accounting rules)
+      checks.py        validate(): the check records
+      sheet_*.py       the ten sheets (readme, pl, bridge, fees, returns = ⑤⑥,
+                       sku, trend, inventory, gaps) + sheet_common
     transform.py       cleaning step (Mexico only; calls downloads/mx_sales)
     list_stores.py, open_store.py, download_history.py, pl_billing_basis.py, run_report.py
 
@@ -161,7 +170,7 @@ script that the runner or the window starts, start it the same way.
 | stores | **done** — markets (platform x country) in `core/markets.py`; `store_config` resolves a store's market, batches per market, fails closed on unknown codes or mixed batches; each platform's batch refuses other platforms' stores and cross-checks Ziniao's platform name before opening |
 | `core/download_diag.py` | **done enough** — cause codes, evidence, `diagnose_store` are shared; a platform passes its own expected form ids, owed entries may carry `form`, records may carry `in_report`. MercadoLibre's form constants are still in the module (harmless) |
 | report kit | **done** — `core/report_kit.py` holds the family frame (styles, `Sheet`, `check`, sheet names, workbook/alert names, recalc). MercadoLibre imports it; golden tests 0 diff |
-| report family | **done for new platforms** — `core/report_family.py` writes the sheets (readme, P&L from a `PLRow` spec with formulas as data, ratio/memo blocks, bridges from `Line` sections, long tables from `Col` specs, not-applicable, ⑩ gaps) for one or many stores. Falabella's report is built on it (golden 0 diff, and multi-store layouts compared cell, style and layout). MercadoLibre still writes its own sheets — moving it is future work, behind its golden tests |
+| report family | **done** — `core/report_family.py` writes the sheets (readme, P&L from a `PLRow` spec with formulas as data, ratio/memo blocks, bridges from `Line` sections, long tables from `Col` specs, not-applicable, ⑩ gaps) for one or many stores; Falabella's and Amazon's reports are built on it. MercadoLibre's builder is split into layers (`platforms/mercadolibre/report/`) and uses the family's pieces — sheet heads, table headers, ①'s rows, ②'s formulas as data, the long tables of ④⑤⑥⑧⑨ from `Col` specs — wherever the workbook stays identical (golden 0 diff; every cell, style, layout and XML part compared on single- and multi-store MX/CL/PE builds). Its richer layouts (② grid, ③ bridges, ⑦ SKU grid, ⑩) stay its own; `docs/REPORT_FAMILY.md` §8 lists them |
 | browser kit | **done** — `core/browser_kit.py`: shadow-root walk, find/need/wait_for, clicks, table rows, download folder, `wait_new_files`, `PageError`, `retried()` (the "never retry" exceptions are a parameter). Falabella's `page_kit` re-exports it and keeps only its own pop-ups, language box and downloads table. MercadoLibre's routes keep their own helpers |
 | discovery | **done** — `tools/probe_pages.py` (one look per URL) and `tools/probe_session.py` (one store kept open, scripts dropped into a folder run against it); both refuse stores off the allowlist |
 | new platform | **done** — `tools/new_platform.py` scaffolds a package that keeps the contract; `tests/test_platform_contract.py` checks every registered, importable platform against what the runner and the window actually start |
