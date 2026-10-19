@@ -225,3 +225,42 @@ def test_language_gate_leaves_spanish_alone(monkeypatch):
     ctx = _Ctx()
     forms.check_language(ctx)
     assert "language_switched" not in ctx.flags
+
+
+def test_direct_stock_fetch_retries_then_reports_a_landing_problem(tmp_path, monkeypatch):
+    import urllib.request
+    href = forms.STOCK_HOSTS[0] + "fby-exports/Product_details_1.xlsx"
+    calls = []
+
+    class Resp(object):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"xlsx-bytes"
+
+    def flaky(req, timeout=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.URLError("[Errno 11001] getaddrinfo failed")
+        return Resp()
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(forms.time, "sleep", lambda s: None)
+    ctx = _Ctx()
+    ctx.out_dir = str(tmp_path)
+    assert forms.fetch_direct(ctx, href) == ["Product_details_1.xlsx"]
+    assert len(calls) == 3 and ctx.flags["stock_fetched_direct"]
+
+    def dead(req, timeout=None):
+        raise urllib.error.URLError("[Errno 11001] getaddrinfo failed")
+    monkeypatch.setattr(urllib.request, "urlopen", dead)
+    with pytest.raises(OSError):
+        forms.fetch_direct(ctx, href)
+    # the stock route turns that into "file did not land" (retry helps), not a script bug
+    c = run_downloads.Collector(str(tmp_path), "S")
+    c.locale = "es-CL"
+    c.give_up(None, "stock", "download-not-landed", step="x", shot=False)
+    assert download_diag.diagnose_store(["stock"], collector=c)[0]["cause"] == "DOWNLOAD_NOT_LANDED"

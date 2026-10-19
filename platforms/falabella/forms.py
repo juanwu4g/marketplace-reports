@@ -473,15 +473,22 @@ def stock(ctx):
             newest = rows[0]
             break
         if int(time.time() - requested) % 30 < 5:
-            d.refresh()
-            time.sleep(8)
+            # not d.refresh(): /fulfillment/product loaded directly is an error page
+            ctx.go(DASHBOARD, settle=5)
+            ctx.go(FULFILLMENT, settle=10)
     if not newest:
         ctx.pending.append({"form": form, "route": "stock", "row": None,
                             "range": ctx.month, "requested_at": requested,
                             "last_state": "generating", "probes": 1})
         ctx.log("  库存导出还没完成，记为欠账")
         return
-    files = fetch_stock_link(ctx, newest[1])
+    try:
+        files = fetch_stock_link(ctx, newest[1])
+    except OSError as e:          # network: DNS, timeout, connection (urllib.error.URLError)
+        ctx.give_up(form, "download-not-landed",
+                    step="Products Export %s：浏览器没下载，直接下载也失败（%s）"
+                         % (newest[0][:40], str(e)[:80]))
+        return
     if not files:
         ctx.give_up(form, "download-not-landed", step="Products Export %s" % newest[0][:50])
         return
@@ -526,18 +533,37 @@ def fetch_stock_link(ctx, href, attempts=2):
         if got:
             return got
         time.sleep(3)
+    # The browser download sometimes lands late (seen 2026-10-16): give it a moment.
+    name = os.path.basename(href.split("?")[0])
+    late = pk.wait_for(lambda: os.path.exists(os.path.join(ctx.out_dir, name)) and
+                       os.path.getsize(os.path.join(ctx.out_dir, name)) > 0, timeout=20)
+    if late:
+        ctx.log("  库存文件晚到了，浏览器已下好 %s" % name)
+        return [name]
     return fetch_direct(ctx, href)
 
 
-def fetch_direct(ctx, href, timeout=60):
+def fetch_direct(ctx, href, timeout=60, waits=(0, 10, 30)):
+    """Fetch the export over HTTPS. Retried: on 2026-10-19 the production machine
+    could not resolve storage.googleapis.com for a moment (getaddrinfo failed) and
+    the same fetch worked minutes later. Raises OSError when every attempt fails."""
     import urllib.request
     if not href.startswith(STOCK_HOSTS):
         raise pk.PageError("refusing direct download outside the export bucket: %s" % href[:80])
     name = os.path.basename(href.split("?")[0])
     path = os.path.join(ctx.out_dir, name)
     req = urllib.request.Request(href, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(path + ".part", "wb") as fh:
-        fh.write(r.read())
+    for i, pause in enumerate(waits):
+        time.sleep(pause)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r, \
+                    open(path + ".part", "wb") as fh:
+                fh.write(r.read())
+            break
+        except OSError as e:
+            ctx.log("  直接下载库存文件第 %d 次失败：%s" % (i + 1, str(e)[:80]))
+            if i == len(waits) - 1:
+                raise
     os.replace(path + ".part", path)
     if not os.path.getsize(path):
         os.remove(path)
