@@ -113,6 +113,23 @@ def scope_text(groups):
                                       for r, ss in groups), n)
 
 
+def platforms_text(groups=None):
+    """全部那个任务覆盖哪些平台、哪些国家："美客多（墨西哥、智利、秘鲁）、Falabella（智利）"。
+
+    平台按 markets.PLATFORMS 的顺序，国家按跑的顺序；只说 config 里真有店铺的。
+    一家都读不到（config 读不了）时说出代码支持的全部 —— 句子不能是空的。
+    界面上写平台和国家的地方都用它，不在窗口里写死平台名。"""
+    groups = lineup(ALL) if groups is None else groups
+    units = [u for u, _ in groups] or list(REGIONS)
+    out = []
+    for p in markets.PLATFORMS.values():
+        cs = [markets.country_name(markets.split(u)[1]) for u in units
+              if markets.unit_platform(u) == p.code]
+        if cs:
+            out.append("%s（%s）" % (p.name_zh, "、".join(cs)))
+    return "、".join(out)
+
+
 def remembered(settings):
     """gui_settings.json 里记的区域。没记、记了个不认识的，都是墨西哥。"""
     r = str((settings or {}).get("region") or "").upper()
@@ -208,16 +225,18 @@ def rerun_plan(picked):
 
 # ────────────────────────────────────────────────────────── 计划任务
 
-# 以前用过、现在不再登记的"全部国家"任务名（multi-region 版本叫 ML月度报表）。
-# 这台电脑上要是还登记着，和旧的按国家任务一样：列出来、提醒、由人删。
-OLD_ALL_TASKS = ("ML月度报表",)
+# 以前的版本确实登记过的计划任务名 —— 这是**历史记录**，不是按现在的国家清单
+# 算出来的：以后加国家、加平台，都不会凭空多出一个"从没存在过的旧任务"。只有
+# 某个版本真的登记过的名字才写进来（按国家的那几个，和 multi-region 版本用过的
+# 全部国家任务 ML月度报表）。
+LEGACY_TASKS = (("MX", "MX月度报表"), ("CL", "CL月度报表"), ("PE", "PE月度报表"),
+                (ALL, "ML月度报表"))
+OLD_ALL_TASKS = tuple(n for r, n in LEGACY_TASKS if r == ALL)
 
 
 def legacy_tasks():
-    """所有算"旧任务"的 (区域或 ALL, 任务名)：每个国家一个，加上旧名字的全部国家任务。"""
-    # 按国家的旧任务只在美客多时代登记过；别的平台从一开始就跑在全部那个任务里。
-    return ([(r, task_name(r)) for r in REGIONS if markets.SEP not in r]
-            + [(ALL, n) for n in OLD_ALL_TASKS])
+    """所有算"旧任务"的 (区域或 ALL, 任务名)。"""
+    return list(LEGACY_TASKS)
 
 
 def task_name(region):

@@ -661,8 +661,9 @@ class App(object):
     def _build_schedule(self, page):
         ttk.Label(page, text="推荐：一个任务，每月自动跑全部国家", style="Section.TLabel"
                   ).pack(anchor="w")
-        hint(page, "任务名「%s」。墨西哥、智利……一个国家跑完接着跑下一个，同一份日志；"
-                   "不会再有两个任务撞车、后一个被跳过的问题。" % RC.ALL_TASK
+        # 平台和国家从 config / markets.py 来，不在这里写死：加平台、加国家不用改窗口。
+        hint(page, "任务名「%s」：%s，一个跑完接着跑下一个，同一份日志；不会再有两个任务"
+                   "撞车、后一个被跳过的问题。" % (RC.ALL_TASK, RC.platforms_text())
              ).pack(anchor="w", pady=(2, S.GAP))
 
         f = section(page, "现在是什么状态")
@@ -721,14 +722,16 @@ class App(object):
             self.sched_buttons.append(b)
 
         f = section(page, "旧任务")
-        hint(f, "以前每个国家一个任务（或用旧名字登记的全部国家任务）。这里只列出来，"
+        hint(f, "这个系统早期的版本按国家登记过计划任务。这台电脑上要是还留着，会列在下面；"
                 "不会自动删除 —— 换成上面那个任务之后再删。").pack(anchor="w", pady=(0, S.SMALL))
         self.legacy_box = ttk.Frame(f)
         self.legacy_box.pack(fill="x")
+        self.legacy_none = ttk.Label(self.legacy_box, text="这台电脑上没有旧任务。",
+                                     style="Hint.TLabel")
         self.legacy_rows = {}
+        self.legacy_frames = {}
         for _, name in RC.legacy_tasks():
-            row = ttk.Frame(self.legacy_box)
-            row.pack(fill="x", pady=1)
+            row = ttk.Frame(self.legacy_box)        # 只在这台电脑上真有这个任务时才显示
             ttk.Label(row, text=name, width=14).pack(side="left")
             var = tk.StringVar(value="…")
             ttk.Label(row, textvariable=var, style="Hint.TLabel").pack(
@@ -737,6 +740,7 @@ class App(object):
                            command=lambda name=name: self.do_delete_legacy(name))
             b.pack(side="right")
             self.legacy_rows[name] = (var, b)
+            self.legacy_frames[name] = row
 
         f = section(page, "这台电脑")
         row = ttk.Frame(f)
@@ -828,7 +832,8 @@ class App(object):
         self.sched_head_lbl.configure(foreground=S.FG[ov["kind"]])
         main = ov["main"]
         out, src = resolve_out_dir()
-        lines = []
+        # 这个任务跑哪些店：和「全部国家」同一份清单，从 config 来。
+        lines = ["会跑：%s" % RC.scope_text(RC.lineup(RC.ALL))]
         if main:
             lines += ["下次：%s" % (main.get("NEXT") or "还没排上"),
                       "上次：%s —— %s" % (main.get("LAST") or "还没跑过",
@@ -847,6 +852,15 @@ class App(object):
             var.set("%s　%s" % (RC.task_when(st), RC.task_verdict(st.get("RESULT")))
                     if st else "未登记")
             b.configure(state="normal" if st else "disabled")
+            row = self.legacy_frames[name]
+            if st:
+                row.pack(fill="x", pady=1)
+            else:
+                row.pack_forget()
+        if legacy:
+            self.legacy_none.pack_forget()
+        else:
+            self.legacy_none.pack(anchor="w")
         # 界面上的时间跟已登记的对齐：有新任务按新任务，只有旧任务按（墨西哥）旧任务。
         ref = main or (ov["legacy"][0][2] if ov["legacy"] else None)
         if ref:

@@ -301,10 +301,21 @@ def load_store(store, folder, month):
     # an empty month, not a missing file.
     no_data = set(r.get("form") for r in (S["meta"].get("missing") or [])
                   if r.get("cause") == "NO_DATA")
-    order_forms = ["order/%s" % periods.period_id(x, y) for x, y in periods.order_chunks(month)]
-    ops = _all(folder, "Ordenes_*.xlsx")
+    # The month's orders come in pieces (Ordenes_<from>_<to>.xlsx). Each piece is taken
+    # from the newest run of the month that has it: a rerun in which one piece failed
+    # must not lose it when an earlier run has it. A piece neither downloaded nor
+    # reported empty ("No tienes órdenes") is missing — an error, never silently fewer
+    # orders.
+    ops, S["orders_missing"] = [], []
+    for x, y in periods.order_chunks(month):
+        pid = periods.period_id(x, y)
+        p = _first(folder, "Ordenes_%s.xlsx" % pid)
+        if p:
+            ops.append(p)
+        elif "order/%s" % pid not in no_data:
+            S["orders_missing"].append(pid)
     S["files"]["order"] = ops
-    S["orders_none"] = not ops and all(f in no_data for f in order_forms)
+    S["orders_none"] = not ops and not S["orders_missing"]
     S["orders_all"] = load_orders(ops) if ops else (empty_orders() if S["orders_none"] else None)
     if S["orders_all"] is not None:
         o = S["orders_all"]
@@ -515,10 +526,16 @@ def validate(stores):
         C.append(K.check("file_billing", st, "交易明细（Transacciones）在", bool(f.get("billing")),
                          "损益表的全部金额来自它" if f.get("billing") else
                          "没有 NewReportTransaction 文件：本店本月的损益表是空的，必须重新下载"))
-        C.append(K.check("file_order", st, "订单列表在", bool(f.get("order")) or S.get("orders_none"),
-                         "%d 个文件" % len(f.get("order") or []) if f.get("order") else
-                         "本月没有订单（下载时平台显示 No tienes órdenes）" if S.get("orders_none") else
-                         "没有 Ordenes 文件：桥 A、退货分析和订单口径 GMV 无法计算",
+        miss = S.get("orders_missing") or []
+        C.append(K.check("file_order", st, "订单列表齐全",
+                         (bool(f.get("order")) or S.get("orders_none")) and not miss,
+                         ("缺 %s 这几段的订单（没下到，也不是“没有订单”）：订单口径 GMV、桥 A、退货分析"
+                          "少了这几天，重跑这家店的下载" % "、".join(m.replace("_", "–") for m in miss))
+                         if miss else
+                         "%d 段（%s）" % (len(f["order"]), "、".join(
+                             os.path.basename(p)[8:-5].replace("_", "–") for p in f["order"]))
+                         if f.get("order") else
+                         "本月没有订单（下载时平台显示 No tienes órdenes）",
                          severity="error"))
         C.append(K.check("file_stock", st, "库存快照在", bool(f.get("stock")),
                          os.path.basename(f["stock"]) if f.get("stock") else
