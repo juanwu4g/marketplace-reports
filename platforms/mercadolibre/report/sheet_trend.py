@@ -4,8 +4,8 @@ month (billed or estimated) and the notes under the table."""
 
 import pandas as pd
 
-from core.report_family import header_row
-from core.report_kit import (BOX, C_AMBER, C_NAVY, C_RED, C_SUB, F, INT, PCT, est_height, fill,
+from core.report_family import Col, Family, MONEY, header_row
+from core.report_kit import (C_AMBER, C_NAVY, C_RED, C_SUB, F, INT, PCT, est_height, fill,
     title_rows, wrap)
 
 from platforms.mercadolibre.report import site
@@ -116,7 +116,32 @@ def trend_table(S):
     return g
 
 
+def trend_cols():
+    """⑧ 的列（core/report_family.Col）。有两列的表头随站点变（代扣税 / 退货处理费等）。"""
+    tax = site.TAX_SHORT.rstrip("等")
+    f10 = F(10)
+    return [
+        Col("店铺", 16, font=f10), Col("月份", 10, font=f10),
+        Col("订单数", 9, INT, font=f10), Col("销售件数", 10, INT, font=f10),
+        Col("销售额 GMV", 15, MONEY, font=f10),
+        Col("客单价", 11, MONEY, font=f10, formula="=IF(C{r}=0,0,E{r}/C{r})"),
+        Col("平台佣金", 14, MONEY, font=f10), Col(site.TAXCOL_CN, 15, MONEY, font=f10),
+        Col("平台配送费", 14, MONEY, font=f10),
+        Col("佣金率", 9, PCT, font=f10, formula="=IF($E{r}=0,0,G{r}/$E{r})"),
+        Col(tax + "率", 10, PCT, font=f10, formula="=IF($E{r}=0,0,H{r}/$E{r})"),
+        Col("配送费率", 10, PCT, font=f10, formula="=IF($E{r}=0,0,I{r}/$E{r})"),
+        Col("退款金额", 13, MONEY, font=f10),
+        Col("退款率", 9, PCT, font=f10, formula="=IF(E{r}=0,0,M{r}/E{r})"),
+        Col("卖家优惠券", 12, MONEY, font=f10), Col("售后订单数", 10, INT, font=f10),
+        Col("售后率", 9, PCT, font=f10, formula="=IF(C{r}=0,0,P{r}/C{r})"),
+        Col("到账净额", 15, MONEY, font=f10),
+        Col("到账率", 9, PCT, font=f10, formula="=IF(E{r}=0,0,R{r}/E{r})"),
+        Col("佣金/%s来源" % tax, 52, font=f10),
+    ]
+
+
 def sheet_trend(wb, stores, ctx):
+    fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[7])
     title_rows(ws, "月度经营趋势",
                "数据源：%s（销售报表为滚动窗口导出，窗口两端的月份可能不完整）。"
@@ -131,53 +156,31 @@ def sheet_trend(wb, stores, ctx):
                 "最近两三个计费期，更早的月份按本店实测比例推算（两者之和始终等于平台给出的合并值）。"
                 "每行末列注明这一行到底是实测还是推算。" % site.TAXCOL_CN)
     ws["A3"].font = F(9, False, C_NAVY)
-    cols = ["店铺", "月份", "订单数", "销售件数", "销售额 GMV", "客单价",
-            "平台佣金", site.TAXCOL_CN, "平台配送费",
-            "佣金率", site.TAX_SHORT.rstrip("等") + "率", "配送费率",
-            "退款金额", "退款率", "卖家优惠券", "售后订单数", "售后率",
-            "到账净额", "到账率", "佣金/%s来源" % site.TAX_SHORT.rstrip("等")]
-    widths = [16, 10, 9, 10, 15, 11, 14, 15, 14, 9, 10, 10, 13, 9, 12, 10, 9, 15, 9, 52]
-    header_row(ws, 4, cols, widths)
+    cols = trend_cols()
+    header_row(ws, 4, [c.header for c in cols], [c.width for c in cols])
     NC = len(cols)
 
     r = 5
     for S in stores:
         for _, x in trend_table(S).iterrows():
             ym = str(x["ym"])
-            ws.cell(row=r, column=1, value=S["store"])
-            ws.cell(row=r, column=2, value=ym)
-            ws.cell(row=r, column=3, value=int(x["订单数"])).number_format = INT
-            ws.cell(row=r, column=4, value=int(x["件数"])).number_format = INT
-            ws.cell(row=r, column=5, value=money(x["GMV"])).number_format = site.MNY
-            ws.cell(row=r, column=6, value="=IF(C%d=0,0,E%d/C%d)" % (r, r, r)).number_format = site.MNY
-            ws.cell(row=r, column=7, value=money(x["佣金"])).number_format = site.MNY
-            ws.cell(row=r, column=8, value=money(x["代扣税"])).number_format = site.MNY
-            ws.cell(row=r, column=9, value=money(x["运费"])).number_format = site.MNY
-            for col, cl in ((10, "G"), (11, "H"), (12, "I")):
-                ws.cell(row=r, column=col,
-                        value="=IF($E%d=0,0,%s%d/$E%d)" % (r, cl, r, r)).number_format = PCT
-            ws.cell(row=r, column=13, value=money(x["退款"])).number_format = site.MNY
-            ws.cell(row=r, column=14, value="=IF(E%d=0,0,M%d/E%d)" % (r, r, r)).number_format = PCT
-            ws.cell(row=r, column=15, value=money(x["券"])).number_format = site.MNY
-            ws.cell(row=r, column=16, value=int(x["异常"])).number_format = INT
-            ws.cell(row=r, column=17, value="=IF(C%d=0,0,P%d/C%d)" % (r, r, r)).number_format = PCT
-            ws.cell(row=r, column=18, value=money(x["净额"])).number_format = site.MNY
-            ws.cell(row=r, column=19, value="=IF(E%d=0,0,R%d/E%d)" % (r, r, r)).number_format = PCT
-            sc = ws.cell(row=r, column=20, value=x["拆分来源"])
-            for c in range(1, NC + 1):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(10)
+            cells = fam.write_row(ws, r, cols, (
+                S["store"], ym, int(x["订单数"]), int(x["件数"]), money(x["GMV"]), None,
+                money(x["佣金"]), money(x["代扣税"]), money(x["运费"]), None, None, None,
+                money(x["退款"]), None, money(x["券"]), int(x["异常"]), None, money(x["净额"]), None,
+                x["拆分来源"]))
+            sc = cells[-1]
             if "⚠" in str(x["拆分来源"]):
                 sc.font = F(9, True, C_RED)       # 推算与实测明显打架，别当成可用数字
             elif not str(x["拆分来源"]).startswith(SRC_BILLED):
                 sc.font = F(9, False, C_AMBER)
-            if ym in ctx["partial_months"]:
-                for c in range(1, NC + 1):
-                    ws.cell(row=r, column=c).font = F(10, False, "808080", True)
-            if ym == ctx["period"]:
-                for c in range(1, NC + 1):
-                    ws.cell(row=r, column=c).fill = fill(C_SUB)
-                    ws.cell(row=r, column=c).font = F(10, True)
+            if ym in ctx["partial_months"]:       # 不完整月份：灰斜体
+                for c in cells:
+                    c.font = F(10, False, "808080", True)
+            if ym == ctx["period"]:               # 本期：浅蓝加粗
+                for c in cells:
+                    c.fill = fill(C_SUB)
+                    c.font = F(10, True)
             r += 1
         r += 1
 
