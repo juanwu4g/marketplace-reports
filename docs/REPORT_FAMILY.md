@@ -9,8 +9,8 @@ platform-specific; the frame is not.
 
 The frame (styles, sheet names, check records, file names) is
 `core/report_kit.py`; the sheet writers built on it (readme, P&L, bridges, long
-tables, gaps) are `core/report_family.py` — see §6. Falabella's report is built
-with them; MercadoLibre's `platforms/mercadolibre/report_build.py` (the original
+tables, gaps) are `core/report_family.py` — see §6. Falabella's and Amazon's
+reports are built with them; MercadoLibre's `platforms/mercadolibre/report_build.py` (the original
 reference) uses the frame but still writes its own sheets — moving it onto
 `report_family` is future work, to be done with its golden tests proving zero
 diff.
@@ -30,6 +30,7 @@ asks those functions; it never spells a name itself.
 |---|---|---|---|
 | `ML` | MercadoLibre | 美客多 | MX, CL, PE |
 | `FA` | Falabella | Falabella | CL |
+| `AZ` | Amazon | 亚马逊 | MX |
 
 Country codes are ISO 3166-1 alpha-2 (`MX`, `CL`, `PE`, `CO` …). Codes appear in
 file names that finance keeps for years and in `config.json`: **once used, a code
@@ -194,6 +195,9 @@ def build_workbook(stores, ctx, out_path):
     wb.save(out_path)
 ```
 
-`platforms/falabella/report_build.py` is the complete example; the writers'
+`platforms/falabella/report_build.py` is the complete example (Amazon's
+`platforms/amazon/report_build.py` is a second one, with a per-column transaction
+catalogue `tx_catalog.py`, IVA-inclusive fees split into net + input IVA, and
+withholdings as memo lines); the writers'
 unit tests are `tests/test_report_family.py`. `tools/new_platform.py` generates a
 `report_build.py` already laid out this way.

@@ -8,12 +8,13 @@ Amazon monthly financial reports: one workbook per store + one combined.
 
 The shared contract (core/run_monthly treats every platform alike). Each store
 uses its newest download folder **for that month**
-(downloads/<store>/<stamp>_m<YYYYMM>/) that has a run_meta.json — change
-latest_folder() if the report needs a particular file.
+(downloads/<store>/<stamp>_m<YYYYMM>/) that holds the month's transaction report
+(<YYYY><Mon>MonthlyTransaction.csv), else the newest one with a run_meta.json.
 
 Exit codes
     0  every workbook written, no error-level check failed
-    1  every workbook written, but something needs a look
+    1  every workbook written, but something needs a look (failed check, formula
+       error, a store without data left out of the combined workbook)
     2  a workbook that was asked for was not written, or no store had data
     3  store not on the allowlist
     4  configuration error
@@ -44,8 +45,15 @@ WRITTEN = ("ok", "checks_failed", "formula_errors")
 
 
 def latest_folder(store, month, base=None):
+    """The newest folder of the month that holds the transaction report; else the
+    newest with a run_meta.json (a month without transactions is still a report —
+    an empty one — and a run that failed is reported as such by the report's checks).
+    Files missing there are looked for in the month's other folders by report_build."""
     y, m = periods.parse_month(month)
     hits = sorted(glob.glob(os.path.join(base or DOWNLOADS, store, "*_m%04d%02d" % (y, m))))
+    for d in reversed(hits):
+        if glob.glob(os.path.join(d, "%s*Transaction.csv" % periods.file_stem(month))):
+            return d
     for d in reversed(hits):
         if os.path.exists(os.path.join(d, "run_meta.json")):
             return d
