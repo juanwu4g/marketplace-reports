@@ -18,7 +18,8 @@ platforms/falabella/README.md ("Accounting rules"); the short version:
 * **Every transaction type is registered** (fee_catalog.py). An unregistered one is
   an error check and its amount goes to a visible "未登记科目 ⚠" row.
 * **Product cost** is not in Falabella's data: a yellow input row in ② and a unit
-  cost column in ⑦.
+  cost column in ⑦ — filled from the shared SKU cost table (core/sku_costs.py) when
+  config.json names one.
 
 Inputs: one download folder per store (platforms/falabella/run_downloads.py):
 Ordenes_*.xlsx, NewReportTransaction_*.xlsx, InvoiceReport_*.xlsx,
@@ -39,6 +40,7 @@ from openpyxl import Workbook
 
 from core import report_family as RF
 from core import report_kit as K
+from core import sku_costs as SC
 from core.report_kit import F, fill, wrap, BOX
 from platforms.falabella import fee_catalog as FC
 from platforms.falabella import periods
@@ -49,7 +51,12 @@ warnings.filterwarnings("ignore", message="Workbook contains no default style",
                         category=UserWarning)
 
 SHEETS = K.SHEET_NAMES
+PLATFORM, COUNTRY = "FA", "CL"  # core/markets.py codes (and the SKU cost table's 平台 / 国家)
 CUR = "CLP"
+NO_SKU = "(无 SKU · 店铺级费用)"
+# which units carry a cost of goods (core/sku_costs, README "Accounting rules")
+COST_UNITS_BASIS = ("本月结算件数（“Pago por precio del producto”的行数）− 本月退货件数"
+                    "（“Descuento por devolución de producto”的行数，退回的商品回到库存）")
 MNY = K.money_format(0)
 IVA_RATE = 0.19
 TOL = 2.0                       # CLP; rounding tolerance per bridge
@@ -486,7 +493,7 @@ def sku_table(S):
     t = S["tx"]
     if t is None or not len(t):
         return pd.DataFrame()
-    sk = t[T_COLS["sku"]].fillna("(无 SKU · 店铺级费用)")
+    sk = t[T_COLS["sku"]].fillna(NO_SKU)
     g = t.assign(_sku=sk).pivot_table(index="_sku", columns="_line", values=T_COLS["net"],
                                      aggfunc="sum", fill_value=0.0)
     for k in INCOME_LINES + FEE_LINES:
@@ -675,6 +682,13 @@ def sheet_readme(wb, fam, ctx):
                           pct(-sum(S["m"]["pl"][FC.ADS] for S in stores) / rev))))
         points.append(("贡献毛利", "经营贡献毛利（未扣商品成本）%s，占商品销售收入 %s。"
                        % (fmt(tot("contrib")), pct(tot("contrib") / rev))))
+    costs = ctx.get("sku_costs")
+    policies = list(ACCOUNTING_POLICIES)
+    if costs is not None:
+        sources.append(SC.source_line(costs))
+        results = [S.get("cost") for S in stores]
+        points.append(SC.point_line(results, tot("contrib") - sum(r.cogs for r in results if r)))
+        policies.append(SC.policy_line(COST_UNITS_BASIS))
     sections = [
         ("一、这份报表回答什么", [
             ("本月赚了多少", "【%s】从商品销售收入推到“经营贡献毛利（未扣商品成本）”，"
@@ -708,7 +722,7 @@ def sheet_readme(wb, fam, ctx):
             ("结算净额是现金指标", "交易明细含 IVA 的合计（本月 %s）是 Falabella 本月结算给你的钱"
              "（含应缴的销项 IVA、已扣的进项 IVA）。利润看②的经营贡献毛利（不含 IVA）。"
              % fmt(tot("tx_gross")))]),
-        ("七、会计处理", list(ACCOUNTING_POLICIES)),
+        ("七、会计处理", policies),
         ("八、报税时要注意", [("提示 %d" % i, q) for i, q in enumerate(TAX_NOTES, 1)]),
     ]
     bad = RF.failed_errors(ctx["checks"])
@@ -726,11 +740,12 @@ def _fee_share(keys):
 
 
 def sheet_pl(wb, fam, ctx):
-    sh, r, _rows_at, note_col = fam.pl_sheet(
+    sh, r, rows_at, note_col = fam.pl_sheet(
         wb, SHEETS[1], PL_ROWS, value=lambda S, key: S["m"]["pl"][key],
         title="合并损益表（%s）" % ctx["period_cn"],
         subtitle="口径：按【交易日】归集（Falabella 结算口径），金额不含 IVA。单位：CLP。"
                  "灰底=公式行，浅蓝=小计，黄底=需你录入。行位置每期固定，可直接跨月对比。")
+    fill_cogs(fam, sh, rows_at, note_col, ctx)
     sales = lambda S: S["m"]["pl"][FC.SALES]
     r = fam.ratio_block(sh, r + 1, "费用率（占商品销售收入）", [
         ("佣金", _fee_share((FC.COMMISSION,)), sales),
@@ -756,6 +771,17 @@ def sheet_pl(wb, fam, ctx):
         ("本月结算净额（含 IVA）", "Σ Monto con IVA", lambda S: S["m"]["tx_gross"],
          "＝ 经营贡献毛利 ＋ 销项 IVA − 进项 IVA；对到账见③桥 C"),
     ], note_col)
+
+
+def fill_cogs(fam, sh, rows_at, note_col, ctx):
+    """With a SKU cost table (core/sku_costs): the yellow 商品采购成本 cells get the
+    covered SKUs' cost — still yellow, still overridable; the note says the coverage."""
+    if ctx.get("sku_costs") is None:
+        return
+    r = rows_at["cogs"]
+    for i, S in enumerate(fam.stores):
+        sh.ws.cell(row=r, column=sh.c0 + i).value = S["cost"].cogs
+    sh.ws.cell(row=r, column=note_col).value = fam.per_store(lambda S: SC.pl_note(S["cost"]))
 
 
 # ----------------------------------------------------------------- ③ bridges
@@ -959,12 +985,53 @@ SKU_COLS = ([RF.Col("店铺", 18), RF.Col("SKU", 18), RF.Col("商品", 44), RF.C
             + [RF.Col("单位成本（录入）", 12, RF.MONEY, fill=K.C_INPUT),
                RF.Col("商品成本", 14, formula="=-O{r}*D{r}", **_SKU_FORMULA),
                RF.Col("SKU 毛利", 14, formula="=N{r}+P{r}", **_SKU_FORMULA)])
+# With a SKU cost table (core/sku_costs): the cost is on units net of returns, the unit
+# cost comes from the table (yellow only where it is missing), and a column says where
+# each cost comes from.
+SKU_COLS_COST = SKU_COLS[:14] + [
+    RF.Col("单位成本", 12, RF.MONEY),
+    RF.Col("商品成本", 14, formula="=-O{r}*(D{r}-E{r})", **_SKU_FORMULA),
+    RF.Col("SKU 毛利", 14, formula="=N{r}+P{r}", **_SKU_FORMULA),
+    RF.Col("成本来源", 40, font=F(9, False, K.C_GREY))]
+
+
+def sku_items(S):
+    """⑦'s SKUs for the cost table (core/sku_costs.Item): units, returned units, sales."""
+    g = S["sku"]
+    return [SC.Item(sku, x["name"] if isinstance(x["name"], str) else "", int(x["units"]),
+                    int(x["returns"]), float(x[FC.SALES]))
+            for sku, x in g.iterrows() if sku != NO_SKU] if len(g) else []
+
+
+def sku_list(store, folder, month):
+    """(platform, country, currency, [Item]) of one store's month — for
+    tools/sku_cost_template. Reads the download folder only."""
+    return PLATFORM, COUNTRY, CUR, sku_items(derive(load_store(store, folder, month)))
+
+
+def _cost_cells(cells, S, sku):
+    """⑦ with a cost table: unit cost, its source, yellow where it is missing."""
+    if sku == NO_SKU:
+        cells[17].value = "店铺级费用，不计商品成本"
+        return
+    ln = S["cost"].line(sku)
+    if ln is not None and ln.status == SC.OK:
+        cells[14].value = ln.unit_cost
+        cells[17].value = SC.status_text(ln)
+    else:
+        cells[14].fill = fill(K.C_INPUT)
+        cells[17].value = SC.status_text(ln)
+        cells[17].font = F(9, True, K.C_AMBER)
 
 
 def sheet_sku(wb, fam, ctx):
+    costs = ctx.get("sku_costs") is not None
+    cols = SKU_COLS_COST if costs else SKU_COLS
     ws = fam.table_sheet(wb, SHEETS[6], "SKU 盈利分析（%s）" % ctx["period_cn"],
-                         "按交易明细的 SKU 汇总（不含 IVA）。广告、仓储等没有 SKU 的店铺级费用单列一行。"
-                         "黄色列填单位采购成本（不含 IVA），右边两列自动算出 SKU 毛利。", SKU_COLS)
+                         "按交易明细的 SKU 汇总（不含 IVA）。广告、仓储等没有 SKU 的店铺级费用单列一行。" + (
+                             "单位成本来自商品成本表（不含 IVA），商品成本 ＝ 单位成本 ×（结算件数 − 退货件数）；"
+                             "“未录入成本”的 SKU 黄色格可临时填写，长期请补录到成本表。" if costs else
+                             "黄色列填单位采购成本（不含 IVA），右边两列自动算出 SKU 毛利。"), cols)
     r = 5
     ship = list(LOGISTICS_ROWS)
     other = [FC.ADS, FC.SUBSCRIPTION, FC.PENALTY, FC.OTHER, "unregistered", FC.OTHER_INCOME]
@@ -974,12 +1041,15 @@ def sheet_sku(wb, fam, ctx):
             money = [x[FC.SALES], x[FC.SHIP_INCOME] + x[FC.SHIP_BUYER], x[FC.REFUND], x[FC.PROMO],
                      x[FC.COMMISSION],
                      sum(x[k] for k in ship), x[FC.FULFILMENT], sum(x[k] for k in other), x["contrib"]]
-            fam.write_row(ws, r, SKU_COLS, [S["store"], sku, x["name"], int(x["units"]), int(x["returns"])]
-                          + [float(v) for v in money] + [0, None, None])
+            cells = fam.write_row(ws, r, cols, [S["store"], sku, x["name"], int(x["units"]), int(x["returns"])]
+                                  + [float(v) for v in money] + ([None, None, None, None] if costs else
+                                                                 [0, None, None]))
+            if costs:
+                _cost_cells(cells, S, sku)
             r += 1
         r += 1
     ws.freeze_panes = "D5"
-    ws.auto_filter.ref = "A4:Q%d" % max(4, r - 1)
+    ws.auto_filter.ref = "A4:%s%d" % ("R" if costs else "Q", max(4, r - 1))
 
 
 # ----------------------------------------------------------------- ⑧ trend
@@ -1115,11 +1185,26 @@ def build_context(stores, month, build_date=None):
             "built": build_date or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
 
 
+def apply_costs(stores, month, checks, table=None):
+    """The SKU cost table (core/sku_costs), when config.json names one: each store
+    gets S["cost"] and S["m"]["cogs"]; its checks are appended. Returns the table."""
+    table = table or SC.load_configured()
+    if table is None:
+        return None
+    for S in stores:
+        S["cost"] = SC.apply(table, PLATFORM, COUNTRY, CUR, month, sku_items(S))
+        S["m"]["cogs"] = S["cost"].cogs
+        S["m"]["profit"] = S["m"]["contrib"] - S["cost"].cogs
+    checks.extend(SC.checks(table, [(S["store"], S["cost"]) for S in stores], PLATFORM, COUNTRY))
+    return table
+
+
 def build(pairs, month, out_path, strict=False, build_date=None):
     """pairs: [(store, folder)]. Returns a result dict (outcome, checks, out)."""
     stores = [derive(load_store(s, f, month)) for s, f in pairs]
     ctx = build_context(stores, month, build_date)
     ctx["checks"] = validate(stores)
+    ctx["sku_costs"] = apply_costs(stores, month, ctx["checks"])
     ctx["history"] = history(stores, None)
     bad = [c for c in ctx["checks"] if not c["ok"] and not c["skipped"] and c["severity"] == "error"]
     if strict and bad:
