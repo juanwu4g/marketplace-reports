@@ -208,3 +208,24 @@ def test_log_tags_and_names():
     assert runlog.region_name("FA-CL") == "Falabella 智利"
     assert runlog.region_name("CL") == "智利"
     assert markets.all_units() == ["MX", "CL", "PE", "FA-CL"]
+
+
+def test_schedule_texts_come_from_registry_and_config(monkeypatch):
+    stub(monkeypatch, LEGACY)
+    assert RC.platforms_text() == "美客多（墨西哥、智利）"
+    stub(monkeypatch, CATALOG)
+    assert RC.platforms_text() == "美客多（墨西哥、智利）、Falabella（智利）"
+    assert RC.scope_text(RC.lineup(RC.ALL)) == \
+        "墨西哥 2 家、智利 2 家、Falabella 智利 2 家，共 6 家"
+
+
+def test_old_tasks_are_history_not_computed(monkeypatch):
+    """A new platform or country must never invent an old task that never existed."""
+    import collections
+    assert RC.legacy_tasks() == [("MX", "MX月度报表"), ("CL", "CL月度报表"),
+                                 ("PE", "PE月度报表"), ("ALL", "ML月度报表")]
+    bigger = collections.OrderedDict(markets.PLATFORMS)
+    bigger["TT"] = markets.Platform("TT", "platforms.tiktok", "TikTok Shop", "TikTok Shop",
+                                    __import__("re").compile("tiktok", 2), ("MX",))
+    monkeypatch.setattr(markets, "PLATFORMS", bigger)
+    assert RC.legacy_tasks() == list(RC.LEGACY_TASKS)
