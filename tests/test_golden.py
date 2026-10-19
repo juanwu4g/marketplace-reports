@@ -42,6 +42,7 @@ BUILD_DATE = "2026-10-14"
 #  build_date=...); the case folder is the store's download folder for the month)
 CASES = {
     "cl-fa/DAB_CL-Fala": ("DAB_CL-Fala (Coco)", "FA", "2026-09"),
+    "mx-az/SM-Amazon": ("SM-Amazon", "AZ", "2026-09"),
     "mx/BOCINA_TA02": ("BOCINA_TA02", "mx", "2026-09"),
     "cl/DAB_CL": ("DAB_CL (Coco) 子账号", "cl", "2026-09"),
     "cl/Tecnohub_CL": ("Tecnohub_CL (个人店)", "cl", "2026-09"),

@@ -114,7 +114,8 @@ class Ctx(object):
         self.log("  %s 还没好（%s），记为欠账%s" % (form, state, "：" + note if note else ""))
         self.pending.append({"form": form, "route": route, "range": self.month,
                              "requested_at": requested or time.time(),
-                             "last_state": state, "probes": 1, "note": note})
+                             "last_state": state, "last_status_text": note,
+                             "probes": 1, "note": note})
 
     def rename(self, name, new):
         src, dst = os.path.join(self.out_dir, name), os.path.join(self.out_dir, new)
@@ -532,8 +533,8 @@ def invoices(ctx):
     form = "invoice"
     rows = _invoice_page(ctx)
     if not rows:
-        ctx.owe(form, form, state="absent",
-                note="费用发票页一直说没有发票/连不上服务（亚马逊那边的问题）")
+        ctx.owe(form, form, state="delayed",
+                note="费用发票页一直说没有发票/连不上服务（亚马逊那边的问题，稍后补取）")
         return
     rows = _load_more(ctx, rows)
     want = wanted_invoices(ctx.month, rows)
@@ -574,7 +575,7 @@ def invoices(ctx):
                    key=lambda x: x or datetime.datetime.min)
     _, b = periods.month_bounds(ctx.month)
     if last_end is None or last_end.date() <= b:
-        ctx.owe(form, form, state="generating",
+        ctx.owe(form, form, state="delayed",
                 note="跨月末的账期（%s 之后）要等它结束后亚马逊才出发票" % (last_end or b))
     elif not names:
         ctx.nothing_there(form, "这个月没有费用发票")
@@ -651,7 +652,7 @@ def taxcert(ctx):
     rows = bk.wait_for(lambda: cert_rows(d), timeout=60, poll=3)
     if rows is None:
         if _page_says_down(d):
-            ctx.owe(form, form, state="absent", note="页面连不上服务")
+            ctx.owe(form, form, state="delayed", note="墨西哥税务发票页连不上服务（稍后补取）")
             return
         raise bk.PageError("Mexican tax invoice table (invoiceDownloadRequestRow) not found")
     label = periods.taxcert_label(ctx.month)
@@ -659,7 +660,7 @@ def taxcert(ctx):
            if t.startswith("Certificado de retenci") and label in t]
     if not hit:
         due = periods.taxcert_due(ctx.month)
-        ctx.owe(form, form, state="absent",
+        ctx.owe(form, form, state="delayed",
                 note="%s 的预扣税证明还没出（一般在 %s 前后出）" % (ctx.month, due))
         return
     text, links = hit[0]

@@ -718,6 +718,37 @@ python -m platforms.falabella.run_reports --dry-run   # 看看用哪批数据
 界面语言必须是**西班牙语**：脚本每次先检查，发现是英语等其他语言会**自动改回 Español**（在店铺的 REPORT.md 里记一笔），改不回来才报 `LANGUAGE_WRONG`。会计处理的完整说明在
 `platforms/falabella/README.md`。
 
+### 3.8 多平台：亚马逊（墨西哥）
+
+市场代码 `AZ-MX`。config.json 里这样写（只有 `SM-Amazon`；`PW-Amazon` 闲置，**不要加**）：
+
+```json
+"allowed": [..., "SM-Amazon"],
+"catalog": {..., "SM-Amazon": {"platform": "AZ", "country": "MX"}},
+"batches": {..., "AZ-MX": ["SM-Amazon"]}
+```
+
+窗口「国家」下拉框里多一项「亚马逊 墨西哥」；「全部国家」和计划任务会在最后跑它。
+
+```
+python run_monthly.py --region AZ-MX                  # 上个月，下载 + 出报表
+python run_monthly.py --region AZ-MX --step report    # 只重出报表
+python run_monthly.py --region AZ-MX --step collect   # 只补取欠账（费用发票等）
+```
+
+下载五样：交易明细月报（CSV）、月度汇总（PDF）、平台费用发票（CFDI XML+PDF）、FBA 库存快照、
+月度预扣税证明（Certificado de retención）。**每月 7 号以后再跑**：预扣税证明大约 6 号才出。
+
+* 费用发票页经常临时显示 "No invoices available"（亚马逊那边的问题）：脚本会等、重试，还不行就
+  记成欠账，下次运行或 `--step collect` 自动补取。费用发票缺了**不影响报表数字**。
+* 遇到登录、验证码页面脚本会停下，在「需要人工处理」里提示，**脚本从不自己过验证码**。
+* 报表读月度汇总 PDF 需要 `pypdf`（已写进 requirements.txt），装依赖时先 `set PYTHONUTF8=1`。
+
+**口径**（和 Falabella 一样不含 IVA）：收入和平台费用都**不含 IVA**（亚马逊的费用是含税价，÷1.16）；
+Amazon 代扣的 IVA、ISR 是预缴税款，列在备查项，不算费用。**交易明细里每月 11 日前后那笔大额
+Ajuste 是上个月的 ISR**，本月的 ISR 以预扣税证明为准。文件名 `MX_AZ_全店汇总_<月>.xlsx`、
+告警 `！报表异常_MX_AZ_<年月>.txt`。完整会计说明见 `platforms/amazon/README.md`。
+
 ---
 
 ## 4. 财务报表：十张子表
