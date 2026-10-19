@@ -3,9 +3,8 @@
 
 import os
 
-from openpyxl.styles import Alignment
-
-from core.report_kit import C_GREY, C_NAVY, C_RED, C_SUB, C_WARN, F, est_height, fill, wrap
+from core.report_family import readme_rows, set_widths
+from core.report_kit import C_GREY, C_NAVY, C_RED, C_WARN, F, est_height, fill, wrap
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (CH_NO, CH_SI, FEE_BY_ES, F_DETALLE, F_SALE_NO,
@@ -23,9 +22,7 @@ from platforms.mercadolibre.report.sheet_common import (fee_rows, main_store, no
 
 def sheet_readme(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[0])
-    ws.column_dimensions["A"].width = 4
-    ws.column_dimensions["B"].width = 30
-    ws.column_dimensions["C"].width = 118
+    set_widths(ws, (4, 30, 118))
     ws["A1"] = "Mercado Libre %s店铺 月度财务报表" % site.COUNTRY_CN
     ws["A1"].font = F(15, True, C_NAVY)
     ws.row_dimensions[1].height = 26
@@ -267,22 +264,7 @@ def sheet_readme(wb, stores, ctx):
     rows.append(("", "", ""))
     rows.append(("S", "七、重要提示", ""))
 
-    r = 4
-    for tag, b, c in rows:
-        if tag == "S":
-            cell = ws.cell(row=r, column=2, value=b)
-            cell.font = F(12, True, C_NAVY)
-            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-            cell.fill = fill(C_SUB)
-        else:
-            ws.cell(row=r, column=2, value=b).font = F(10, True)
-            ws.cell(row=r, column=2).alignment = Alignment(vertical="top")
-            c2 = ws.cell(row=r, column=3, value=c)
-            c2.font = F(10)
-            c2.alignment = wrap("top")
-            if c and len(c) > 90:
-                ws.row_dimensions[r].height = est_height(c, 78)
-        r += 1
+    r = readme_rows(ws, 4, rows)
 
     notes = ["本报表所有金额均为%s(%s)，不含商品采购成本（平台数据不提供）。" % (site.CUR_CN, site.CUR)]
     if site.WITHHOLDING:

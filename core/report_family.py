@@ -139,6 +139,29 @@ def not_applicable_sheet(wb, name, title, text):
     return ws
 
 
+def readme_rows(ws, r, rows):
+    """The body of ①: rows of (tag, label, text) from row r, label in column B and
+    text in column C. tag "S" makes the row a section head (navy on light blue,
+    B:C merged); any other tag is a plain row — ("", "", "") an empty one. Long
+    texts get a taller row. Returns the next free row."""
+    for tag, b, c in rows:
+        if tag == "S":
+            cell = ws.cell(row=r, column=2, value=b)
+            cell.font = F(12, True, K.C_NAVY)
+            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
+            cell.fill = fill(K.C_SUB)
+        else:
+            ws.cell(row=r, column=2, value=b).font = F(10, True)
+            ws.cell(row=r, column=2).alignment = Alignment(vertical="top")
+            c2 = ws.cell(row=r, column=3, value=c)
+            c2.font = F(10)
+            c2.alignment = wrap("top")
+            if c and len(c) > 90:
+                ws.row_dimensions[r].height = K.est_height(c, 78)
+        r += 1
+    return r
+
+
 def meta_missing(meta):
     """The missing-form records of one download folder's run_meta.json (those
     written by core/download_diag through the platform's run_downloads)."""
@@ -238,22 +261,7 @@ class Family(object):
                 rows.append(("", "", ""))
             rows.append(("S", head, ""))
             rows.extend(("", b, c) for b, c in lines)
-        r = first_row
-        for tag, b, c in rows:
-            if tag == "S":
-                cell = ws.cell(row=r, column=2, value=b)
-                cell.font = F(12, True, K.C_NAVY)
-                ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-                cell.fill = fill(K.C_SUB)
-            else:
-                ws.cell(row=r, column=2, value=b).font = F(10, True)
-                ws.cell(row=r, column=2).alignment = Alignment(vertical="top")
-                c2 = ws.cell(row=r, column=3, value=c)
-                c2.font = F(10)
-                c2.alignment = wrap("top")
-                if c and len(c) > 90:
-                    ws.row_dimensions[r].height = K.est_height(c, 78)
-            r += 1
+        r = readme_rows(ws, first_row, rows)
         if warning:
             ws.cell(row=r + 1, column=2, value="⚠ 注意").font = F(10, True, K.C_RED)
             c2 = ws.cell(row=r + 1, column=3, value=warning)
