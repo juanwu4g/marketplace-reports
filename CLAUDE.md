@@ -56,6 +56,11 @@ cd downloads && ../.venv/bin/python -m pytest tests -q
 .venv\Scripts\python run_monthly.py --region FA-CL --stores "<store>" --month 2026-09   # Falabella Chile
 .venv\Scripts\python list_stores.py --mx|--cl|--pe       # lists, opens nothing
 .venv\Scripts\python -m tools.probe_pages --store <name> --out <dir> <url> …
+.venv\Scripts\python -m tools.probe_session --store <name> --cmd-dir <dir> --out <dir>
+
+# new platform (dev box): scaffold, then register in core/markets.py by hand
+.venv/bin/python -m tools.new_platform AZ amazon "亚马逊" MX
+.venv/bin/python -m pytest tests/test_platform_contract.py -q
 ```
 
 ## Where things are (this machine)

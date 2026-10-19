@@ -30,6 +30,12 @@ core/                  shared by every platform — no platform names in here, i
   markets.py           the registry: platforms (ML, FA …) x countries = markets ("FA-CL")
   store_config.py      reads config.json: allowlist, which market each store is, batches per market
   report_kit.py        the report family's frame: styles, Sheet, checks, names, recalc
+  report_family.py     the family's sheet writers on that frame: readme, P&L from a row
+                       spec (formulas as data), ratio/memo blocks, bridges, long tables,
+                       not-applicable, ⑩ gaps; one store or many (+ 合计 column)
+  browser_kit.py       Selenium helpers for any seller centre: shadow-root walk,
+                       find/need/wait_for, js_click/real_click, table rows, download
+                       folder + wait_new_files, PageError, retried()
   ziniao_client.py     Ziniao client lifecycle, HTTP IPC, open/close store, Selenium attach
   site_time.py         "today" in the selling country's timezone
   runlog.py            the six-column run log, run records, stop requests, exit-code wording
@@ -41,7 +47,9 @@ core/                  shared by every platform — no platform names in here, i
                        window logic that is testable without tkinter
 
 platforms/
-  falabella/           Falabella Chile: same contract as mercadolibre (FORMS.md, README.md)
+  falabella/           Falabella Chile: same contract as mercadolibre (FORMS.md, README.md);
+                       page_kit.py = its own page quirks on top of core/browser_kit;
+                       report_build.py = its content on core/report_family
   mercadolibre/        one platform = one package
     FORMS.md           every downloaded form: where it is, how it is obtained, its columns
     README.md          platform notes: sites, quirks per country, what is not downloaded
@@ -59,7 +67,12 @@ platforms/
 downloads/             raw exports per store and run (git-ignored, contains PII)
   mx_sales/            the Mexican cleaning package (parquet/duckdb); has its own tests
 logs/                  run logs, owed list, diagnostics (git-ignored)
-tests/                 the main test suite (pytest), incl. golden-file tests
+tests/                 the main test suite (pytest), incl. golden-file tests and the
+                       platform contract (test_platform_contract.py)
+tools/                 developer tools, never run by the monthly job
+  probe_pages.py       discovery: visit pages of one store, save screenshot + text
+  probe_session.py     discovery: keep one store open, run each script dropped in a folder
+  new_platform.py      scaffold platforms/<package>/ that already keeps the contract
 docs/                  this file, the SOP, the form template, the report family
 ```
 
@@ -138,14 +151,25 @@ script that the runner or the window starts, start it the same way.
 | stores | **done** — markets (platform x country) in `core/markets.py`; `store_config` resolves a store's market, batches per market, fails closed on unknown codes or mixed batches; each platform's batch refuses other platforms' stores and cross-checks Ziniao's platform name before opening |
 | `core/download_diag.py` | **done enough** — cause codes, evidence, `diagnose_store` are shared; a platform passes its own expected form ids, owed entries may carry `form`, records may carry `in_report`. MercadoLibre's form constants are still in the module (harmless) |
 | report kit | **done** — `core/report_kit.py` holds the family frame (styles, `Sheet`, `check`, sheet names, workbook/alert names, recalc). MercadoLibre imports it; golden tests 0 diff |
+| report family | **done for new platforms** — `core/report_family.py` writes the sheets (readme, P&L from a `PLRow` spec with formulas as data, ratio/memo blocks, bridges from `Line` sections, long tables from `Col` specs, not-applicable, ⑩ gaps) for one or many stores. Falabella's report is built on it (golden 0 diff, and multi-store layouts compared cell, style and layout). MercadoLibre still writes its own sheets — moving it is future work, behind its golden tests |
+| browser kit | **done** — `core/browser_kit.py`: shadow-root walk, find/need/wait_for, clicks, table rows, download folder, `wait_new_files`, `PageError`, `retried()` (the "never retry" exceptions are a parameter). Falabella's `page_kit` re-exports it and keeps only its own pop-ups, language box and downloads table. MercadoLibre's routes keep their own helpers |
+| discovery | **done** — `tools/probe_pages.py` (one look per URL) and `tools/probe_session.py` (one store kept open, scripts dropped into a folder run against it); both refuse stores off the allowlist |
+| new platform | **done** — `tools/new_platform.py` scaffolds a package that keeps the contract; `tests/test_platform_contract.py` checks every registered, importable platform against what the runner and the window actually start |
 | `core/run_monthly.py` | **done** — runs **units**: MercadoLibre's countries keep their codes (`MX`, `CL`, `PE`) and their exact commands; other platforms' units are market ids (`FA-CL`) and start `platforms.<pkg>.run_batch / run_reports --market <id>` with an explicit store list. `--region ALL` runs MercadoLibre's countries first (same order as before), then the other units; alert per unit (`！报表异常_CL_FA_<YYYYMM>.txt`) |
 | window | **done** — the unit list is `markets.all_units()`; the dropdown shows MercadoLibre's countries as before plus other platforms that have stores in config; preview, reruns and task arguments understand `FA-CL`. Old per-country scheduled tasks are only looked for for MercadoLibre |
 | canonical tables | not yet — Falabella's report reads its own files directly; moving both platforms onto common order / fee / payout tables stays a later step |
 
 A platform package provides: `run_batch` (same CLI: `--month`, `--stores`,
-`--market`, `--collect-only`; exit codes 0–4; last line `[BATCH_SUMMARY_JSON]`),
-`run_reports` (same CLI and exit codes), `FORMS.md`, `README.md` with the
-accounting rules.
+`--market`, `--collect-only`, `--dry-run`; exit codes 0–4 — 3 store not allowed,
+4 store of another platform / bad config; last line `[BATCH_SUMMARY_JSON]`),
+`run_reports` (`--month`, `--stores`, `--market`, `--out-dir`, `--no-combined`,
+`--dry-run`; same exit codes), `periods.form_ids(month)` / `periods.in_report(form)`
+(what a store should yield and what the report reads), `FORMS.md`, `README.md`
+with the accounting rules. `tests/test_platform_contract.py` is the executable
+form of this paragraph; `tools/new_platform.py` generates a package that passes
+it. (MercadoLibre predates part of it: no `--market`, its run_reports does not
+check store platforms, its expected forms live in `download_diag` — documented
+in the contract test, not changed.)
 
 ---
 
