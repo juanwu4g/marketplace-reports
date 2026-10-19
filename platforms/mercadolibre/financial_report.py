@@ -2,7 +2,7 @@
 """
 调用 report_build.py 生成月度财务报表。
 
-`report_build.py` 是一个独立的报表生成器（不 import 项目里任何模块），本文件是
+`report_build.py` 是报表生成器（在子进程里跑，自己把项目根目录放进 sys.path），本文件是
 它与下载流程之间的接缝：负责挑出每家店该用哪个下载目录、拼出命令、跑起来、把结
 果讲清楚。它刻意不了解报表内部怎么算。
 
@@ -23,8 +23,8 @@ import sys
 import time
 
 from core.paths import ROOT
-# report_build 只依赖标准库和 pandas/openpyxl，不 import 本项目的模块，所以照旧
-# 按文件路径起（它就在本文件旁边）。
+# report_build 按文件路径起（它就在本文件旁边）；它用到的 core/ 与 report/ 模块由它
+# 自己把项目根目录加进 sys.path 后导入。
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_build.py")
 DOWNLOADS = os.path.join(ROOT, "downloads")
 
