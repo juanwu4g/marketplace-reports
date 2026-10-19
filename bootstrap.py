@@ -10,7 +10,8 @@ Checks, in order:
   2. every package of requirements.txt installed, at the pinned version
   3. config.json present and complete
   4. the store setup: allowlist, catalog, batches, every platform package and its
-     country facts (reads config.json only; opens nothing)
+     country facts (reads config.json only; opens nothing), and the optional
+     SKU cost table (reports.sku_costs)
   5. ziniao client located on disk
   6. ELECTRON_RUN_AS_NODE not poisoning the environment
   7. fallback chromedriver folder (optional)
@@ -198,6 +199,29 @@ def check_config():
     return cfg
 
 
+def check_sku_costs(cfg):
+    """The optional SKU cost table (config.json reports.sku_costs): configured
+    but unusable would put an error on every workbook — say so before a run."""
+    if cfg is None:
+        return
+    from core import sku_costs
+    try:
+        path = sku_costs.configured_path(CONFIG_PATH)
+    except Exception as e:
+        fail("成本表配置读不出来：{}".format(e), "修正 config.json 的 reports.sku_costs")
+        return
+    if not path:
+        print("{} 未配置 SKU 成本表（reports.sku_costs）：报表不算商品成本".format(OK))
+        return
+    t = sku_costs.load(path)
+    if not t.usable:
+        fail(t.error, "把成本表放到 config.json 写的位置，或改 reports.sku_costs")
+        return
+    print("{} SKU 成本表 {}：{} 行可用{}".format(
+        OK, t.name, len(t.rows),
+        "，{} 行有问题（报表 ⑩ 页会列出）".format(len(t.problems)) if t.problems else ""))
+
+
 def check_client(cfg):
     path = (cfg or {}).get("client_path")
     if path and os.path.exists(path):
@@ -302,6 +326,7 @@ def main():
     check_deps()
     cfg = check_config()
     check_stores(cfg)
+    check_sku_costs(cfg)
     check_client(cfg)
     check_electron_env()
     check_drivers(cfg, args.drivers)

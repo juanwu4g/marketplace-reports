@@ -60,3 +60,20 @@ def test_empty_allowlist_fails(fresh):
     fresh({"default": "X", "allowed": []})
     bootstrap.check_stores({"stores": {}})
     assert bootstrap.problems and "allowed" in bootstrap.problems[0][0]
+
+
+def test_sku_cost_table_configured_but_missing_fails(fresh, tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"reports": {"sku_costs": str(tmp_path / "nope.xlsx")}}),
+                   encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "CONFIG_PATH", str(cfg))
+    bootstrap.check_sku_costs({})
+    assert bootstrap.problems and "nope.xlsx" in bootstrap.problems[0][0]
+
+
+def test_no_sku_cost_table_is_fine(fresh, tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "CONFIG_PATH", str(cfg))
+    bootstrap.check_sku_costs({})
+    assert bootstrap.problems == [] and "未配置" in capsys.readouterr().out
