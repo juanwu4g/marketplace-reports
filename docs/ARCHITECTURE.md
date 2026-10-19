@@ -138,8 +138,8 @@ script that the runner or the window starts, start it the same way.
 | stores | **done** — markets (platform x country) in `core/markets.py`; `store_config` resolves a store's market, batches per market, fails closed on unknown codes or mixed batches; each platform's batch refuses other platforms' stores and cross-checks Ziniao's platform name before opening |
 | `core/download_diag.py` | **done enough** — cause codes, evidence, `diagnose_store` are shared; a platform passes its own expected form ids, owed entries may carry `form`, records may carry `in_report`. MercadoLibre's form constants are still in the module (harmless) |
 | report kit | **done** — `core/report_kit.py` holds the family frame (styles, `Sheet`, `check`, sheet names, workbook/alert names, recalc). MercadoLibre imports it; golden tests 0 diff |
-| `core/run_monthly.py` `PLATFORM_PKG` | **to do (phase 3)** — iterate markets instead of countries (`store_config.markets_configured()`), start `platforms.<pkg>.run_batch / run_reports` with `--market`; alert file per market (`report_kit.alert_file_name`) |
-| window | **to do (phase 3)** — the country list becomes the market list (`markets.label`) |
+| `core/run_monthly.py` | **done** — runs **units**: MercadoLibre's countries keep their codes (`MX`, `CL`, `PE`) and their exact commands; other platforms' units are market ids (`FA-CL`) and start `platforms.<pkg>.run_batch / run_reports --market <id>` with an explicit store list. `--region ALL` runs MercadoLibre's countries first (same order as before), then the other units; alert per unit (`！报表异常_CL_FA_<YYYYMM>.txt`) |
+| window | **done** — the unit list is `markets.all_units()`; the dropdown shows MercadoLibre's countries as before plus other platforms that have stores in config; preview, reruns and task arguments understand `FA-CL`. Old per-country scheduled tasks are only looked for for MercadoLibre |
 | canonical tables | not yet — Falabella's report reads its own files directly; moving both platforms onto common order / fee / payout tables stays a later step |
 
 A platform package provides: `run_batch` (same CLI: `--month`, `--stores`,

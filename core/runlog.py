@@ -194,13 +194,14 @@ def matches(rec, store=None, min_level=None, region=None, text=None):
 
 # --region ALL 时，一个国家那一段里每行正文前面带 "[CL] "。只认真有的国家代码：
 # 子进程自己打的 "[OK] ..." 不能被当成一个叫 OK 的国家。
-_REGION_TAG_RE = re.compile(r"^\[([A-Z]{2,3})\] ")
+# 别的平台的单元带平台代码："[FA-CL] "。
+_REGION_TAG_RE = re.compile(r"^\[([A-Z]{2,3}(?:-[A-Z]{2})?)\] ")
 
 
 def _region_codes():
     try:
-        from core import store_config             # 不带 selenium / tkinter
-        return set(store_config.REGION_NAMES)
+        from core import markets                  # 不带 selenium / tkinter
+        return set(markets.all_units())
     except Exception:
         return {"MX", "CL", "PE"}
 

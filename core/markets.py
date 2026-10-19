@@ -131,3 +131,36 @@ def platform_from_ziniao(ziniao_platform_name):
         if ziniao_platform_name and p.ziniao_pattern.search(str(ziniao_platform_name)):
             return p.code
     return None
+
+
+# ------------------------------------------------------------------ run units
+#
+# The runner, the window and the run log call one market of a run a "unit". For
+# MercadoLibre the unit is the bare country ("MX", "CL", "PE") — exactly the
+# "region" those places used before other platforms existed, so MercadoLibre's
+# commands, log tags ("[CL] "), alert files and task arguments stay character for
+# character the same. Other platforms' units are their market ids ("FA-CL").
+
+def unit_of_market(market):
+    p, c = split(market)
+    return c if p == DEFAULT_PLATFORM else market_id(p, c)
+
+
+def unit_market(unit):
+    """'CL' -> 'ML-CL'; 'FA-CL' -> 'FA-CL' (validated)."""
+    return normalize(unit)
+
+
+def unit_platform(unit):
+    return split(unit)[0]
+
+
+def unit_label(unit):
+    """'CL' -> '智利' (as before); 'FA-CL' -> 'Falabella 智利'."""
+    p, c = split(unit)
+    return country_name(c) if p == DEFAULT_PLATFORM and SEP not in str(unit) else label(unit)
+
+
+def all_units():
+    """Every unit the code supports: MercadoLibre's countries first, then the others."""
+    return [unit_of_market(m) for m in all_markets()]

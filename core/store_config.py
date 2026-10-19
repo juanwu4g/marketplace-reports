@@ -173,7 +173,12 @@ REGION_NAMES = dict((c, markets.country_name(c))
 
 
 def region_name(region):
-    """界面和日志里用的中文名：MX -> 墨西哥。不认识的代码原样返回。"""
+    """界面和日志里用的中文名：MX -> 墨西哥；FA-CL -> Falabella 智利。不认识的代码原样返回。"""
+    if markets.SEP in str(region or ""):
+        try:
+            return markets.label(markets.normalize(region))
+        except markets.UnknownMarket:
+            return str(region)
     return markets.country_name(region)
 
 
@@ -297,6 +302,8 @@ def stores_for_region(region):
     MX：沿用 `batch`；`batch` 为空时取白名单里属于美客多墨西哥的店。别的平台的
     店永远不会出现在这里。
     """
+    if markets.SEP in str(region or ""):          # 别的平台的运行单元："FA-CL"
+        return stores_for_market(region)
     return stores_for_market(markets.market_id(markets.DEFAULT_PLATFORM,
                                                region or DEFAULT_REGION))
 
@@ -378,3 +385,20 @@ def check_ziniao_platform(store, ziniao_platform_name, platform=None):
             "不打开它：检查 stores.catalog 是不是写错了。"
             % (store, markets.platform(platform).name_zh, ziniao_platform_name))
     return True
+
+
+# ---------------------------------------------------------------- 运行单元
+#
+# 运行器、窗口和运行日志按"单元"跑：美客多的单元就是国家代码（MX / CL / PE，和
+# 以前的 region 一字不差），别的平台的单元是市场代码（FA-CL）。见 markets.py。
+
+def unit_of(store):
+    """这家店属于哪个运行单元：美客多的店 -> "CL"；Falabella 的店 -> "FA-CL"。"""
+    return markets.unit_of_market(market_of(store))
+
+
+def other_units_configured():
+    """美客多以外、config 里有店铺的运行单元，按白名单顺序。"""
+    return [markets.unit_of_market(m) for m in markets_configured()
+            if markets.split(m)[0] != markets.DEFAULT_PLATFORM]
+
