@@ -207,7 +207,7 @@ def test_log_tags_and_names():
     assert runlog.split_region("[XX-YY] hola") == (None, "[XX-YY] hola")
     assert runlog.region_name("FA-CL") == "Falabella 智利"
     assert runlog.region_name("CL") == "智利"
-    assert markets.all_units() == ["MX", "CL", "PE", "FA-CL"]
+    assert markets.all_units()[:4] == ["MX", "CL", "PE", "FA-CL"]   # registry order; more follow
 
 
 def test_schedule_texts_come_from_registry_and_config(monkeypatch):
