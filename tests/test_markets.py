@@ -146,3 +146,25 @@ def test_meli_site_reads_catalog_country(monkeypatch):
     use(monkeypatch, NEW)
     assert meli_site.of_store("Tecnohub_CL") == "cl"
     assert meli_site.of_store("BOCINA_SM") == "mx"
+
+
+def test_mercadolibre_default_batch_is_mexico_with_a_catalog(monkeypatch):
+    """run_batch for Mexico runs without --stores; with the new format (no "batch"
+    key) it must still walk only the Mexican stores, never Chile/Peru/Falabella."""
+    d = use(monkeypatch, NEW)
+    d["allowed"] += ["EWTTO_SM", "IDG_PE"]
+    d["catalog"]["EWTTO_SM"] = {"platform": "ML", "country": "MX"}
+    d["catalog"]["IDG_PE"] = {"platform": "ML", "country": "PE"}
+    assert store_config.batch_stores() == ["BOCINA_SM", "EWTTO_SM"]
+    d["batches"]["ML-MX"] = ["EWTTO_SM"]
+    assert store_config.batch_stores() == ["EWTTO_SM"]
+
+
+class _Args:
+    stores = None
+    limit = None
+
+
+def test_mercadolibre_run_batch_without_stores_walks_mexico_only(monkeypatch):
+    d = use(monkeypatch, NEW)
+    assert run_batch.resolve_stores(_Args()) == ["BOCINA_SM"]

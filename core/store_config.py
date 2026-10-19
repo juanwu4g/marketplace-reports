@@ -98,8 +98,13 @@ def batch_stores():
     batch = _stores().get("batch")
     if isinstance(batch, list) and batch:
         return [require_allowed(n) for n in batch]
-    # 别的平台的店不属于美客多的默认批次。旧配置（没有 catalog）里每家店都是
-    # 美客多的，结果和以前一样是整份白名单。
+    if _uses_catalog():
+        # 新写法没有 "batch" 这个键：美客多不带店铺跑的那一批是墨西哥那一批
+        # （batches["ML-MX"]，没写就是白名单里的美客多墨西哥店）。不能退回"白名单里
+        # 全部美客多的店" —— 那样墨西哥那一轮会把智利、秘鲁的店也拿去墨西哥站点跑。
+        return stores_for_market(markets.market_id(markets.DEFAULT_PLATFORM,
+                                                   markets.DEFAULT_COUNTRY))
+    # 旧配置（没有 catalog）：和以前一样是整份白名单。
     return [n for n in allowed_stores() if platform_of(n) == markets.DEFAULT_PLATFORM]
 
 
