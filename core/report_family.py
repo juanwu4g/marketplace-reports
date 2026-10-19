@@ -83,8 +83,8 @@ LINE_STYLES = {None: (False, None), "subtotal": (True, K.C_SUB),
 
 MONEY = "money"         # Col.fmt sentinel: the workbook's money format
 
-Col = collections.namedtuple("Col", "header width fmt border fill font formula")
-Col.__new__.__defaults__ = (None, True, None, None, None)
+Col = collections.namedtuple("Col", "header width fmt border fill font formula align")
+Col.__new__.__defaults__ = (None, True, None, None, None, None)
 Col.__doc__ = """One column of a long table (④ ⑦ ⑧ ⑨).
 
 fmt      None, MONEY (the currency's money format) or a number format string
@@ -93,6 +93,7 @@ fill     a colour for every cell of the column (K.C_INPUT for input columns)
 font     a Font for every cell of the column
 formula  a template such as "=-O{r}*D{r}"; {r} becomes the row number and the
          value passed for this column is ignored
+align    an Alignment for every cell of the column (e.g. wrap() for long text)
 """
 
 
@@ -412,6 +413,8 @@ class Family(object):
                 c.fill = fill(col.fill)
             if col.font is not None:
                 c.font = col.font
+            if col.align is not None:
+                c.alignment = col.align
             if fill_color:
                 c.fill = fill(fill_color)
             if alignment is not None:

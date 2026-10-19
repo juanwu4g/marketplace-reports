@@ -4,7 +4,7 @@
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
-from core.report_family import header_row, set_widths
+from core.report_family import Col, Family, MONEY, header_row, set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_GREY, C_NAVY, C_OK, C_SUB, F, INT, PCT, fill,
     header_cells, title_rows, wrap)
 
@@ -19,7 +19,23 @@ from platforms.mercadolibre.report.sheet_common import no_full_text, store_cols
 # ⑤ 退货退款分析
 # ════════════════════════════════════════════════════════════════════════
 
+# ⑤ 按订单状态的明细表（core/report_family.Col）
+STATUS_COLS = [
+    Col("店铺", 16, font=F(10)),
+    Col("订单状态 (Estado)", 46, font=F(10)),
+    Col("中文含义", 30, font=F(10), align=wrap()),
+    Col("单数", 9, INT, font=F(10)),
+    Col("件数", 9, INT, font=F(10)),
+    Col("原销售额", 15, MONEY, font=F(10)),
+    Col("实际退款额", 15, MONEY, font=F(10)),
+    Col("退款/原销售额", 13, PCT, font=F(10), formula="=IF(F{r}=0,0,G{r}/F{r})"),
+    Col("资金归属", 14, font=F(10)),
+    Col("库存处置", 26, font=F(10), align=wrap()),
+]
+
+
 def sheet_returns_money(wb, stores, ctx):
+    fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[4])
     title_rows(ws, "退货 · 退款 · 售后分析（%s订单）" % ctx["period_cn"],
                "一笔退货会同时影响：退给买家的货款、平台退还的佣金与运费、额外的退货处理费、以及库存能否回收。"
@@ -34,10 +50,7 @@ def sheet_returns_money(wb, stores, ctx):
                     % (n_par, fmt(sum(S["cn"]["partial_total"] for S in stores)),
                        SHEET_NAMES[1], SHEET_NAMES[9]))
         ws["A3"].font = F(9, False, C_AMBER)
-    cols = ["店铺", "订单状态 (Estado)", "中文含义", "单数", "件数", "原销售额", "实际退款额",
-            "退款/原销售额", "资金归属", "库存处置"]
-    widths = [16, 46, 30, 9, 9, 15, 15, 13, 14, 26]
-    header_row(ws, 4, cols, widths)
+    header_row(ws, 4, [c.header for c in STATUS_COLS], [c.width for c in STATUS_COLS])
 
     r = 5
     for S in stores:
@@ -54,25 +67,11 @@ def sheet_returns_money(wb, stores, ctx):
         start = r
         for _, x in g.iterrows():
             zh, who, inv = STATUS_ZH.get(x["estado"], (x["estado"], "待定", "待确认"))
-            ws.cell(row=r, column=1, value=S["store"])
-            ws.cell(row=r, column=2, value=x["estado"])
-            ws.cell(row=r, column=3, value=zh).alignment = wrap()
-            ws.cell(row=r, column=4, value=int(x["单数"])).number_format = INT
-            ws.cell(row=r, column=5, value=int(x["件数"])).number_format = INT
-            ws.cell(row=r, column=6, value=money(x["原销售额"])).number_format = site.MNY
-            ws.cell(row=r, column=7, value=money(x["退款"])).number_format = site.MNY
-            ws.cell(row=r, column=8, value="=IF(F%d=0,0,G%d/F%d)" % (r, r, r)).number_format = PCT
-            ws.cell(row=r, column=9, value=who)
-            ws.cell(row=r, column=10, value=inv).alignment = wrap()
-            for c in range(1, 11):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(10)
-            if inv.startswith("✘"):
-                for c in range(1, 11):
-                    ws.cell(row=r, column=c).fill = fill(C_BAD)
-            elif inv.startswith("✔"):
-                for c in range(1, 11):
-                    ws.cell(row=r, column=c).fill = fill(C_OK)
+            fam.write_row(ws, r, STATUS_COLS, (
+                S["store"], x["estado"], zh, int(x["单数"]), int(x["件数"]), money(x["原销售额"]),
+                money(x["退款"]), None, who, inv),
+                # 库存不可再售标红，可回收标绿
+                fill_color=C_BAD if inv.startswith("✘") else (C_OK if inv.startswith("✔") else None))
             r += 1
         ws.cell(row=r, column=2, value="%s 售后订单合计" % S["store"]).font = F(10, True)
         for col, cl in ((4, "D"), (5, "E"), (6, "F"), (7, "G")):
@@ -149,9 +148,25 @@ def sheet_returns_money(wb, stores, ctx):
 # ⑥ 退货质检明细
 # ════════════════════════════════════════════════════════════════════════
 
+# 每家店三张表：按退货原因、按质检处置结果、逐件明细（core/report_family.Col）
+REASON_COLS = [Col("退货原因 (Estado del producto)", 42, font=F(10)), Col("中文", 26, font=F(10)),
+               Col("件数", 9, INT, font=F(10)), Col("占比", 10, PCT, font=F(10)),
+               Col("其中：已退款买家", 15, INT, font=F(10)), Col("其中：货款归卖家", 15, INT, font=F(10)),
+               Col("库存后果", 34, font=F(10))]
+RESULT_COLS = [Col("处置结果 (Resultado de la revisión)", None, font=F(10)), Col("中文", None, font=F(10)),
+               Col("件数", None, INT, font=F(10)), Col("占比", None, PCT, font=F(10)),
+               Col("资金结果", None, font=F(10)), Col("库存价值", None, font=F(10)),
+               Col("财务影响", None, font=F(10))]
+DETAIL_COLS = [Col(h, None, font=F(9)) for h in (
+    "订单号", "SKU", "质检日期", "商品状态 (原因)", "质检处置结果", "资金处理", "中文说明")]
+# 质检处置结果 → 整行底色：要卖家花钱取回的标红，重新上架的标绿
+RESULT_FILL = {"Producto para retirar en centro de distribución": C_BAD,
+               "Producto quedó nuevamente para la venta": C_OK}
+
 
 
 def sheet_triage(wb, stores, ctx):
+    fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[5])
     title_rows(ws, "Full 仓退货质检明细与原因分析")
     if not site.HAS_FULL:
@@ -183,28 +198,18 @@ def sheet_triage(wb, stores, ctx):
         ws.cell(row=r, column=1, value="【%s】一、按退货原因汇总（本期质检 %d 件）" % (S["store"], len(R))
                 ).font = F(12, True, C_NAVY)
         r += 1
-        cols = ["退货原因 (Estado del producto)", "中文", "件数", "占比",
-                "其中：已退款买家", "其中：货款归卖家", "库存后果"]
-        header_cells(ws, r, cols)
-        set_widths(ws, [42, 26, 9, 10, 15, 15, 34])
+        header_cells(ws, r, [c.header for c in REASON_COLS])
+        set_widths(ws, [c.width for c in REASON_COLS])
         r += 1
         start = r
         for k, v in R.groupby("Estado del producto").size().sort_values(ascending=False).items():
             zh, cons = RETURN_REASON_ZH.get(k, (str(k), "待确认"))
             sub = R[R["Estado del producto"] == k]
-            ws.cell(row=r, column=1, value=str(k))
-            ws.cell(row=r, column=2, value=zh)
-            ws.cell(row=r, column=3, value=int(v)).number_format = INT
-            ws.cell(row=r, column=4, value="=C%d/%d" % (r, tot)).number_format = PCT
-            ws.cell(row=r, column=5, value=int((sub["Estado del dinero"] == MONEY_REFUNDED).sum())).number_format = INT
-            ws.cell(row=r, column=6, value=int((sub["Estado del dinero"] == MONEY_KEPT).sum())).number_format = INT
-            ws.cell(row=r, column=7, value=cons)
-            for c in range(1, 8):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(10)
-            if cons.startswith("✘"):
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).fill = fill(C_BAD)
+            fam.write_row(ws, r, REASON_COLS, (
+                str(k), zh, int(v), "=C%d/%d" % (r, tot),
+                int((sub["Estado del dinero"] == MONEY_REFUNDED).sum()),
+                int((sub["Estado del dinero"] == MONEY_KEPT).sum()), cons),
+                fill_color=C_BAD if cons.startswith("✘") else None)
             r += 1
         ws.cell(row=r, column=1, value="合计").font = F(10, True)
         for col, cl in ((3, "C"), (5, "E"), (6, "F")):
@@ -218,57 +223,31 @@ def sheet_triage(wb, stores, ctx):
 
         ws.cell(row=r, column=1, value="【%s】二、按质检处置结果汇总" % S["store"]).font = F(12, True, C_NAVY)
         r += 1
-        cols = ["处置结果 (Resultado de la revisión)", "中文", "件数", "占比", "资金结果", "库存价值", "财务影响"]
-        header_cells(ws, r, cols)
+        header_cells(ws, r, [c.header for c in RESULT_COLS])
         r += 1
         for k, v in R.groupby("Resultado de la revisión").size().sort_values(ascending=False).items():
             zh, val, fin = RETURN_RESULT_ZH.get(k, (str(k), "待确认", "待确认"))
             sub = R[R["Resultado de la revisión"] == k]
             ref = int((sub["Estado del dinero"] == MONEY_REFUNDED).sum())
-            ws.cell(row=r, column=1, value=str(k))
-            ws.cell(row=r, column=2, value=zh)
-            ws.cell(row=r, column=3, value=int(v)).number_format = INT
-            ws.cell(row=r, column=4, value="=C%d/%d" % (r, tot)).number_format = PCT
-            ws.cell(row=r, column=5, value="退款 %d 件 / 保留 %d 件" % (ref, int(v) - ref))
-            ws.cell(row=r, column=6, value=val)
-            ws.cell(row=r, column=7, value=fin)
-            for c in range(1, 8):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(10)
-            if k == "Producto para retirar en centro de distribución":
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).fill = fill(C_BAD)
-            elif k == "Producto quedó nuevamente para la venta":
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).fill = fill(C_OK)
+            fam.write_row(ws, r, RESULT_COLS, (
+                str(k), zh, int(v), "=C%d/%d" % (r, tot), "退款 %d 件 / 保留 %d 件" % (ref, int(v) - ref),
+                val, fin), fill_color=RESULT_FILL.get(k))
             r += 1
         r += 1
 
         ws.cell(row=r, column=1, value="【%s】三、逐件明细（本期质检记录）" % S["store"]).font = F(12, True, C_NAVY)
         r += 1
-        cols = ["订单号", "SKU", "质检日期", "商品状态 (原因)", "质检处置结果", "资金处理", "中文说明"]
-        header_cells(ws, r, cols)
+        header_cells(ws, r, [c.header for c in DETAIL_COLS])
         r += 1
         for _, x in R.sort_values("fr").iterrows():
             zh = RETURN_REASON_ZH.get(x["Estado del producto"], (str(x["Estado del producto"]), ""))[0]
             dz = RETURN_RESULT_ZH.get(x["Resultado de la revisión"],
                                       (str(x["Resultado de la revisión"]), "", ""))[0]
             mon = "已退款买家" if x["Estado del dinero"] == MONEY_REFUNDED else "货款归卖家"
-            ws.cell(row=r, column=1, value=str(x.get("Número de orden", "")).replace(".0", ""))
-            ws.cell(row=r, column=2, value=x.get("SKU"))
-            ws.cell(row=r, column=3, value=x["fr"].strftime("%Y-%m-%d") if pd.notna(x["fr"]) else "")
-            ws.cell(row=r, column=4, value=x["Estado del producto"])
-            ws.cell(row=r, column=5, value=x["Resultado de la revisión"])
-            ws.cell(row=r, column=6, value=x["Estado del dinero"])
-            ws.cell(row=r, column=7, value="%s；%s；%s" % (zh, dz, mon))
-            for c in range(1, 8):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(9)
-            if x["Resultado de la revisión"] == "Producto para retirar en centro de distribución":
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).fill = fill(C_BAD)
-            elif x["Resultado de la revisión"] == "Producto quedó nuevamente para la venta":
-                for c in range(1, 8):
-                    ws.cell(row=r, column=c).fill = fill(C_OK)
+            fam.write_row(ws, r, DETAIL_COLS, (
+                str(x.get("Número de orden", "")).replace(".0", ""), x.get("SKU"),
+                x["fr"].strftime("%Y-%m-%d") if pd.notna(x["fr"]) else "", x["Estado del producto"],
+                x["Resultado de la revisión"], x["Estado del dinero"], "%s；%s；%s" % (zh, dz, mon)),
+                fill_color=RESULT_FILL.get(x["Resultado de la revisión"]))
             r += 1
         r += 2
