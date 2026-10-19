@@ -98,7 +98,14 @@ def batch_stores():
     batch = _stores().get("batch")
     if isinstance(batch, list) and batch:
         return [require_allowed(n) for n in batch]
-    return allowed_stores()
+    if _uses_catalog():
+        # 新写法没有 "batch" 这个键：美客多不带店铺跑的那一批是墨西哥那一批
+        # （batches["ML-MX"]，没写就是白名单里的美客多墨西哥店）。不能退回"白名单里
+        # 全部美客多的店" —— 那样墨西哥那一轮会把智利、秘鲁的店也拿去墨西哥站点跑。
+        return stores_for_market(markets.market_id(markets.DEFAULT_PLATFORM,
+                                                   markets.DEFAULT_COUNTRY))
+    # 旧配置（没有 catalog）：和以前一样是整份白名单。
+    return [n for n in allowed_stores() if platform_of(n) == markets.DEFAULT_PLATFORM]
 
 
 def is_allowed(name):
@@ -127,93 +134,226 @@ def describe():
         ", ".join(allowed) if allowed else "(不限制)")
 
 
-# ---------------------------------------------------------------- 区域（国家）
+# ---------------------------------------------------------------- 市场（平台 × 国家）
 #
-# 同一个紫鸟账号下既有墨西哥店也有智利店。config.json 里：
+# 一家店属于一个**市场** = 一个平台的一个国家："ML-MX"（美客多墨西哥）、
+# "FA-CL"（Falabella 智利）。平台和国家的清单在 core/markets.py。
+#
+# 推荐的写法（新）：
 #
 #     "stores": {
-#       "allowed": [... 两国全部店铺 ...],
-#       "batch":   [... 墨西哥那一批，顺序即下载顺序 ...],
-#       "regions": {"Tecnohub_CL": "CL", ...},
-#       "batches": {"CL": [... 智利那一批 ...]}
+#       "allowed": [... 能打开的全部店铺 ...],
+#       "catalog": {
+#         "BOCINA_SM":          {"platform": "ML", "country": "MX"},
+#         "DAB_CL-Fala (Coco)": {"platform": "FA", "country": "CL"}
+#       },
+#       "batches": {"ML-MX": [...], "ML-CL": [...], "FA-CL": [...]}
 #     }
 #
-# 没写进 regions 的店一律算墨西哥 —— 区域出现之前每家店都是墨西哥店，旧配置
-# 一个字不改照样能跑。`batch` 也因此还是"墨西哥那一批"，不改名：生产机器上
-# 的 config.json 就是这么写的。
+# 旧写法照样认（生产机器上的 config.json 就是这么写的，一个字不用改）：
 #
-# 这里只认 config.json，不看店名里的 _CL、也不看紫鸟的平台名（meli_site 会
-# 看）：决定"这一轮跑哪些店、报表叫什么名字"的规则必须是写在配置里、人能
-# 核对的，不能靠猜。
+#     "batch":   [... 美客多墨西哥那一批 ...]          = batches["ML-MX"]
+#     "regions": {"Tecnohub_CL": "CL"}                 = catalog 里 platform 为 ML
+#     "batches": {"CL": [...]}                         = batches["ML-CL"]
+#
+# 规则：
+# * catalog 优先于 regions。
+# * **只要写了 catalog，白名单里每一家店都必须在 catalog（或 regions）里写明**
+#   属于哪个市场，否则报错。没写 catalog 的旧配置，没写明的店算美客多墨西哥
+#   —— 第二个平台出现之前每家店都是墨西哥店。
+# * 平台、国家代码不认识，或这个平台还不支持那个国家 -> 报错（fail closed）。
+# * 一批店里混进别的市场的店 -> 报错。一家 Falabella 店抄进美客多智利那一批，
+#   会被拿去跑美客多的页面、汇进美客多的全店汇总 —— 宁可报错。
+#
+# 这里只认 config.json，不看店名、也不看紫鸟的平台名：决定"这一轮跑哪些店、
+# 报表叫什么名字"的规则必须写在配置里、人能核对。紫鸟的平台名只用来**反查**
+# （check_ziniao_platform）：配置说是 Falabella、紫鸟说是 MercadoLibre，就拒绝。
 
-DEFAULT_REGION = "MX"
-REGION_NAMES = {"MX": "墨西哥", "CL": "智利", "PE": "秘鲁"}
+from core import markets  # noqa: E402
+
+DEFAULT_REGION = markets.DEFAULT_COUNTRY
+# 美客多支持的国家（窗口里"选国家"、run_reports --region 用）
+REGION_NAMES = dict((c, markets.country_name(c))
+                    for c in markets.platform("ML").countries)
 
 
 def region_name(region):
-    """界面和日志里用的中文名：MX -> 墨西哥。不认识的代码原样返回。"""
-    return REGION_NAMES.get(str(region or "").upper(), str(region or ""))
+    """界面和日志里用的中文名：MX -> 墨西哥；FA-CL -> Falabella 智利。不认识的代码原样返回。"""
+    if markets.SEP in str(region or ""):
+        try:
+            return markets.label(markets.normalize(region))
+        except markets.UnknownMarket:
+            return str(region)
+    return markets.country_name(region)
 
 
-def _region_map():
-    regions = _stores().get("regions")
-    if not isinstance(regions, dict):
-        return {}
-    return dict((k, str(v).upper()) for k, v in regions.items() if v)
+def _catalog_entries():
+    """config 里写明了市场的店：{店名: (平台, 国家)}，已校验。"""
+    cfg = _stores()
+    out = {}
+    regions = cfg.get("regions")
+    if isinstance(regions, dict):
+        for name, country in regions.items():
+            if not country:
+                continue
+            out[name] = _checked(name, markets.DEFAULT_PLATFORM, country,
+                                 "stores.regions")
+    cat = cfg.get("catalog")
+    if isinstance(cat, dict):
+        for name, entry in cat.items():
+            if not isinstance(entry, dict):
+                raise StoreConfigError(
+                    "config.json stores.catalog[%r] 应该写成 "
+                    '{"platform": "ML", "country": "MX"}' % name)
+            out[name] = _checked(name, entry.get("platform"), entry.get("country"),
+                                 "stores.catalog")
+    return out
+
+
+def _checked(name, platform, country, where):
+    try:
+        return markets.check(platform, country)
+    except markets.UnknownMarket as e:
+        raise StoreConfigError("config.json %s 里的 %s：%s" % (where, name, e))
+
+
+def _uses_catalog():
+    cat = _stores().get("catalog")
+    return isinstance(cat, dict) and bool(cat)
+
+
+def market_parts(store):
+    """(平台, 国家)。没写明的店：旧配置算 ML-MX；用了 catalog 的配置报错。"""
+    known = _catalog_entries()
+    if store in known:
+        return known[store]
+    if _uses_catalog():
+        raise StoreConfigError(
+            "config.json stores.catalog 里没有 %r：请写明它属于哪个平台和国家，"
+            '例如 "%s": {"platform": "ML", "country": "MX"}' % (store, store))
+    return markets.DEFAULT_PLATFORM, markets.DEFAULT_COUNTRY
+
+
+def market_of(store):
+    """'FA-CL'。"""
+    return markets.market_id(*market_parts(store))
+
+
+def platform_of(store):
+    return market_parts(store)[0]
+
+
+def country_of(store):
+    return market_parts(store)[1]
 
 
 def region_of(store):
-    """这家店属于哪个区域（"MX" / "CL"）。config 里没写就是墨西哥。"""
-    return _region_map().get(store, DEFAULT_REGION)
+    """这家店属于哪个国家（"MX" / "CL"）。旧名字，等同 country_of。"""
+    return country_of(store)
+
+
+def configured_country(store):
+    """config 里明确写了的国家，没写返回 None（站点判断时再按别的线索猜）。"""
+    entry = _catalog_entries().get(store)
+    return entry[1] if entry else None
+
+
+def _listed_batch(market):
+    """batches[market]，以及旧写法的等价键。没写返回 None。"""
+    cfg = _stores()
+    batches = cfg.get("batches") if isinstance(cfg.get("batches"), dict) else {}
+    upper = dict((str(k).upper(), v) for k, v in batches.items())
+    p, c = markets.split(market)
+    candidates = [market]
+    where = ["batches." + market]
+    if p == markets.DEFAULT_PLATFORM:
+        candidates.append(c)
+        where.append("batches." + c)
+    for key, label in zip(candidates, where):
+        v = upper.get(key)
+        if isinstance(v, list) and v:
+            return v, label
+    if market == markets.market_id(markets.DEFAULT_PLATFORM, markets.DEFAULT_COUNTRY):
+        v = cfg.get("batch")
+        if isinstance(v, list) and v:
+            return v, "batch"
+    return None, None
+
+
+def stores_for_market(market):
+    """某个市场"全部店铺"指哪几家，按顺序。
+
+    写了这个市场的批次（batches["FA-CL"]，或旧写法）就用它，每家店都要过白名单
+    并且必须真的属于这个市场；没写就取白名单里属于这个市场的店。
+    """
+    market = markets.normalize(market)
+    listed, where = _listed_batch(market)
+    if listed:
+        names = [require_allowed(n) for n in listed]
+        wrong = [n for n in names if market_of(n) != market]
+        if wrong:
+            raise StoreConfigError(
+                "config.json 里 %s（%s）那一批混进了别的市场的店：%s。"
+                "检查 stores.catalog / stores.regions 和 stores.%s。"
+                % (market, markets.label(market), "、".join(
+                    "%s（%s）" % (n, market_of(n)) for n in wrong), where))
+        return names
+    return [n for n in allowed_stores() if market_of(n) == market]
 
 
 def stores_for_region(region):
-    """某个区域"全部店铺"指哪几家，按顺序。
+    """美客多某个国家的全部店铺（旧名字）= stores_for_market("ML-<国家>")。
 
-    MX：沿用 `batch`（以前的"全部店铺"就是它，一字不变）；`batch` 为空时取
-    白名单里属于墨西哥的店。注意不是 batch_stores() —— 它在 batch 为空时会把
-    整份白名单（含智利店）都返回。
-    其他区域：`batches[区域]`；没写就取白名单里标成这个区域的店。
-
-    每家店都要过白名单，并且必须真的属于这个区域：一家智利店误抄进墨西哥的
-    batch，会被拿去墨西哥站点下载、汇进墨西哥的全店汇总 —— 宁可报错。
+    MX：沿用 `batch`；`batch` 为空时取白名单里属于美客多墨西哥的店。别的平台的
+    店永远不会出现在这里。
     """
-    region = str(region or DEFAULT_REGION).upper()
+    if markets.SEP in str(region or ""):          # 别的平台的运行单元："FA-CL"
+        return stores_for_market(region)
+    return stores_for_market(markets.market_id(markets.DEFAULT_PLATFORM,
+                                               region or DEFAULT_REGION))
+
+
+def markets_configured():
+    """有店铺的市场，美客多墨西哥排第一，其余按白名单里第一次出现的顺序。"""
     cfg = _stores()
-    if region == DEFAULT_REGION:
-        listed = cfg.get("batch")
-    else:
-        listed = (cfg.get("batches") or {}).get(region) \
-            if isinstance(cfg.get("batches"), dict) else None
-    if isinstance(listed, list) and listed:
-        names = [require_allowed(n) for n in listed]
-        wrong = [n for n in names if region_of(n) != region]
-        if wrong:
-            raise StoreConfigError(
-                "config.json 里 %s 那一批混进了别的区域的店：%s。"
-                "检查 stores.regions 和 stores.%s。"
-                % (region, "、".join("%s（%s）" % (n, region_of(n)) for n in wrong),
-                   "batch" if region == DEFAULT_REGION else "batches." + region))
-        return names
-    return [n for n in allowed_stores() if region_of(n) == region]
+    found = [market_of(n) for n in allowed_stores()]
+    found += [markets.market_id(*v) for v in _catalog_entries().values()]
+    batches = cfg.get("batches")
+    if isinstance(batches, dict):
+        for k, v in batches.items():
+            if v:
+                found.append(markets.normalize(k))
+    first = markets.market_id(markets.DEFAULT_PLATFORM, markets.DEFAULT_COUNTRY)
+    out = [first] if (first in found or not found) else []
+    for m in found:
+        if m not in out:
+            out.append(m)
+    return out
 
 
 def regions():
-    """有店铺的区域，墨西哥排第一。白名单为空（不限制）时只有墨西哥。"""
-    cfg = _stores()
-    found = [region_of(n) for n in allowed_stores()]
-    found += list(_region_map().values())
-    if isinstance(cfg.get("batches"), dict):
-        found += [str(k).upper() for k, v in cfg["batches"].items() if v]
-    out = [DEFAULT_REGION] if (DEFAULT_REGION in found or not found) else []
-    for r in found:
-        if r not in out:
-            out.append(r)
+    """美客多有店铺的国家，墨西哥排第一。白名单为空（不限制）时只有墨西哥。"""
+    out = [markets.split(m)[1] for m in markets_configured()
+           if markets.split(m)[0] == markets.DEFAULT_PLATFORM]
+    return out or [DEFAULT_REGION]
+
+
+def group_by_market(stores):
+    """[店名] -> [(市场, [店名])]，保持原顺序。"""
+    out = []
+    for s in stores:
+        m = market_of(s)
+        for key, names in out:
+            if key == m:
+                names.append(s)
+                break
+        else:
+            out.append((m, [s]))
     return out
 
 
 def group_by_region(stores):
-    """[店名] -> [(区域, [店名])]，保持原顺序。界面重跑时用：一轮只跑一个区域。"""
+    """[店名] -> [(国家, [店名])]，保持原顺序。界面重跑时用：一轮只跑一个区域。"""
     out = []
     for s in stores:
         r = region_of(s)
@@ -224,3 +364,46 @@ def group_by_region(stores):
         else:
             out.append((r, [s]))
     return out
+
+
+def require_platform(names, platform):
+    """这一批店必须全是 `platform` 的店，否则报错（在碰紫鸟之前）。"""
+    platform = markets.platform(platform).code
+    wrong = [n for n in names if platform_of(n) != platform]
+    if wrong:
+        raise StoreConfigError(
+            "%s 的下载/报表不能跑别的平台的店：%s。检查 config.json stores.catalog。"
+            % (markets.platform(platform).name_zh, "、".join(
+                "%s（%s）" % (n, market_of(n)) for n in wrong)))
+    return list(names)
+
+
+def check_ziniao_platform(store, ziniao_platform_name, platform=None):
+    """开店前反查：紫鸟说的平台名和 config 写的平台对不上就报错。
+
+    紫鸟没给平台名时放行（这道检查只抓矛盾）。
+    """
+    platform = platform or platform_of(store)
+    if not markets.ziniao_matches(platform, ziniao_platform_name):
+        raise StoreConfigError(
+            "店铺 %r 在 config.json 里是 %s，紫鸟却说它是 %r 平台的店。"
+            "不打开它：检查 stores.catalog 是不是写错了。"
+            % (store, markets.platform(platform).name_zh, ziniao_platform_name))
+    return True
+
+
+# ---------------------------------------------------------------- 运行单元
+#
+# 运行器、窗口和运行日志按"单元"跑：美客多的单元就是国家代码（MX / CL / PE，和
+# 以前的 region 一字不差），别的平台的单元是市场代码（FA-CL）。见 markets.py。
+
+def unit_of(store):
+    """这家店属于哪个运行单元：美客多的店 -> "CL"；Falabella 的店 -> "FA-CL"。"""
+    return markets.unit_of_market(market_of(store))
+
+
+def other_units_configured():
+    """美客多以外、config 里有店铺的运行单元，按白名单顺序。"""
+    return [markets.unit_of_market(m) for m in markets_configured()
+            if markets.split(m)[0] != markets.DEFAULT_PLATFORM]
+

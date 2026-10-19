@@ -638,7 +638,11 @@ NOT_IN_REPORT_SUFFIXES = ("/BILL_MP_V3",)
 
 def affects_report(record):
     """缺了这张，财务报表会不会少数据。"""
-    form = (record or {}).get("form") or ""
+    record = record or {}
+    # 平台自己说了这张报表读不读（Falabella 的 PDF 发票就是不读的）
+    if record.get("in_report") is not None:
+        return bool(record["in_report"])
+    form = record.get("form") or ""
     return form not in NOT_IN_REPORT and not form.endswith(NOT_IN_REPORT_SUFFIXES)
 
 
@@ -880,6 +884,9 @@ def store_failure_records(exc, expected):
 
 
 def form_of_entry(entry):
+    # 别的平台的待取条目自己带着报表 id（"billing"、"stock" …）
+    if entry.get("form"):
+        return entry["form"]
     if entry.get("kind") == "ventas":
         return "ventas"
     return "mercadopago/%s" % entry.get("report", "?")

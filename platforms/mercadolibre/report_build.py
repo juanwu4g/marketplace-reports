@@ -52,6 +52,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+# 本文件按路径当脚本跑（financial_report.py），也被测试当模块 import。两种情况
+# 下都要能找到仓库里的 core/report_kit.py：把仓库根目录放进 sys.path。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import report_kit  # noqa: E402
+
 warnings.filterwarnings("ignore")
 
 # ════════════════════════════════════════════════════════════════════════
@@ -695,47 +702,18 @@ PL_TAIL = [
      "＝ 经营贡献毛利 − 商品采购成本"),
 ]
 
-SHEET_NAMES = [
-    "① 阅读说明", "② 合并损益表", "③ 平账勾稽表", "④ 平台费用明细",
-    "⑤ 退货退款分析", "⑥ 退货质检明细", "⑦ SKU盈利分析", "⑧ 月度趋势",
-    "⑨ 库存与动销分析", "⑩ 数据缺口与待办",
-]
+# SHEET_NAMES：报表家族统一的十页（core/report_kit.py）
+SHEET_NAMES = report_kit.SHEET_NAMES
 
 # ════════════════════════════════════════════════════════════════════════
 # 样式
 # ════════════════════════════════════════════════════════════════════════
-FONT_NAME = "Arial"
-MNY = '#,##0.00;(#,##0.00);-'
-INT = '#,##0;(#,##0);-'
-PCT = '0.0%;(0.0%);-'
-PCT2 = '0.00%'
-PCT3 = '0.000%'
-
-C_NAVY, C_BAND, C_SUB, C_CALC = "1F3864", "4472C4", "D9E2F3", "EDEDED"
-C_TOTAL, C_INPUT, C_OK, C_BAD, C_WARN = "FCE4D6", "FFFF00", "E2EFDA", "FBE5E5", "FFF2CC"
-C_RED, C_GREEN, C_AMBER, C_GREY = "C00000", "375623", "BF8F00", "595959"
-
-_THIN = Side(style="thin", color="BFBFBF")
-BOX = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
-
-
-def F(size=10, bold=False, color="000000", italic=False):
-    return Font(name=FONT_NAME, size=size, bold=bold, color=color, italic=italic)
-
-
-def fill(hexcolor):
-    return PatternFill("solid", fgColor=hexcolor)
-
-
-def wrap(vertical="center"):
-    return Alignment(wrap_text=True, vertical=vertical)
-
-
-def est_height(text, per_line=60, line_h=15, minimum=15):
-    """按字符数粗估行高。中文宽字符，60 字/行是保守值。"""
-    if not text:
-        return minimum
-    return max(minimum, line_h * (len(str(text)) // per_line + 1))
+# 样式：报表家族共用（core/report_kit.py），数值原样搬过去，没有改。
+from core.report_kit import (  # noqa: E402
+    FONT_NAME, MNY, INT, PCT, PCT2, PCT3,
+    C_NAVY, C_BAND, C_SUB, C_CALC, C_TOTAL, C_INPUT, C_OK, C_BAD, C_WARN,
+    C_RED, C_GREEN, C_AMBER, C_GREY, BOX, F, fill, wrap, est_height)
+from core.report_kit import _THIN  # noqa: E402,F401
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2104,9 +2082,7 @@ def derive(store, folder, p0, p1):
 # 校验层
 # ════════════════════════════════════════════════════════════════════════
 
-def _chk(key, store, name, ok, detail, severity="error", skipped=False):
-    return {"key": key, "store": store, "name": name, "ok": bool(ok),
-            "detail": detail, "severity": severity, "skipped": skipped}
+_chk = report_kit.check
 
 
 def check_hints(c, S):
@@ -2421,49 +2397,7 @@ def validate(stores, tol=None):
 # 出表层 —— 通用骨架
 # ════════════════════════════════════════════════════════════════════════
 
-class Sheet(object):
-    """薄封装：多店铺时列数随店铺数变化，这里统一算列位。"""
-
-    def __init__(self, wb, name, first_store_col, nstores, has_total=True):
-        self.ws = wb.create_sheet(name)
-        self.c0 = first_store_col
-        self.n = nstores
-        self.has_total = has_total
-
-    def scol(self, i):
-        return get_column_letter(self.c0 + i)
-
-    @property
-    def tcol_idx(self):
-        return self.c0 + self.n
-
-    @property
-    def tcol(self):
-        return get_column_letter(self.tcol_idx)
-
-    def title(self, text, sub="", sub2=""):
-        ws = self.ws
-        ws["A1"] = text
-        ws["A1"].font = F(14, True, C_NAVY)
-        ws.row_dimensions[1].height = 24
-        if sub:
-            ws["A2"] = sub
-            ws["A2"].font = F(9, False, C_GREY)
-        if sub2:
-            ws["A3"] = sub2
-            ws["A3"].font = F(9, False, C_GREY)
-
-    def header(self, row, cols, widths, height=30, color=C_NAVY):
-        ws = self.ws
-        for i, t in enumerate(cols, 1):
-            c = ws.cell(row=row, column=i, value=t)
-            c.font = F(10, True, "FFFFFF")
-            c.fill = fill(color)
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = BOX
-        ws.row_dimensions[row].height = height
-        for i, w in enumerate(widths, 1):
-            ws.column_dimensions[get_column_letter(i)].width = w
+Sheet = report_kit.Sheet
 
 
 def store_cols(stores):
@@ -5976,51 +5910,9 @@ def build_workbook(stores, ctx, out_path):
     return out_path
 
 
-def recalc(path, timeout=180):
-    """用 LibreOffice 重算并回填公式缓存值。openpyxl 只写公式不写结果，
-    不重算的话 pandas / data_only=True 读到的全是 None。"""
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(path)), "_recalc")
-    cmd = ["soffice", "--headless", "--norestore", "--convert-to",
-           "xlsx:Calc MS Excel 2007 XML", "--outdir", out_dir, path]
-    try:
-        subprocess.call(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError:
-        return False, "找不到 soffice，跳过重算（公式仍然正确，Excel 打开时会自动算）"
-    produced = os.path.join(out_dir, os.path.basename(path))
-    if not os.path.exists(produced):
-        return False, "LibreOffice 未产出文件，跳过重算"
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    os.rename(produced, path)
-    try:
-        os.rmdir(out_dir)
-    except OSError:
-        pass
-    return True, "已重算"
-
-
-def scan_formula_errors(path):
-    """重算后扫一遍，确保没有 #REF! / #NAME? 之类烂在文件里。"""
-    ERR = ("#REF!", "#VALUE!", "#NAME?", "#DIV/0!", "#N/A", "#NULL!", "#NUM!", "Err:")
-    wbv = load_workbook(path, data_only=True)
-    wbf = load_workbook(path)
-    n_formula = n_err = n_none = 0
-    bad = []
-    for sn in wbf.sheetnames:
-        sf, sv = wbf[sn], wbv[sn]
-        for row in sf.iter_rows():
-            for c in row:
-                if isinstance(c.value, str) and c.value.startswith("="):
-                    n_formula += 1
-                    v = sv[c.coordinate].value
-                    if isinstance(v, str) and any(e in v for e in ERR):
-                        n_err += 1
-                        bad.append("%s!%s = %s" % (sn, c.coordinate, v))
-                    elif v is None:
-                        n_none += 1
-    return n_formula, n_err, n_none, bad[:20]
+# 重算与公式错误扫描：报表家族共用（core/report_kit.py），代码原样搬过去。
+recalc = report_kit.recalc
+scan_formula_errors = report_kit.scan_formula_errors
 
 
 def metrics_record(S, ctx):

@@ -4,7 +4,8 @@
 
 A system that downloads seller reports from marketplace back offices through the
 Ziniao anti-detect browser and builds monthly financial workbooks (one per store,
-one combined per country). MercadoLibre is done for Mexico, Chile and Peru. The
+one combined per country). MercadoLibre is done for Mexico, Chile and Peru; Falabella for Chile
+(`platforms/falabella/`, market `FA-CL`). The
 goal is to add more platforms (TikTok Shop, Temu, Falabella, Walmart, Amazon,
 SHEIN …) to this same repo, each as `platforms/<name>/`, sharing `core/` and the
 one window, with "sister" reports that look like one family.
@@ -52,6 +53,7 @@ cd downloads && ../.venv/bin/python -m pytest tests -q
 
 # Windows / production
 .venv\Scripts\python run_monthly.py --region CL --stores "<store>" --month 2026-09
+.venv\Scripts\python run_monthly.py --region FA-CL --stores "<store>" --month 2026-09   # Falabella Chile
 .venv\Scripts\python list_stores.py --mx|--cl|--pe       # lists, opens nothing
 .venv\Scripts\python -m tools.probe_pages --store <name> --out <dir> <url> …
 ```

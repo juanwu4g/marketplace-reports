@@ -13,13 +13,38 @@ report kit in `core/` while the second platform is built (ARCHITECTURE §5).
 
 ---
 
-## 1. Workbooks
+## 1. Names — codes, workbooks, alerts
 
-| Workbook | Name |
-|---|---|
-| one per store | `<store>_<YYYY-MM>.xlsx` |
-| combined per country | MercadoLibre: `MX_ML_全店汇总_<YYYY-MM>.xlsx`, `CL_ML_…`, `PE_ML_…`. New platforms: `<COUNTRY>_<PLATFORM-CODE>_全店汇总_<YYYY-MM>.xlsx`, e.g. `MX_TT_全店汇总_2026-09.xlsx` |
-| alert, only when a person must act | `！报表异常_<YYYYMM>.txt` (Mexico MercadoLibre) / `！报表异常_<COUNTRY>_<YYYYMM>.txt`; new platforms add the platform code |
+The naming logic lives in code in two places, and this table is its description:
+`core/markets.py` (the codes) and `core/report_kit.py`
+(`store_workbook_name`, `combined_workbook_name`, `alert_file_name`). New code
+asks those functions; it never spells a name itself.
+
+**Codes.** A market is `<PLATFORM>-<COUNTRY>`:
+
+| Platform code | Platform | Chinese name | Countries today |
+|---|---|---|---|
+| `ML` | MercadoLibre | 美客多 | MX, CL, PE |
+| `FA` | Falabella | Falabella | CL |
+
+Country codes are ISO 3166-1 alpha-2 (`MX`, `CL`, `PE`, `CO` …). Codes appear in
+file names that finance keeps for years and in `config.json`: **once used, a code
+never changes.** A new platform picks a new two-letter code (proposals: `TT` TikTok
+Shop, `TM` Temu, `WM` Walmart, `AZ` Amazon, `SH` SHEIN) and registers it in
+`core/markets.py`.
+
+**Files.**
+
+| What | Name | Example |
+|---|---|---|
+| store workbook | `<store>_<YYYY-MM>.xlsx` | `DAB_CL-Fala (Coco)_2026-09.xlsx` |
+| combined per market | `<COUNTRY>_<PLATFORM>_全店汇总_<YYYY-MM>.xlsx` | `CL_FA_全店汇总_2026-09.xlsx`, `MX_ML_全店汇总_2026-09.xlsx` |
+| alert, only when a person must act | `！报表异常_<COUNTRY>_<PLATFORM>_<YYYYMM>.txt` | `！报表异常_CL_FA_202609.txt` |
+| download folder | `downloads/<store>/<YYYYMMDD_HHMMSS>[_m<YYYYMM>]/` | `…/20261016_175632_m202609/` |
+
+Historical exceptions kept for MercadoLibre (scheduled tasks and finance's folders
+rely on them): the Mexican alert is `！报表异常_<YYYYMM>.txt` and the other
+countries' `！报表异常_<COUNTRY>_<YYYYMM>.txt`, without the platform code.
 
 Store workbooks and the combined one have the same sheets; the combined one has
 one column per store plus a total.

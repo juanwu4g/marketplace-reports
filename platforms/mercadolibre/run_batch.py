@@ -85,6 +85,8 @@ def resolve_stores(args):
             "no stores to run: config.json -> stores.allowed is empty "
             "(unrestricted), so there is no list to walk. Name the stores in "
             "stores.allowed, or pass --stores.")
+    # 美客多的批次只跑美客多的店（别的平台的店在碰紫鸟之前就拒绝）。
+    store_config.require_platform(names, "ML")
     if args.limit:
         names = names[:args.limit]
     return names

@@ -10,11 +10,13 @@
 """
 import re
 
+from core import markets
 from core import runlog
 from core import store_config
 
-# 窗口里能选的国家，顺序就是下拉框里的顺序。墨西哥排第一、是默认值。
-REGIONS = tuple(store_config.REGION_NAMES)
+# 窗口里能选的国家，顺序就是下拉框里的顺序。墨西哥排第一、是默认值。美客多的
+# 国家照旧用国家代码；别的平台接在后面，用市场代码（"FA-CL" = Falabella 智利）。
+REGIONS = tuple(markets.all_units())
 DEFAULT = store_config.DEFAULT_REGION
 
 # 「全部国家」：run_monthly --region ALL，一轮里依次跑每个有店铺的国家。
@@ -41,8 +43,19 @@ def label(region):
     return store_config.region_name(region)
 
 
+def visible():
+    """下拉框里出现的单元：美客多的国家（和以前一样，都在），加上 config 里有店铺的
+    别的平台。没配 Falabella 店的电脑上不会多出一个选了就报错的选项。"""
+    out = [r for r in REGIONS if markets.SEP not in r]
+    try:
+        out += [u for u in store_config.other_units_configured() if u not in out]
+    except Exception:
+        pass
+    return out
+
+
 def labels():
-    return [label(r) for r in REGIONS]
+    return [label(r) for r in visible()]
 
 
 def from_label(text):
@@ -76,6 +89,8 @@ def lineup(choice):
         return [(choice, stores(choice))]
     try:
         order = list(store_config.regions())
+        order += [r for r in store_config.REGION_NAMES if r not in order]
+        order += [u for u in store_config.other_units_configured() if u not in order]
     except Exception:
         return []
     order += [r for r in REGIONS if r not in order]
@@ -118,8 +133,18 @@ def window_title(region):
 
 
 def preview_cmd(py, script, month, stores_, region):
-    """「先看用哪批数据」的命令：run_reports --dry-run，带上区域。"""
+    """「先看用哪批数据」的命令：run_reports --dry-run，带上区域。
+
+    script 是美客多的 run_reports；别的平台的单元（"FA-CL"）换成那个平台自己的
+    run_reports，带 --market。"""
     # script：脚本路径，或 ["-m", "包.模块"]
+    if markets.SEP in str(region):
+        pkg = markets.platform(markets.unit_platform(region)).package
+        cmd = [py, "-m", pkg + ".run_reports", "--month", month, "--dry-run",
+               "--market", region]
+        if stores_:
+            cmd += ["--stores"] + list(stores_)
+        return cmd
     head = list(script) if isinstance(script, (list, tuple)) else [script]
     cmd = [py] + head + ["--month", month, "--dry-run"]
     if region != DEFAULT:
@@ -141,7 +166,7 @@ def action_region(action):
     """一条「需要人工处理」属于哪个国家：按店铺在 config 里的区域算；config
     读不了就退回那一轮记下的区域。"""
     try:
-        return store_config.region_of(action["store"])
+        return store_config.unit_of(action["store"])
     except Exception:
         return action.get("region") or DEFAULT
 
@@ -190,7 +215,8 @@ OLD_ALL_TASKS = ("ML月度报表",)
 
 def legacy_tasks():
     """所有算"旧任务"的 (区域或 ALL, 任务名)：每个国家一个，加上旧名字的全部国家任务。"""
-    return ([(r, task_name(r)) for r in REGIONS]
+    # 按国家的旧任务只在美客多时代登记过；别的平台从一开始就跑在全部那个任务里。
+    return ([(r, task_name(r)) for r in REGIONS if markets.SEP not in r]
             + [(ALL, n) for n in OLD_ALL_TASKS])
 
 
@@ -215,7 +241,7 @@ def rehearsal_args(region):
 
 def args_region(args):
     """从已登记任务的参数里读出区域。旧任务没有 --region，按墨西哥算。"""
-    m = re.search(r"--region\s+(\w+)", args or "")
+    m = re.search(r"--region\s+([\w-]+)", args or "")
     return m.group(1).upper() if m else DEFAULT
 
 

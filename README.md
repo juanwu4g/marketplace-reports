@@ -665,6 +665,59 @@ python -m platforms.mercadolibre.run_reports --region CL --dry-run
 已知还没做的：智利的账户对账单（account statement）页面找不到"Generar"按钮——报表不用它，
 不影响出数；`BILL_MP_V3`（账单页第五个报表）要先选格式，脚本不答，所以不下载，也不算缺失。
 
+### 3.7 多平台：Falabella（智利）
+
+除了美客多，现在还有 **Falabella 智利**。一家店属于一个"市场"：平台 + 国家，写成
+`ML-MX`（美客多墨西哥）、`FA-CL`（Falabella 智利）。代码和文件名规则见
+`docs/REPORT_FAMILY.md` 第 1 节。
+
+**config.json**：用 `catalog` 写明每家店的平台和国家，`batches` 按市场写。**一旦写了
+`catalog`，白名单里每家店都要在里面**（漏写的店会报错，不会被当成墨西哥）。旧写法照样能用。
+
+```json
+"stores": {
+  "default": "BOCINA_SM",
+  "allowed": ["BOCINA_SM", "Tecnohub_CL (个人店)", "DAB_CL-Fala (Coco)"],
+  "catalog": {
+    "BOCINA_SM":            {"platform": "ML", "country": "MX"},
+    "Tecnohub_CL (个人店)": {"platform": "ML", "country": "CL"},
+    "DAB_CL-Fala (Coco)":   {"platform": "FA", "country": "CL"}
+  },
+  "batches": {"ML-MX": ["BOCINA_SM"], "ML-CL": ["Tecnohub_CL (个人店)"],
+              "FA-CL": ["DAB_CL-Fala (Coco)"]}
+}
+```
+
+**怎么跑**：和美客多完全一样，同一个窗口、同一个计划任务。
+
+* 窗口「国家」下拉框里多一项「Falabella 智利」（只有 config 里有 Falabella 店时才出现）。
+* 「全部国家」/ 计划任务 `月度报表`（`--region ALL`）：美客多的国家先跑（顺序和以前一样），
+  然后跑 Falabella 智利。
+* 命令行：`run_monthly.py --region FA-CL`（只跑 Falabella 智利），其余参数（`--step`、
+  `--stores`、`--month`）照旧。
+
+```
+python run_monthly.py --region FA-CL                  # Falabella 智利，上个月，下载 + 出报表
+python run_monthly.py --region FA-CL --step report    # 只重出报表
+python -m platforms.falabella.run_reports --dry-run   # 看看用哪批数据
+```
+
+**文件名**：单店 `<店名>_<月>.xlsx`，全店汇总 `CL_FA_全店汇总_<月>.xlsx`，告警
+`！报表异常_CL_FA_<年月>.txt`。日志里 Falabella 那一段每行带 `[FA-CL]`。
+
+**和美客多报表的区别**（十张子表、排列和读法都一样）：
+
+| | 美客多智利 | Falabella 智利 |
+|---|---|---|
+| 收入归月 | 按订单日 | 按 Falabella 的交易日（≈送达日，平台结算口径）；订单日 GMV 作参考，差额见③桥 A |
+| IVA | 含税口径（平台文件不拆 IVA） | **不含税**口径（平台文件逐行拆了 IVA），IVA 列在备查项 |
+| 买家付的运费 | 运费收入 | 平台配送的订单是代收代付，**不计收入**（净额）；只有卖家自配送的运费算收入 |
+| 平台费用发票 | 按截账日 | 每月 21 日–次月 20 日；跨月那一期次月 21 日后才出，下个月的下载会取到，**不用人工重跑** |
+| ⑥ 退货质检 | 有 | 不适用（平台不提供） |
+
+界面语言必须是**西班牙语**：脚本每次先检查，发现是英语等其他语言会**自动改回 Español**（在店铺的 REPORT.md 里记一笔），改不回来才报 `LANGUAGE_WRONG`。会计处理的完整说明在
+`platforms/falabella/README.md`。
+
 ---
 
 ## 4. 财务报表：十张子表

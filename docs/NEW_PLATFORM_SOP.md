@@ -120,10 +120,13 @@ the sheets' bodies, not in a different layout.
 
 ## 6. Plug into the runner and the window (developer)
 
-- register the platform's stores in `config.json` (allowlist + region/batch)
-- make `core/run_monthly.py` start the platform's `run_batch` / `run_reports`
-  (ARCHITECTURE §5 — first platform to do this generalises `PLATFORM_PKG`)
-- the window must show the platform's stores and its human-action items
+- register the platform (code, package, Chinese name, Ziniao platform-name pattern,
+  countries) in `core/markets.py`, and its stores in `config.json`
+  (`allowed`, `catalog` with platform + country, `batches["<CODE>-<COUNTRY>"]`)
+- nothing to change in `core/run_monthly.py` or the window: they run every
+  configured unit; the platform's `run_batch` / `run_reports` only have to keep the
+  shared contract (ARCHITECTURE §5: `--month`, `--stores`, `--market`,
+  `--collect-only`, exit codes, `[BATCH_SUMMARY_JSON]`)
 - run the whole chain from the window on the test machine; then from a
   registered scheduled task (try-run button)
 

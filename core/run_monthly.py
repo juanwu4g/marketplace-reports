@@ -195,8 +195,10 @@ def region_stores(region):
 def wrong_region(region, stores):
     """--stores 里不属于 region 的店：[(店名, 它的区域)]。"""
     from core import store_config
-    return [(s, store_config.region_of(s)) for s in stores or []
-            if store_config.region_of(s) != region]
+    # 按运行单元比：一家 Falabella 智利店（单元 FA-CL）不属于美客多智利（CL），
+    # 虽然国家一样。旧配置里每家店都是美客多的，结果和以前一样。
+    return [(s, store_config.unit_of(s)) for s in stores or []
+            if store_config.unit_of(s) != region]
 
 
 def region_label(region):
@@ -219,6 +221,9 @@ def region_lineup():
     from core import store_config
     order = list(store_config.regions())
     order += [r for r in store_config.REGION_NAMES if r not in order]
+    # 美客多的国家照旧排在前面（顺序、跳过的记录都不变），别的平台的单元接在后面；
+    # 没有店铺的别的平台不出现在任何清单里。
+    order += [u for u in store_config.other_units_configured() if u not in order]
     run, skipped = [], []
     for r in order:
         try:
@@ -281,6 +286,10 @@ class RegionLog(object):
 def alert_name(month, region="MX"):
     """告警文件名。墨西哥的名字生产上有人（和脚本）在认，不能改。"""
     ym = month.replace("-", "")
+    if "-" in str(region):                        # 别的平台：！报表异常_CL_FA_202609.txt
+        from core import markets, report_kit
+        p, c = markets.split(region)
+        return report_kit.alert_file_name(c, p, month)
     return ("！报表异常_%s.txt" % ym if region == "MX"
             else "！报表异常_%s_%s.txt" % (region, ym))
 
@@ -354,6 +363,9 @@ def build_plan(step, month, stores, out_dir, py=None, reports_all=False,
       --region。一家都没有直接报错，绝不退回"不带店铺"。MX 什么都不加。
     """
     py = py or sys.executable
+    if "-" in str(region):
+        return _build_plan_market(step, month, stores, out_dir, py, reports_all,
+                                  region, all_stores)
     sub = (["--stores"] + list(stores)) if stores else []
     dsub = sub
     if region != "MX" and not stores:
@@ -374,6 +386,37 @@ def build_plan(step, month, stores, out_dir, py=None, reports_all=False,
     if step in ("both", "download"):
         plan.append({"key": "download", "label": "下载 %s 的数据" % month,
                      "cmd": dl})
+    if step == "collect":
+        plan.append({"key": "collect", "label": "补取欠着的报表", "cmd": co})
+    if step in ("both", "report"):
+        plan.append({"key": "report", "label": "生成 %s 的报表%s"
+                     % (month, "（全部店铺）" if reports_all and stores else ""),
+                     "cmd": rp})
+    return plan
+
+
+def _build_plan_market(step, month, stores, out_dir, py, reports_all, unit, all_stores):
+    """美客多以外的平台（单元 "FA-CL"）：同样的三个步骤，起那个平台自己的包。
+
+    和非墨西哥的美客多国家同一条规矩：run_batch **永远**带显式的 --stores（这个
+    单元的全部店铺，或给的子集），另加 --market；run_reports 带 --market，给了
+    店铺子集就加 --no-combined（不让几家店的汇总覆盖真正的全店汇总）。
+    """
+    from core import markets
+    pkg = markets.platform(markets.unit_platform(unit)).package
+    listed = list(stores) if stores else list(all_stores or [])
+    if not listed:
+        raise ValueError("%s 没有店铺，不能不带 --stores 起 run_batch" % unit)
+    mk = ["--market", unit]
+    batch = [py, "-u", "-m", pkg + ".run_batch"]
+    dl = batch + ["--month", month] + mk + ["--stores"] + listed
+    co = batch + ["--collect-only", "--month", month] + mk + ["--stores"] + listed
+    rsub = [] if reports_all or not stores else ["--stores"] + list(stores)
+    rp = ([py, "-u", "-m", pkg + ".run_reports", "--month", month] + mk + rsub
+          + (["--no-combined"] if rsub else []) + ["--out-dir", out_dir])
+    plan = []
+    if step in ("both", "download"):
+        plan.append({"key": "download", "label": "下载 %s 的数据" % month, "cmd": dl})
     if step == "collect":
         plan.append({"key": "collect", "label": "补取欠着的报表", "cmd": co})
     if step in ("both", "report"):
@@ -813,6 +856,11 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
 
 # ---------------------------------------------------------------- 主流程
 
+def _markets_units():
+    from core import markets
+    return markets.all_units()
+
+
 def parse_args(argv=None):
     from core import store_config
     ap = argparse.ArgumentParser()
@@ -824,10 +872,13 @@ def parse_args(argv=None):
     ap.add_argument("--stores", nargs="+", default=None, metavar="NAME",
                     help="只跑这几家店。给了就不出全店汇总表（避免覆盖真正的那份）")
     ap.add_argument("--region", type=str.upper,
-                    choices=list(store_config.REGION_NAMES) + [ALL],
+                    choices=list(store_config.REGION_NAMES)
+                    + [u for u in _markets_units() if u not in store_config.REGION_NAMES]
+                    + [ALL],
                     default="MX",
-                    help="哪个国家的店铺：MX 墨西哥（默认）/ CL 智利 / PE 秘鲁；"
-                         "ALL = 全部国家依次跑（墨西哥第一），同一把锁、同一份日志")
+                    help="哪个国家的店铺：MX 墨西哥（默认）/ CL 智利 / PE 秘鲁（美客多）；"
+                         "别的平台写市场代码，如 FA-CL（Falabella 智利）；"
+                         "ALL = 全部依次跑（美客多墨西哥第一），同一把锁、同一份日志")
     ap.add_argument("--reports-for", choices=["stores", "all"], default="stores",
                     help="和 --stores 一起用：all = 只下载这几家店，报表给全部"
                          "店铺重出（含全店汇总）。给人工处理完补跑用")
