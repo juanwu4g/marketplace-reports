@@ -252,14 +252,23 @@ are accepted too; other columns are ignored:
   last day is used. A row with an empty 单位成本 is "not entered yet" (template rows).
 * 币种 must be the report's currency — there is **no FX conversion**.
 * `python -m tools.sku_cost_template --out sku_costs.xlsx [--month YYYY-MM]
-  [--market FA-CL …]` writes (or merges into) the table: every SKU of the month's
+  [--market FA-CL --market ML-MX …]` writes (or merges into) the table: every SKU of the month's
   newest download folders of the configured stores, with reference columns (name,
   stores, units, sales). It reads files only and never deletes a row.
 
 **Policy.** Cost of goods = unit cost × cost units. Cost units = the units of the
 same lines and month as the platform's revenue (posting / transaction basis) minus
 the units returned in the month where the platform's data identifies them (they go
-back to stock); each platform's README states its exact rule. Unit cost = landed
+back to stock); each platform's README states its exact rule:
+
+| Platform | Revenue basis | Cost units |
+|---|---|---|
+| MercadoLibre (MX, CL, PE) | order date (Ventas) | ⑦ 表五 销售件数: units of the month's orders − orders cancelled before shipping − returns ML's review put back on sale; returns not resellable / not reviewed yet, claims, mediations, exchanges keep their cost |
+| Falabella (CL) | transaction date | settled units − returned units of the month |
+| Amazon (MX) | posting date | order-line units − refunded units of the month |
+
+Unit costs are net of recoverable VAT (IVA / IGV) whatever the platform's revenue
+basis — MercadoLibre's revenue lines include VAT, the cost does not change. Unit cost = landed
 cost per unit as finance enters it (purchase + freight + duties). SKUs without a
 cost carry no cost; ② says the coverage. ⑨ stays in quantities — valuing stock at
 cost is a later step.
@@ -277,7 +286,7 @@ cost is a later step.
   duplicate (platform, country, SKU, date), currency ≠ report currency; warn:
   coverage below 100 % (uncovered SKUs by sales); the coverage line itself when 100 %.
 
-**For a platform's report_build** (Falabella and Amazon do exactly this):
+**For a platform's report_build** (MercadoLibre, Falabella and Amazon do exactly this):
 
 ```python
 from core import sku_costs as SC
@@ -291,7 +300,16 @@ SC.pl_note(res), SC.source_line(table), SC.policy_line(units_basis), SC.point_li
 ```
 
 and `sku_list(store, folder, month) -> (platform, country, currency, [Item])` so
-`tools/sku_cost_template` can list its SKUs.
+`tools/sku_cost_template` can list its SKUs (with `run_reports.latest_folder(store,
+month, base)` — the folder the monthly report would use).
+
+MercadoLibre's ⑦ differs from the family's one-table ⑦: the unit cost goes into
+表五's M column (表一 and 表四 already pick it up by store + SKU, and ⑨ values
+stock with it), 商品成本 stays `=E×M` on 表五's 销售件数 (so `Item.returned` is 0:
+the excluded units are already out of E), and the source goes in an extra column AE
+成本来源. ① gets the file in 一、覆盖范围, the cost and profit at the end of 六 and
+the policy as a new section 七、商品成本（会计处理）(重要提示 becomes 八); ⑩'s to-do
+"补齐商品采购成本" becomes "补录商品成本表" (only while SKUs are uncovered).
 
 ## 8. MercadoLibre on the family
 
@@ -318,7 +336,7 @@ together). `tests/test_ml_report_layout.py` holds the layering.
 | ④ | `title_rows`, `header_row`, `header_cells`; fee table = `Col` spec + `write_row` | settlement-path summary and the ② reconciliation (merged notes, deliberately empty columns) |
 | ⑤ | `title_rows`, `header_row`, `header_cells`; status table = `Col` + `write_row` | subtotal rows and the KPI block (store columns with 合计 and ratio rows) |
 | ⑥ | `title_rows`, `header_cells`, `set_widths`; the three per-store tables = `Col` + `write_row` | subtotal row; the "no Full in this country" text (two lines at A2/A4, not `not_applicable_sheet`'s A3) |
-| ⑦ | `title_rows`, `header_cells`, `set_widths` | five tables on one 30-column grid with cross-table formulas and the cost input column — not a single `Col` table |
+| ⑦ | `title_rows`, `header_cells`, `set_widths` | five tables on one 30-column grid (31 with a SKU cost table) with cross-table formulas and the cost input column — not a single `Col` table |
 | ⑧ | `title_rows`, `header_row`; trend table = `trend_cols()` + `write_row` | the rule-generated notes under the table |
 | ⑨ | `title_rows`, `header_row`, `header_cells`; 表一 and 表三 = `Col` + `write_row` | 表二 (per SKU): it sets the default font only on cells without a coloured one and colours single cells by verdict |
 | ⑩ | `title_rows`, `header_cells`, `set_widths` | check list with merged detail cells and its own colours, the prioritised to-do list, the credit-note blocks — a different layout from `gaps_sheet` (which also lists `run_meta.json` missing files; MercadoLibre's ⑩ does not) |
