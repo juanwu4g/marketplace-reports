@@ -459,6 +459,51 @@ def git_commit(root=None):
     return None
 
 
+# 指纹覆盖的代码：会影响下载和报表结果的部分。数据、日志、虚拟环境不算。
+_CODE_DIRS = ("core", "platforms", "tools", "launcher")
+_CODE_EXT = (".py", ".cmd", ".txt", ".json")
+_SKIP_DIRS = ("__pycache__", ".venv", "downloads", "logs", ".git", ".claude")
+
+
+def code_fingerprint(root=None):
+    """代码文件内容的短指纹（10 位）。没有 .git 的机器（测试虚拟机、拷贝来的
+    文件夹）也能说清楚跑的是哪份代码：两台机器指纹相同 = 代码完全相同。
+    换行符统一后再算，Windows 与 Ubuntu 上同一份代码指纹一致。"""
+    import hashlib
+    root = root or ROOT
+    h = hashlib.sha1()
+    files = []
+    for name in sorted(os.listdir(root)):
+        p = os.path.join(root, name)
+        if os.path.isfile(p) and name.endswith((".py", ".cmd")):
+            files.append(name)
+    for d in _CODE_DIRS:
+        top = os.path.join(root, d)
+        for cur, dirs, names in os.walk(top):
+            dirs[:] = sorted(x for x in dirs if x not in _SKIP_DIRS)
+            for n in sorted(names):
+                if n.endswith(_CODE_EXT):
+                    files.append(os.path.relpath(os.path.join(cur, n), root))
+    try:
+        for rel in sorted(f.replace(os.sep, "/") for f in files):
+            with open(os.path.join(root, *rel.split("/")), "rb") as fh:
+                data = fh.read().replace(b"\r\n", b"\n")
+            h.update(rel.encode("utf-8") + b"\0" + data + b"\0")
+    except Exception:
+        return None
+    return h.hexdigest()[:10]
+
+
+def code_version(root=None):
+    """日志里的"代码版本"：commit + 指纹；没有 .git 时只有指纹。"""
+    c, f = git_commit(root), code_fingerprint(root)
+    if c and f:
+        return "%s（指纹 %s）" % (c, f)
+    if f:
+        return "没有 .git，代码指纹 %s" % f
+    return c or "读不到"
+
+
 # ════════════════════════════════════════════════════════════ 小文件读写
 
 def read_json(path):

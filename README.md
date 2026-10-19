@@ -69,10 +69,16 @@
 cd D:\Projects\mx_sales_data
 
 python -m venv .venv
+set PYTHONUTF8=1
 .venv\Scripts\pip install -r requirements.txt
 
 copy config.example.json config.json
 ```
+
+**以后更新代码：双击 `update.cmd`**（或 `.venv\Scripts\python -m tools.update`）。它会：月度报表
+正在跑或这台机器上改过代码文件时拒绝更新；否则 `git pull` → 装依赖（自动带 `PYTHONUTF8=1`）→
+`bootstrap.py` 自检（含 config.json 的店铺配置）→ 所有国家/平台试运行（不打开任何店铺）。
+哪一步失败都会说原因，并给出退回更新前代码的那一条命令。`config.json` 和下载的数据不会被动。
 
 > ⚠️ **中文 Windows 上第一次装依赖，先敲一句 `set PYTHONUTF8=1`。** Python 3.11.9
 > 自带的那版 pip 会按系统编码（GBK）去读 `requirements.txt`，而这个文件里有中文

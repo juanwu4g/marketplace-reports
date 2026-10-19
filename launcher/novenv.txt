@@ -1,8 +1,9 @@
 
   [x] 找不到程序环境：.venv\Scripts\python.exe
 
-  请在本目录依次执行这两条命令，装好以后再双击：
+  请在本目录依次执行这几条命令，装好以后再双击：
 
       python -m venv .venv
+      set PYTHONUTF8=1
       .venv\Scripts\pip install -r requirements.txt
 
