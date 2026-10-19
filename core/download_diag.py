@@ -120,7 +120,8 @@ NOT_REGISTERED_ACTIONS = ("generar", "no-format-row", "no-panel")
 # "verifica" 的正常页面太多了。
 BLOCKED_URL = re.compile(
     r"/login|/lgz/|/registration|/authentication|/verification|/captcha|"
-    r"/security/|chrome-error://|/gz/account-verification|about:blank", re.I)
+    r"/security/|chrome-error://|/gz/account-verification|about:blank|"
+    r"/ap/(signin|mfa|cvf)|validatecaptcha", re.I)
 # 平台自己挂了，和"被挡在登录/验证页外面"不是一回事：前者谁也不用去处理，等
 # 一会儿重跑就行。2026-10-13 实测 MercadoPago 的页面标题就是
 # 「503 Service Temporarily Unavailable」，当时被归成了要人工进店验证。
@@ -128,7 +129,7 @@ SERVER_ERROR = re.compile(
     r"\b50[0234]\b|service (temporarily )?unavailable|bad gateway|"
     r"gateway time-?out|internal server error", re.I)
 BLOCKED_TITLE = re.compile(
-    r"ingresa a tu cuenta|iniciar sesi[oó]n|inicia sesi[oó]n|\blog ?in\b|"
+    r"ingresa a tu cuenta|iniciar sesi[oó]n|inicia sesi[oó]n|\blog ?in\b|\bsign-?in\b|"
     r"verifica|captcha|no es posible acceder|p[aá]gina no encontrada|"
     r"\b40[34]\b|\b50[023]\b|ERR_|no se puede acceder", re.I)
 

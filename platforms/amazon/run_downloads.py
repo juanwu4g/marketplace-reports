@@ -32,7 +32,7 @@ PLATFORM = "AZ"
 ROUTE_NAMES = tuple(periods.ROUTES)
 # False until the routes in forms.py are written: a real run stops before Ziniao
 # is touched, with a message that says so.
-IMPLEMENTED = False
+IMPLEMENTED = True
 
 
 def require_implemented():
@@ -88,10 +88,18 @@ def run_store(client, store_name, month, out_dir=None, only=None, collect_timeou
                         collect_timeout=collect_timeout, log=log)
         try:
             forms.check_language(ctx)
+            log("界面语言 %s" % ctx.flags.get("locale"))
             want = [r for r in ROUTE_NAMES if any(periods.route_of(f) == r for f in exp)]
             for route in want:
                 mine = [f for f in exp if periods.route_of(f) == route]
                 forms.guarded(ctx, route, mine, forms.ROUTES[route])
+        except forms.Blocked as e:
+            # sign-in / verification / captcha: a person has to look (never solved here)
+            ctx.errors.append("blocked: %s" % e)
+            for f in exp:
+                if f not in ctx.files and f not in diag.items:
+                    ctx.give_up(f, "exception", step="blocked", exception=str(e)[:200],
+                                exception_class="Blocked")
         except forms.LanguageWrong as e:
             ctx.errors.append("language: %s" % e)
             ev = download_diag.exception_evidence(e, step="language")
@@ -166,13 +174,25 @@ def update_run_meta(out_dir, **fields):
 
 
 # route -> Chinese name of the form, for REPORT.md
-FORM_ZH = {"orders": "订单", "settlement": "结算明细"}
+FORM_ZH = {"order": "交易明细（Transacciones 月报 CSV）", "summary": "月度汇总（Resumen PDF）",
+           "invoice": "平台费用发票（CFDI XML + PDF）", "stock": "FBA 库存快照",
+           "taxcert": "月度预扣税证明（Certificado de retención）"}
 
 
 def write_report(out_dir, result):
     L = ["# %s · 亚马逊 %s · %s" % (result["store"], result["country"], result["month"]), "",
          "下载时间：%s，用时 %d 秒" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                result.get("seconds") or 0), "", "## 文件", ""]
+                                result.get("seconds") or 0), ""]
+    sw = result["flags"].get("language_switched")
+    if sw:
+        L += ["⚠ 开始时界面语言是 %s，脚本已把它改回 %s。有人在用这家店时改了语言；"
+              "反复出现的话，请提醒用这家店的人保持西班牙语。" % (sw.get("from"), sw.get("to")), ""]
+    owed = [p for p in result.get("pending") or []]
+    if owed:
+        L += ["## 欠账（之后补取）", ""] + ["- %s：%s" % (FORM_ZH.get(p["form"], p["form"]),
+                                                    p.get("note") or p.get("last_state"))
+                                          for p in owed] + [""]
+    L += ["## 文件", ""]
     for f in result["expected"]:
         files = result["files"].get(f) or []
         L.append("- %s `%s`：%s" % (FORM_ZH.get(periods.route_of(f), f), f,
