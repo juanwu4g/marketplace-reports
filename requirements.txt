@@ -15,6 +15,7 @@ selenium==4.48.0      # 通过 debuggerAddress 附着到店铺浏览器
 # --- 报表层：report_build.py ---
 pandas==3.0.5         # 全部取数与汇总
 openpyxl==3.1.5       # 读平台导出的 .xlsx，写财务报表
+pypdf==5.1.0          # 读亚马逊月度汇总 PDF（Resumen）的对账数；纯 Python，无需 pdftotext
 
 # --- 清洗层：downloads/mx_sales ---
 # run_batch.py 用**同一个**解释器 shell out 到 `python -m mx_sales build`，

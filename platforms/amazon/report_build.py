@@ -383,18 +383,33 @@ def pdf_text(path):
             continue
         try:
             reader = lib.PdfReader(path)
-            parts = []
-            for p in reader.pages:
-                try:
-                    parts.append(p.extract_text(extraction_mode="layout"))
-                except TypeError:
-                    parts.append(p.extract_text())
-            text = "\n".join(x or "" for x in parts)
+            text = "\n".join(_lines_by_position(p) for p in reader.pages)
             if text.strip():
                 return text, mod
         except Exception:
             continue
     return None, "本机没有能读 PDF 的工具（pdftotext / pypdf）"
+
+
+def _lines_by_position(page):
+    """A page's text as lines, rebuilt from where each piece is drawn. pypdf's
+    plain extraction follows the PDF's drawing order, which on Amazon's summary
+    separates every label from its amount; its "layout" mode returns almost
+    nothing there. Pieces on the same height (2-point bands) form a line, left
+    to right, joined with spaces — what pdftotext -layout gives, near enough for
+    parse_summary."""
+    parts = []
+
+    def visit(text, cm, tm, font_dict, font_size):
+        if text and text.strip():
+            y = tm[5] * cm[3] + cm[5]
+            x = tm[4] * cm[0] + cm[4]
+            parts.append((int(round(y / 2.0)), x, text.strip()))
+    page.extract_text(visitor_text=visit)
+    rows = {}
+    for y, x, t in parts:
+        rows.setdefault(y, []).append((x, t))
+    return "\n".join("   ".join(t for _, t in sorted(rows[y])) for y in sorted(rows, reverse=True))
 
 
 _NUM = r"(-?[\d,]+(?:\.\d+)?)"
