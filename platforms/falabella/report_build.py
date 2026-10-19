@@ -1319,17 +1319,17 @@ def sheet_gaps(wb, stores, ctx):
 
 # ======================================================================= entry
 
-def build_context(stores, month):
+def build_context(stores, month, build_date=None):
     y, mo = periods.parse_month(month)
     return {"month": month, "period_cn": "%d 年 %d 月" % (y, mo),
             "who": stores[0]["store"] if len(stores) == 1 else "%d 家店铺汇总" % len(stores),
-            "built": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
+            "built": build_date or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
 
 
-def build(pairs, month, out_path, strict=False):
+def build(pairs, month, out_path, strict=False, build_date=None):
     """pairs: [(store, folder)]. Returns a result dict (outcome, checks, out)."""
     stores = [derive(load_store(s, f, month)) for s, f in pairs]
-    ctx = build_context(stores, month)
+    ctx = build_context(stores, month, build_date)
     ctx["checks"] = validate(stores)
     ctx["history"] = history(stores, None)
     bad = [c for c in ctx["checks"] if not c["ok"] and not c["skipped"] and c["severity"] == "error"]
