@@ -46,12 +46,26 @@ the clicks are worth more than prose. The essentials:
 ## 2. Discovery in the browser (developer, on the test machine)
 
 1. Add the test stores to the test machine's `config.json` allowlist (only those).
-2. **Probe, don't guess:** `python -m tools.probe_pages --store <name> --out <dir> <url> …`
-   opens the store, visits each page and saves a screenshot plus the visible text
-   (and, with `--js file.js`, whatever a small script returns — e.g. the buttons
-   and their labels). Read the dump, then write the next step. For an
-   interaction (click a button, watch what appears), copy the probe and add the
-   click; keep such one-off probes out of the repo.
+2. **Probe, don't guess.** Two tools, both refusing any store not on the
+   allowlist:
+   - `python -m tools.probe_pages --store <name> --out <dir> <url> …` — a quick
+     look: opens the store, visits each page and saves a screenshot plus the
+     visible text (and, with `--js file.js`, whatever a small script returns —
+     e.g. the buttons and their labels), then closes the store.
+   - `python -m tools.probe_session --store <name> --cmd-dir <dir> --out <dir>
+     [--max-minutes 120]` — a conversation with the page: opens the store **once**,
+     sends downloads to `<out>/files`, writes `READY` into the command folder and
+     then runs every new `<name>.py` dropped there, writing `<name>.out` (what it
+     printed, or the traceback) ending with `<<DONE>>`. Scripts see `d` (the
+     driver), every helper of `core/browser_kit.py` (`find`, `need`, `js_click`,
+     `real_click`, `table_rows`, `wait_new_files` …) and `dump(d, "tag")`
+     (screenshot + JSON with URL, title, text including shadow roots, and the
+     controls with their attributes). Variables persist from one script to the
+     next. Drop a file `STOP` to end it (it also ends after `--max-minutes`).
+     On the VM, start it with the job helper (Ziniao cannot open windows from an
+     SSH session), then copy command files in and read the `.out` files back.
+   Read the dump, then write the next step. Keep the one-off command scripts out
+   of the repo; what they teach goes into `FORMS.md` and the routes.
 3. Confirm per form: how to reach it, how to set the period, how to know it is
    ready, how to download it, what the file looks like (header row, sheet name,
    column names in the store's language).
