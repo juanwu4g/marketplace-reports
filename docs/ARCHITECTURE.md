@@ -33,6 +33,8 @@ core/                  shared by every platform — no platform names in here, i
   report_family.py     the family's sheet writers on that frame: readme, P&L from a row
                        spec (formulas as data), ratio/memo blocks, bridges, long tables,
                        not-applicable, ⑩ gaps; one store or many (+ 合计 column)
+  sku_costs.py         the optional SKU cost table shared by every report (config.json
+                       reports.sku_costs): read, match, checks, cost of goods per SKU
   browser_kit.py       Selenium helpers for any seller centre: shadow-root walk,
                        find/need/wait_for, js_click/real_click, table rows, download
                        folder + wait_new_files, PageError, retried()
@@ -73,6 +75,8 @@ tools/                 developer tools, never run by the monthly job
   probe_pages.py       discovery: visit pages of one store, save screenshot + text
   probe_session.py     discovery: keep one store open, run each script dropped in a folder
   new_platform.py      scaffold platforms/<package>/ that already keeps the contract
+  sku_cost_template.py list a month's SKUs into the SKU cost table for finance
+                       (reads download folders only; merges, never deletes rows)
 docs/                  this file, the SOP, the form template, the report family
 ```
 
@@ -157,6 +161,7 @@ script that the runner or the window starts, start it the same way.
 | new platform | **done** — `tools/new_platform.py` scaffolds a package that keeps the contract; `tests/test_platform_contract.py` checks every registered, importable platform against what the runner and the window actually start |
 | `core/run_monthly.py` | **done** — runs **units**: MercadoLibre's countries keep their codes (`MX`, `CL`, `PE`) and their exact commands; other platforms' units are market ids (`FA-CL`) and start `platforms.<pkg>.run_batch / run_reports --market <id>` with an explicit store list. `--region ALL` runs MercadoLibre's countries first (same order as before), then the other units; alert per unit (`！报表异常_CL_FA_<YYYYMM>.txt`) |
 | window | **done** — the unit list is `markets.all_units()`; the dropdown shows MercadoLibre's countries as before plus other platforms that have stores in config; preview, reruns and task arguments understand `FA-CL`. Old per-country scheduled tasks are only looked for for MercadoLibre |
+| cost of goods | **done for Falabella and Amazon** — one optional SKU cost table for every platform (`core/sku_costs.py`, `config.json` → `reports.sku_costs`; REPORT_FAMILY §7); `tools/sku_cost_template.py` lists a month's SKUs for finance. MercadoLibre not wired yet |
 | canonical tables | not yet — Falabella's report reads its own files directly; moving both platforms onto common order / fee / payout tables stays a later step |
 
 A platform package provides: `run_batch` (same CLI: `--month`, `--stores`,

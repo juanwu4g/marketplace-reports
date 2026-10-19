@@ -201,3 +201,79 @@ catalogue `tx_catalog.py`, IVA-inclusive fees split into net + input IVA, and
 withholdings as memo lines); the writers'
 unit tests are `tests/test_report_family.py`. `tools/new_platform.py` generates a
 `report_build.py` already laid out this way.
+
+## 7. Cost of goods — the shared SKU cost table (`core/sku_costs.py`)
+
+No platform's files contain the cost of goods, so without help every workbook stops
+at "经营贡献毛利（未扣商品成本）". Finance keeps **one** table of unit costs for all
+platforms; every report that knows about it fills ② 商品采购成本 and ⑦'s cost
+columns from it.
+
+**Where.** `config.json`:
+
+```json
+"reports": {"sku_costs": "sku_costs.xlsx"}
+```
+
+A relative path is relative to the repository root. The file is business data and
+is never committed (`sku_costs.xlsx` is in `.gitignore`; keep it elsewhere if you
+prefer and give an absolute path). **No key → no table → the workbooks are exactly
+as before** (this is how the golden tests run).
+
+**The file** — `.xlsx` (first sheet) or `.csv` (UTF-8, BOM ok), one header row;
+English headers `platform, country, sku, unit_cost, currency, effective_date, note`
+are accepted too; other columns are ignored:
+
+| 平台 | 国家 | SKU | 单位成本 | 币种 | 生效日期 | 备注 |
+|---|---|---|---|---|---|---|
+| FA | CL | HD26782CL | 8900 | CLP | | |
+| FA | CL | HD26782CL | 9400 | CLP | 2026-10-01 | 10 月起涨价 |
+| AZ | MX | DAS-EK106PRO-BB | 365.50 | MXN | | |
+| | MX | TB00204 | 389.24 | MXN | | 墨西哥所有平台 |
+
+* 平台 / 国家 blank = any. A report's SKU is matched (trimmed, case-insensitive) on
+  (platform, country), then (platform, any), then (any, country), then (any, any).
+* 生效日期 optional; for a month the latest row effective on or before the month's
+  last day is used. A row with an empty 单位成本 is "not entered yet" (template rows).
+* 币种 must be the report's currency — there is **no FX conversion**.
+* `python -m tools.sku_cost_template --out sku_costs.xlsx [--month YYYY-MM]
+  [--market FA-CL …]` writes (or merges into) the table: every SKU of the month's
+  newest download folders of the configured stores, with reference columns (name,
+  stores, units, sales). It reads files only and never deletes a row.
+
+**Policy.** Cost of goods = unit cost × cost units. Cost units = the units of the
+same lines and month as the platform's revenue (posting / transaction basis) minus
+the units returned in the month where the platform's data identifies them (they go
+back to stock); each platform's README states its exact rule. Unit cost = landed
+cost per unit as finance enters it (purchase + freight + duties). SKUs without a
+cost carry no cost; ② says the coverage. ⑨ stays in quantities — valuing stock at
+cost is a later step.
+
+**In the workbook** (only when configured):
+
+* ② 商品采购成本 = the covered SKUs' cost, still a yellow input cell (a person may
+  overwrite it); its note: file, SKUs / units covered and "其中 X% 销售额已有成本；
+  其余请补录或在此直接改总额". 税前净利润 follows from the existing formula.
+* ⑦ 单位成本 from the table; 商品成本 = −单位成本 ×（件数 − 退回件数）; a 成本来源
+  column (file row used, or "未录入成本" — yellow cell — for the rest).
+* ① the file in 三、数据来源, the policy in 七、会计处理, cost and profit in 四、本期要点.
+* ⑩ checks — error: file configured but missing/unreadable, rows not usable
+  (non-numeric or negative cost, bad currency/platform/country code, bad date),
+  duplicate (platform, country, SKU, date), currency ≠ report currency; warn:
+  coverage below 100 % (uncovered SKUs by sales); the coverage line itself when 100 %.
+
+**For a platform's report_build** (Falabella and Amazon do exactly this):
+
+```python
+from core import sku_costs as SC
+
+table = SC.load_configured()                       # None when not configured
+items = [SC.Item(sku, name, units, returned, sales) for … in ⑦]   # one per SKU
+res = SC.apply(table, PLATFORM, COUNTRY, CUR, month, items)
+checks += SC.checks(table, [(store, res)], PLATFORM, COUNTRY)
+res.cogs, res.line(sku).unit_cost / .cost / .status, SC.status_text(line)
+SC.pl_note(res), SC.source_line(table), SC.policy_line(units_basis), SC.point_line([res], profit)
+```
+
+and `sku_list(store, folder, month) -> (platform, country, currency, [Item])` so
+`tools/sku_cost_template` can list its SKUs.

@@ -121,8 +121,18 @@ same rules on ① (七、会计处理) and the points for the tax return (八、
    sales: 其他收入, below the fee block (as Falabella's compensation), taken as
    reported (no IVA split), clawbacks netted. ⑥ lists them line by line with the
    reason.
-5. **Product cost** is not in Amazon's data: yellow input row in ②, unit-cost
-   column in ⑦ (units sold per SKU are there).
+5. **Product cost** is not in Amazon's data. Without a cost table: yellow input
+   row in ②, unit-cost column in ⑦ (units sold per SKU are there). With the shared
+   SKU cost table (`core/sku_costs.py`, see `docs/REPORT_FAMILY.md` §7): cost of
+   goods = unit cost × (`cantidad` of the SKU's order lines − `cantidad` of its
+   refund lines — "Reembolso" — posted in the month), on the same posting basis as
+   the revenue lines; a refunded unit is taken as back in FBA stock (FBA inventory
+   reimbursements for units that did not come back stay in 其他收入, rule 4). Unit
+   cost = the landed cost per unit as finance enters it (purchase + freight +
+   duties, net of IVA, in MXN — no FX conversion). ② 商品采购成本 holds only the
+   covered SKUs' cost (still a yellow cell, its note gives the coverage); ⑦ shows
+   each SKU's cost and margin, "未录入成本" where the table has none. ⑨ stays in
+   quantities; valuing stock at cost is a later step.
 6. **Taxes are memo lines (② 备查项), never expenses** — as in MercadoLibre Mexico:
    output IVA collected (product + shipping + gift wrap + promotion tax, net of
    refunds); IVA withheld by Amazon (a prepayment creditable against the seller's
@@ -157,7 +167,9 @@ month. warn: output IVA ≈ 16 % of product sales on order lines, IVA withheld �
 the output IVA, certificate vs transaction report and certificate period, fee
 invoices per closed period, stock snapshot present, deferred lines, posting days
 inside the month. skipped: summary PDF missing/unreadable, certificate not yet
-issued, fee periods partially in the month, no fee invoices.
+issued, fee periods partially in the month, no fee invoices. With a SKU cost
+table: error — file readable, rows valid, no duplicate keys, currency = MXN; warn —
+coverage of the SKUs sold (uncovered SKUs listed by sales).
 
 ## Transaction catalogue
 

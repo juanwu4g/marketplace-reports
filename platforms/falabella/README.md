@@ -93,9 +93,19 @@ a sister of MercadoLibre's report. The workbook states the same rules on ① (�
    Corrección / Ajuste* nets in the same row. All 147 types of Falabella's glossary
    are registered (`fee_catalog.py`); an unknown one is an **error** check, its
    amount kept in "未登记科目 ⚠".
-8. **Product cost** is not in Falabella's data: yellow input row in ②, unit cost
-   column in ⑦. The stock value on ⑨ is at selling price — a size indicator, not
-   the accounting value of inventory.
+8. **Product cost** is not in Falabella's data. Without a cost table: yellow input
+   row in ②, unit cost column in ⑦. With the shared SKU cost table
+   (`core/sku_costs.py`, see `docs/REPORT_FAMILY.md` §7): cost of goods = unit
+   cost × (units settled in the month − units returned in the month), i.e. the
+   count of "Pago por precio del producto" lines minus the count of "Descuento por
+   devolución de producto" lines of the SKU, on the same transaction-date basis as
+   the revenue lines; a returned unit is taken as back in stock. Unit cost = the
+   landed cost per unit as finance enters it (purchase + freight + duties, net of
+   IVA, in CLP — no FX conversion). ② 商品采购成本 holds only the covered SKUs'
+   cost (still a yellow cell, its note gives the coverage); ⑦ shows each SKU's cost
+   and margin, "未录入成本" where the table has none. The stock value on ⑨ stays at
+   selling price — a size indicator, not the accounting value of inventory; valuing
+   stock at cost is a later step.
 9. **Cash.** The month's lines with IVA are what Falabella settles through Fpay
    statements (*Nº estado de cuenta*); "No Pagado" lines are paid on the next
    settlement date.
@@ -114,7 +124,9 @@ Points for the IVA return (they do not change the report):
 
 Checks (⑩): required files present; only the month's lines used; every type
 registered; P&L = sum of lines; IVA = 19% per line; bridge A (warn); bridge B per
-closed period (error), open period (warn); unpaid lines (warn).
+closed period (error), open period (warn); unpaid lines (warn). With a SKU cost
+table: file readable, rows valid, no duplicate keys, currency = CLP (error);
+coverage of the SKUs sold (warn, uncovered SKUs listed by sales).
 
 Golden case: add DAB_CL-Fala (Coco) 2026-09 to `tests/test_golden.py` once
 finance has accepted the month (docs/NEW_PLATFORM_SOP.md §5).
