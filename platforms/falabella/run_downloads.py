@@ -203,6 +203,11 @@ def write_report(out_dir, result):
     L = ["# %s · Falabella %s · %s" % (result["store"], result["country"], result["month"]), "",
          "下载时间：%s，用时 %d 秒" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
                                 result.get("seconds") or 0), ""]
+    sw = result["flags"].get("language_switched")
+    if sw:
+        L.append("⚠ 开始时界面语言是 %s，脚本已在页面最下方把它改回 %s。有人在用这家店时改了语言；"
+                 "反复出现的话，请提醒用这家店的人保持西班牙语。" % (sw.get("from"), sw.get("to")))
+        L.append("")
     if result["flags"].get("seller"):
         L.append("卖家：%s %s（界面 %s）" % (result["flags"].get("seller"),
                                       result["flags"].get("seller_name") or "",

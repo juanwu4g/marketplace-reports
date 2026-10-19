@@ -287,3 +287,40 @@ def wait_new_files(path, before, timeout=90, settle=3, start_timeout=None):
         if seen and not partial and time.time() - changed >= settle:
             return sorted(seen)
     return sorted(seen)
+
+
+# ------------------------------------------------------------------ language
+
+# The footer of every seller-centre page has a language box: label "Idioma" (or
+# "Language" when the account is in English) and a box showing the current
+# language. A JavaScript click on the box's inner element opens a small menu above
+# it with the options (English / Español); a mouse click toggles it shut again, so
+# use JavaScript here. Choosing an option changes the account's language (it
+# persists for everyone using the store) and re-renders the page.
+_LANG_BOX = """var labels=arguments[0],hit=null;document.querySelectorAll('div,span').forEach(function(e){
+ if(!hit&&labels.indexOf((e.innerText||'').trim())>=0&&e.nextElementSibling)hit=e;});
+ return hit?(hit.nextElementSibling.firstElementChild||hit.nextElementSibling):null;"""
+_LANG_OPTION = """var want=arguments[0],hit=null;document.querySelectorAll('*').forEach(function(e){
+ if(!hit&&e.children.length===0&&(e.innerText||'').trim()===want){var b=e.getBoundingClientRect();
+ if(b.width>0&&b.height>0)hit=e;}});return hit;"""
+LANG_LABELS = ["Idioma", "Language"]
+
+
+def switch_language(d, option="Español", timeout=40):
+    """Choose `option` in the footer language box. Returns the page locale after
+    the switch (page_locale()), or None if the box or the option was not found."""
+    box = d.execute_script(_LANG_BOX, LANG_LABELS)
+    if box is None:
+        return None
+    try:
+        d.execute_script("arguments[0].scrollIntoView({block:'center'})", box)
+    except Exception:
+        pass
+    d.execute_script("arguments[0].click()", box)
+    opt = wait_for(lambda: d.execute_script(_LANG_OPTION, option), timeout=5, poll=0.5)
+    if opt is None:
+        return None
+    d.execute_script("arguments[0].click()", opt)
+    time.sleep(4)
+    return wait_for(lambda: (page_locale(d) or {}).get("locale", "").lower().startswith(
+        option[:2].lower()) and page_locale(d), timeout=timeout, poll=2)

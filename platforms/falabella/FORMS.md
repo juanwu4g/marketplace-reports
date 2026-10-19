@@ -67,8 +67,14 @@ English headers, only orders with money movement) — not needed now.
 - **Language gate:** the payments/invoicing root
   `[data-testid=main-container-wrapper]` has `data-localefull="es-CL"` (and
   `data-seller`, `data-sellername`). Check it before downloading — column names of
-  forms 1–5 are Spanish and follow the UI language. The footer has an `Idioma`
-  switch (`Español`).
+  forms 1–5 are Spanish and follow the UI language. **When it is not Spanish the
+  run switches it back**: the footer box (label `Idioma` / `Language`, showing the
+  current language) opens with a JavaScript click on its inner element — a mouse
+  click toggles it shut — and lists `English` / `Español` above it; choosing
+  `Español` changes the account's language and re-renders the page
+  (`page_kit.switch_language`, verified on DAB and AIS 2026-10-19). The switch is
+  recorded as `language_switched` in run_meta.json and on top of REPORT.md; only
+  if it fails does the store stop with LANGUAGE_WRONG.
 - **Pop-ups that block clicks:**
   - a guided tour on the orders page ("Nuevo · 1 de 5 · Tus envíos de hoy",
     button `Omitir`) — first visit per store;

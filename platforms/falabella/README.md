@@ -41,8 +41,11 @@ re-running the old month after the 21st only turns its "pending" into "checked".
 
 ## Platform notes
 
-* UI must be **Spanish** (`data-localefull="es-CL"`). The owner's intake
-  screenshots were from an English UI and are only a map.
+* UI must be **Spanish** (`data-localefull="es-CL"`). If a store is found in
+  another language (someone switched it), the run switches it back to Español
+  through the footer language box and notes it in `REPORT.md`; only when that fails
+  does the store stop with LANGUAGE_WRONG. The owner's intake screenshots were from
+  an English UI and are only a map.
 * New pages are micro-frontends in shadow roots; `page_kit.py` walks them.
 * Orders: the date filter is in the panel that opens when you click into the
   search box; at most 14 days per export; each export downloads as `export.xlsx`

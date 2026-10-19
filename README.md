@@ -715,7 +715,7 @@ python -m platforms.falabella.run_reports --dry-run   # 看看用哪批数据
 | 平台费用发票 | 按截账日 | 每月 21 日–次月 20 日；跨月那一期次月 21 日后才出，下个月的下载会取到，**不用人工重跑** |
 | ⑥ 退货质检 | 有 | 不适用（平台不提供） |
 
-界面语言必须是**西班牙语**（脚本先检查，不对就报 `LANGUAGE_WRONG`）。会计处理的完整说明在
+界面语言必须是**西班牙语**：脚本每次先检查，发现是英语等其他语言会**自动改回 Español**（在店铺的 REPORT.md 里记一笔），改不回来才报 `LANGUAGE_WRONG`。会计处理的完整说明在
 `platforms/falabella/README.md`。
 
 ---

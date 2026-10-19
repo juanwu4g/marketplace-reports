@@ -116,8 +116,22 @@ def check_language(ctx):
     ctx.flags["seller_name"] = info.get("name")
     want = ctx.site["locale"]
     if not loc.lower().startswith("es"):
-        raise LanguageWrong("界面语言是 %s，不是西班牙语（%s）：在这家店把 Idioma 改回 "
-                            "Español" % (loc, want))
+        # Someone switched the store to another language (it happened on DAB on
+        # 2026-10-19). Every selector and every column name is Spanish, so switch it
+        # back — the language is a setting of the account, not of this browser —
+        # and say so in the run's record.
+        ctx.log("  界面语言是 %s，不是西班牙语：在页脚的语言选项里改回 Español" % loc)
+        after = pk.switch_language(ctx.d, "Español")
+        new_loc = str((after or {}).get("locale") or "")
+        if not new_loc.lower().startswith("es"):
+            raise LanguageWrong("界面语言是 %s，不是西班牙语（%s），脚本自动改回 Español 也没成功："
+                                "请在这家店的页面最下方把 Language 改成 Español" % (loc, want))
+        ctx.flags["language_switched"] = {"from": loc, "to": new_loc}
+        ctx.log("  已改回 %s" % new_loc)
+        loc = new_loc
+        ctx.flags["locale"] = loc
+        ctx.go(PAYMENTS)                      # the routes start from a freshly rendered page
+        pk.wait_for(lambda: pk.page_locale(ctx.d), timeout=60, poll=2)
     if loc != want:
         ctx.log("  [提醒] 页面区域设置是 %s（期望 %s）" % (loc, want))
     return info

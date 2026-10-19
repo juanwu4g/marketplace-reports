@@ -178,3 +178,50 @@ def test_batch_verdict():
     assert run_batch.batch_verdict([bad])["exit_code"] == 2
     assert run_batch.batch_verdict([ok, att])["missing_by_cause"] == {"NO_DATA": 1,
                                                                      "UI_NOT_FOUND": 1}
+
+
+# ------------------------------------------------------------------ language gate
+
+class _Ctx(forms.Ctx):
+    def __init__(self):
+        from platforms.falabella import site
+        forms.Ctx.__init__(self, driver=None, out_dir=".", diag=None, month="2026-09",
+                           site=site.get("CL"), log=lambda *a: None)
+
+    def go(self, path, settle=0):
+        pass
+
+
+def test_language_gate_switches_english_back_to_spanish(monkeypatch):
+    from platforms.falabella import page_kit as pk
+    seen = iter([{"locale": "en-CL", "seller": "S", "name": "N"},
+                 {"locale": "es-CL", "seller": "S", "name": "N"}])
+    monkeypatch.setattr(pk, "page_locale", lambda d: next(seen))
+    calls = []
+    monkeypatch.setattr(pk, "switch_language",
+                        lambda d, opt: calls.append(opt) or {"locale": "es-CL"})
+    ctx = _Ctx()
+    forms.check_language(ctx)
+    assert calls == ["Español"]
+    assert ctx.flags["language_switched"] == {"from": "en-CL", "to": "es-CL"}
+    assert ctx.flags["locale"] == "es-CL"
+
+
+def test_language_gate_gives_up_when_the_switch_fails(monkeypatch):
+    from platforms.falabella import page_kit as pk
+    monkeypatch.setattr(pk, "page_locale", lambda d: {"locale": "en-CL"})
+    monkeypatch.setattr(pk, "switch_language", lambda d, opt: None)
+    with pytest.raises(forms.LanguageWrong) as e:
+        forms.check_language(_Ctx())
+    rec = download_diag.classify(download_diag.exception_evidence(e.value, step="language"),
+                                 {"form": "billing"})
+    assert rec["cause"] == "LANGUAGE_WRONG"
+
+
+def test_language_gate_leaves_spanish_alone(monkeypatch):
+    from platforms.falabella import page_kit as pk
+    monkeypatch.setattr(pk, "page_locale", lambda d: {"locale": "es-CL"})
+    monkeypatch.setattr(pk, "switch_language", lambda d, opt: pytest.fail("must not switch"))
+    ctx = _Ctx()
+    forms.check_language(ctx)
+    assert "language_switched" not in ctx.flags
