@@ -7,9 +7,13 @@ the MercadoLibre one: same reading order, same look, same way of saying "this
 ties out / this does not / this is still missing". Content inside the sheets is
 platform-specific; the frame is not.
 
-The reference implementation is `platforms/mercadolibre/report_build.py`. Today
-the styles and sheet scaffolding live in that file; they will move into a shared
-report kit in `core/` while the second platform is built (ARCHITECTURE §5).
+The frame (styles, sheet names, check records, file names) is
+`core/report_kit.py`; the sheet writers built on it (readme, P&L, bridges, long
+tables, gaps) are `core/report_family.py` — see §6. Falabella's report is built
+with them; MercadoLibre's `platforms/mercadolibre/report_build.py` (the original
+reference) uses the frame but still writes its own sheets — moving it onto
+`report_family` is future work, to be done with its golden tests proving zero
+diff.
 
 ---
 
@@ -122,3 +126,74 @@ unmapped fee name is an **error** check, never silently "other".
 
 This section is the target design; MercadoLibre will be moved onto it with its
 golden tests proving that no number changes.
+
+## 6. Building a platform's report with `core/report_family.py`
+
+A platform's `report_build.py` does three things: **load** its files, **derive**
+one dict of numbers per store (`S = {"store": name, "m": {...}, "meta": run_meta,
+…}`), **validate** (a list of `report_kit.check` records). Everything that puts
+those on sheets comes from `core/report_family.py`, so the workbook is a sister
+without copying layout code:
+
+| Sheet | Writer | The platform supplies |
+|---|---|---|
+| ① | `Family.readme_sheet` | sections of `(label, text)`; the error banner text |
+| ② | `Family.pl_sheet` + `ratio_block` + `memo_block` | a row spec of `PLRow(key, 中文, original term, kind, note, formula)`; `value(S, key)` |
+| ③ | `Family.bridge_sheet` | sections of `Line(label, value(S), note, style)`; `style="residual"` on the row that must be 0 |
+| ④⑦⑧⑨ | `Family.table_sheet` + `write_row` | column specs `Col(header, width, fmt, border, fill, font, formula)` and the rows |
+| any sheet that does not apply | `not_applicable_sheet` | the "不适用：…" text |
+| ⑩ | `Family.gaps_sheet` | the checks; missing files come from each store's `run_meta.json`; extra note sections (e.g. tax) |
+
+Store columns and the 合计 column are handled by `Family`: with one store there
+is no 合计 column; with several it follows the store columns on every sheet
+(data rows sum, formula rows repeat their formula, input rows total with
+`=SUM`). Money cells use the format passed to `Family(stores, money=…)` —
+`report_kit.money_format(decimals)` of the currency.
+
+P&L formulas are data, not code: a subtotal or computed row lists the rows it
+adds (`"-key"` subtracts) or a `Span(first, last)` to sum a block:
+
+```python
+from core import report_family as RF
+from core import report_kit as K
+
+PL_ROWS = [
+    RF.PLRow("sales", "商品销售收入", "Product sales", "d", "按结算日"),
+    RF.PLRow("refund", "减：退货退款", "Refunds", "d", ""),
+    RF.PLRow("net_sales", "净销售收入", "", "f", "＝ 销售 − 退款", ("sales", "refund")),
+    RF.PLRow("commission", "减：佣金", "Referral fee", "d", ""),
+    RF.PLRow("ads", "减：广告", "Sponsored products", "d", ""),
+    RF.PLRow("fees", "平台费用小计", "", "sum", "", RF.Span("commission", "ads")),
+    RF.PLRow("contrib", "经营贡献毛利", "", "f", "", ("net_sales", "fees")),
+    RF.PLRow("cogs", "减：商品采购成本", "", "in", "⚠ 平台数据不含此项"),
+    RF.PLRow("profit", "税前净利润", "", "f", "", ("contrib", "-cogs")),
+]
+
+
+def build_workbook(stores, ctx, out_path):
+    wb = Workbook()
+    wb.remove(wb.active)
+    fam = RF.Family(stores, money=K.money_format(2))
+    fam.readme_sheet(wb, K.SHEET_NAMES[0], "月度财务报表 · %s" % ctx["period_cn"],
+                     "生成于 %s" % ctx["built"],
+                     [("一、这份报表回答什么", [("本月赚了多少", "…")])])
+    sh, r, rows_at, note_col = fam.pl_sheet(
+        wb, K.SHEET_NAMES[1], PL_ROWS, value=lambda S, key: S["m"]["pl"][key],
+        title="合并损益表", subtitle="口径：…")
+    fam.ratio_block(sh, r + 1, "费用率（占商品销售收入）", [
+        ("佣金", lambda S: -S["m"]["pl"]["commission"], lambda S: S["m"]["pl"]["sales"])],
+        note_col)
+    fam.bridge_sheet(wb, K.SHEET_NAMES[2], "平账勾稽表", "每座桥最后一行是残差，应为 0。", [
+        ("桥 A　订单 → 结算", [
+            RF.Line("订单金额", lambda S: S["m"]["orders"]),
+            RF.Line("结算金额", lambda S: S["m"]["settled"]),
+            RF.Line("残差（应为 0）", lambda S: S["m"]["orders"] - S["m"]["settled"],
+                    style="residual")])])
+    # ④–⑨: table_sheet + write_row, or not_applicable_sheet
+    fam.gaps_sheet(wb, K.SHEET_NAMES[9], "数据缺口与待办", ctx["checks"])
+    wb.save(out_path)
+```
+
+`platforms/falabella/report_build.py` is the complete example; the writers'
+unit tests are `tests/test_report_family.py`. `tools/new_platform.py` generates a
+`report_build.py` already laid out this way.
