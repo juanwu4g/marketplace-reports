@@ -264,3 +264,19 @@ def test_direct_stock_fetch_retries_then_reports_a_landing_problem(tmp_path, mon
     c.locale = "es-CL"
     c.give_up(None, "stock", "download-not-landed", step="x", shot=False)
     assert download_diag.diagnose_store(["stock"], collector=c)[0]["cause"] == "DOWNLOAD_NOT_LANDED"
+
+
+def test_missing_invoice_pdfs_by_type_and_by_number():
+    # AIS: numbers filled in
+    rows = [("520878", "Factura"), ("505871", "Nota de Credito"), (505872.0, "Nota de crédito"),
+            ("1", "Nota de Debito")]
+    assert forms.missing_invoice_pdfs(rows, ["520878_FACTURA.pdf", "505871_NOTA_DE_CREDITO.pdf"]) \
+        == ["505872_NOTA_DE_CREDITO.pdf"]
+    # DAB: the number column is empty — check by type (production 2026-10-19: the
+    # factura was missing and nobody noticed)
+    rows = [("", "Factura"), ("", "Nota de Credito"), ("", "Nota de Debito")]
+    assert forms.missing_invoice_pdfs(rows, ["505871_NOTA_DE_CREDITO.pdf"]) == ["FACTURA"]
+    assert forms.missing_invoice_pdfs(rows, ["520878_FACTURA.pdf",
+                                             "505871_NOTA_DE_CREDITO.pdf"]) == []
+    assert forms.missing_invoice_pdfs([("", "Factura")], []) == ["FACTURA"]
+    assert forms.missing_invoice_pdfs([], []) == []

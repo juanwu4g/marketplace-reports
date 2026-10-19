@@ -207,7 +207,9 @@ def orders_chunk(ctx, form, a, b):
     if not start:
         raise pk.PageError("order date range input not found")
     pk.real_click(d, start)
-    time.sleep(1)
+    if not pk.wait_for(lambda: pk.find(d, "td.ant-picker-cell-in-view[title]"), timeout=10):
+        raise pk.PageError("order calendar did not open")
+    time.sleep(0.8)
     prev_sel, next_sel = ".ant-picker-header-prev-btn", ".ant-picker-header-next-btn"
     pk.real_click(d, _walk_to(ctx, a, prev_sel, next_sel))
     time.sleep(0.8)
@@ -279,10 +281,31 @@ def orders_chunk(ctx, form, a, b):
     ctx.got(form, [name])
 
 
+def retried(ctx, what, fn, *a, attempts=2):
+    """Run a page interaction again on a freshly loaded page when it fails the first
+    time. Calendars sometimes swallow a click (2026-10-19 on production: the order
+    page still showed the previous run's range and kept it); a second try from a
+    clean page is cheap and nearly always enough. The last failure is raised."""
+    for i in range(attempts):
+        try:
+            return fn(ctx, *a)
+        except LanguageWrong:
+            raise
+        except pk.PageError as e:
+            if i == attempts - 1:
+                raise
+            ctx.log("  %s 第 %d 次没成功（%s），重新打开页面再试" % (what, i + 1, str(e)[:120]))
+            time.sleep(3)
+
+
+def _orders_chunk_retried(ctx, form, a, b):
+    return retried(ctx, "订单 %s..%s" % (a, b), orders_chunk, form, a, b)
+
+
 def orders(ctx):
     for a, b in periods.order_chunks(ctx.month, ctx.site["orders_max_days"]):
         form = "order/%s" % periods.period_id(a, b)
-        guarded(ctx, form, [form], orders_chunk, form, a, b)
+        guarded(ctx, form, [form], _orders_chunk_retried, form, a, b)
 
 
 # ================================================================ 2. billing (Transacciones)
@@ -628,11 +651,12 @@ def billing1_period(ctx, form, a, b):
     ctx.got(form, files)
 
 
-def _menu_pdfs(ctx, trigger_text="PDF"):
+def _menu_pdfs(ctx, trigger_text="PDF", wait=15):
     """Open a 'Descargar … (PDF)' menu and download every item. Returns files."""
     d = ctx.d
     out = []
-    trig = [t for t in pk.find(d, "[class*=dropdown-trigger]") if trigger_text in (t.text or "")]
+    trig = pk.wait_for(lambda: [t for t in pk.find(d, "[class*=dropdown-trigger]")
+                                if trigger_text in (t.text or "")], timeout=wait)
     if not trig:
         return None
     pk.real_click(d, trig[-1])
@@ -655,7 +679,74 @@ def _menu_pdfs(ctx, trigger_text="PDF"):
     return out
 
 
+INVOICE_PDF_SUFFIX = {"factura": "FACTURA", "nota de credito": "NOTA_DE_CREDITO",
+                      "nota de crédito": "NOTA_DE_CREDITO"}
+
+
+def missing_invoice_pdfs(rows, files):
+    """What the detail page should have given but did not.
+
+    rows: [(Numero de documento, Tipo de documento)] of the period's Factura
+    falabella.com report. Every document type that has lines (Factura, Nota de
+    Crédito) must come with at least one PDF of that type; where the report fills in
+    the document number (not every seller's does — DAB's column is empty), that exact
+    PDF must be there too. Promotion debit notes (usually 0) have no PDF on the page.
+    Returns sorted labels like "FACTURA" or "520878_FACTURA.pdf".
+    """
+    have = set(files or [])
+    kinds, named = set(), set()
+    for num, kind in rows:
+        suf = INVOICE_PDF_SUFFIX.get(str(kind or "").strip().lower())
+        if not suf:
+            continue
+        kinds.add(suf)
+        num = str(num or "").strip().split(".")[0]
+        if num and num.lower() != "nan":
+            named.add("%s_%s.pdf" % (num, suf))
+    out = [n for n in named if n not in have]
+    out += [k for k in kinds if not any(f.endswith("_%s.pdf" % k) for f in have)]
+    return sorted(out)
+
+
+def _invoice_rows(ctx, form_xlsx):
+    """(document number, type) of every line of the period's invoice report."""
+    from openpyxl import load_workbook
+    rows = []
+    for name in ctx.files.get(form_xlsx) or []:
+        try:
+            # not read_only: Falabella's file declares a 1x1 sheet size, and read-only
+            # mode then sees only the first column
+            wb = load_workbook(os.path.join(ctx.out_dir, name), data_only=True)
+            it = wb.worksheets[0].iter_rows(values_only=True)
+            head = [str(h or "").strip() for h in next(it)]
+            i, j = head.index("Numero de documento"), head.index("Tipo de documento")
+            rows += [(r[i], r[j]) for r in it if r and len(r) > j]
+            wb.close()
+        except Exception as e:
+            ctx.log("  [提醒] 读不了 %s 来核对发票 PDF：%s" % (name, str(e)[:80]))
+    return rows
+
+
 def invoice1_period(ctx, form, a, b):
+    """Every PDF the period's invoice report names must arrive; a missing one is
+    tried once more from a fresh detail page, then recorded by name."""
+    rows = _invoice_rows(ctx, "billing1/%s" % periods.period_id(a, b))
+    files = _invoice1_pdfs(ctx, form, a, b) or []
+    missing = missing_invoice_pdfs(rows, files)
+    if missing:
+        ctx.log("  发票 PDF 缺 %s，重新打开明细页再下一次" % "、".join(missing))
+        files += [f for f in (_invoice1_pdfs(ctx, form, a, b) or []) if f not in files]
+        missing = missing_invoice_pdfs(rows, files)
+    for what in missing:
+        ctx.give_up("%s/%s" % (form, what.replace(".pdf", "")), "download-not-landed",
+                    step="发票明细里有这类单据，但 PDF（%s）没下到" % what)
+    if files:
+        ctx.got(form, files)
+    elif not rows:
+        ctx.give_up(form, "ui-missing", step="明细页上没有 PDF 下载入口")
+
+
+def _invoice1_pdfs(ctx, form, a, b):
     d = ctx.d
     _settlement_page(ctx, b.year)
     label = periods.billing_row_label(a, b)
@@ -681,11 +772,8 @@ def invoice1_period(ctx, form, a, b):
         got = _menu_pdfs(ctx)
         if got:
             files.extend(got)
-    if not files:
-        ctx.give_up(form, "ui-missing", step="明细页上没有 PDF 下载入口")
-        return
     ctx.log("  发票 PDF %s -> %s" % (label, files))
-    ctx.got(form, files)
+    return files
 
 
 # ================================================================ 5+7. billing2 + invoice2

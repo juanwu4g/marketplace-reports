@@ -94,7 +94,19 @@ def write_tx(path, rows):
     wb.save(path)
 
 
-def write_orders(path):
+PIECES = (("2026-09-01_2026-09-14", 1, 14), ("2026-09-15_2026-09-28", 15, 28),
+          ("2026-09-29_2026-09-30", 29, 30))
+
+
+def write_order_pieces(folder):
+    """Like a real download: one file per 14-day piece, by order creation day."""
+    for pid, a, b in PIECES:
+        rows = [o for o in ORDERS if a <= int(o[2].split()[1].rstrip(",")) <= b]
+        write_orders(os.path.join(folder, "Ordenes_%s.xlsx" % pid), rows)
+
+
+def write_orders(path, rows=None):
+    rows = ORDERS if rows is None else rows
     wb = Workbook()
     ws = wb.active
     ws.title = "Sheet 1"
@@ -103,7 +115,7 @@ def write_orders(path):
             "Costo de envio", "Cupon/Descuentos", "Impuesto", "Producto", "Estado",
             "Tipo de Fulfillment", "Motivo de cancelacion"]
     ws.append(head)
-    for item, order, created, state, paid in ORDERS:
+    for item, order, created, state, paid in rows:
         ws.append([item, "SKU%s" % item, "9%s" % item, created, order, "Cliente Sintético",
                    "BOLETA", paid, paid, "0.00", "0.00", "0.00", "Producto", state,
                    "Fulfilled by Falabella", "Arrepentimiento" if state == "Canceladas" else None])
@@ -160,7 +172,7 @@ def folder(tmp_path):
     d = tmp_path / "downloads" / STORE / "20261016_120000_m202609"
     d.mkdir(parents=True)
     write_tx(str(d / "NewReportTransaction_2026-10-16T05_29_08.xlsx"), TX)
-    write_orders(str(d / "Ordenes_2026-09-01_2026-09-14.xlsx"))
+    write_order_pieces(str(d))
     write_invoice(str(d / "InvoiceReport_FACL-1-2026-08-21-2026-09-20_2026-09-24T08_18_05.xlsx"), TX)
     write_liq(str(d / "S_FSC_LIQ_BOLETA_NCR_REPORT_2026-09-01_2026-09-30.xlsx"))
     write_stock(str(d / "Product_details_1.xlsx"))
@@ -247,7 +259,8 @@ def test_unregistered_type_is_an_error(folder, tmp_path):
 
 
 def test_missing_orders_is_an_error_not_a_crash(folder, tmp_path):
-    os.remove(os.path.join(folder, "Ordenes_2026-09-01_2026-09-14.xlsx"))
+    for pid, _a, _b in PIECES:
+        os.remove(os.path.join(folder, "Ordenes_%s.xlsx" % pid))
     r, out = build(folder, tmp_path)
     c = {x["key"]: x for x in r["checks"]}
     assert not c["file_order"]["ok"] and c["bridge_a"]["skipped"]
@@ -320,3 +333,22 @@ def test_missing_orders_without_a_no_data_record_is_still_an_error(folder, tmp_p
     json.dump(meta, open(os.path.join(folder, "run_meta.json"), "w", encoding="utf-8"))
     r, _ = build(folder, tmp_path)                  # only one of three pieces was empty
     assert not {x["key"]: x for x in r["checks"]}["file_order"]["ok"]
+
+
+def test_a_missing_order_piece_is_an_error_and_an_older_run_fills_it(folder, tmp_path):
+    """Production 2026-10-19: a rerun lost the 1-14 piece while the earlier run of the
+    same month had it. The report must use that one; with no copy anywhere it is an
+    error, never a quietly smaller month."""
+    piece = "Ordenes_2026-09-01_2026-09-14.xlsx"
+    older = os.path.join(os.path.dirname(folder), "20261016_090000_m202609")
+    os.makedirs(older)
+    os.replace(os.path.join(folder, piece), os.path.join(older, piece))
+    r, _ = build(folder, tmp_path)
+    c = {x["key"]: x for x in r["checks"]}
+    assert c["file_order"]["ok"] and r["metrics"][STORE]["bridge_a"]["orders"] == 11900 + 23800 + 35700
+    os.remove(os.path.join(older, piece))
+    r, _ = build(folder, tmp_path)
+    c = {x["key"]: x for x in r["checks"]}
+    assert not c["file_order"]["ok"] and "2026-09-01–2026-09-14" in c["file_order"]["detail"]
+    assert r["outcome"] == "checks_failed"
+
