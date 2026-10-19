@@ -46,12 +46,26 @@ the clicks are worth more than prose. The essentials:
 ## 2. Discovery in the browser (developer, on the test machine)
 
 1. Add the test stores to the test machine's `config.json` allowlist (only those).
-2. **Probe, don't guess:** `python -m tools.probe_pages --store <name> --out <dir> <url> …`
-   opens the store, visits each page and saves a screenshot plus the visible text
-   (and, with `--js file.js`, whatever a small script returns — e.g. the buttons
-   and their labels). Read the dump, then write the next step. For an
-   interaction (click a button, watch what appears), copy the probe and add the
-   click; keep such one-off probes out of the repo.
+2. **Probe, don't guess.** Two tools, both refusing any store not on the
+   allowlist:
+   - `python -m tools.probe_pages --store <name> --out <dir> <url> …` — a quick
+     look: opens the store, visits each page and saves a screenshot plus the
+     visible text (and, with `--js file.js`, whatever a small script returns —
+     e.g. the buttons and their labels), then closes the store.
+   - `python -m tools.probe_session --store <name> --cmd-dir <dir> --out <dir>
+     [--max-minutes 120]` — a conversation with the page: opens the store **once**,
+     sends downloads to `<out>/files`, writes `READY` into the command folder and
+     then runs every new `<name>.py` dropped there, writing `<name>.out` (what it
+     printed, or the traceback) ending with `<<DONE>>`. Scripts see `d` (the
+     driver), every helper of `core/browser_kit.py` (`find`, `need`, `js_click`,
+     `real_click`, `table_rows`, `wait_new_files` …) and `dump(d, "tag")`
+     (screenshot + JSON with URL, title, text including shadow roots, and the
+     controls with their attributes). Variables persist from one script to the
+     next. Drop a file `STOP` to end it (it also ends after `--max-minutes`).
+     On the VM, start it with the job helper (Ziniao cannot open windows from an
+     SSH session), then copy command files in and read the `.out` files back.
+   Read the dump, then write the next step. Keep the one-off command scripts out
+   of the repo; what they teach goes into `FORMS.md` and the routes.
 3. Confirm per form: how to reach it, how to set the period, how to know it is
    ready, how to download it, what the file looks like (header row, sheet name,
    column names in the store's language).
@@ -65,15 +79,24 @@ Ziniao browser); close stores through the Ziniao client.
 
 ## 3. Build the download layer (developer)
 
-Create `platforms/<platform>/` with, at minimum:
+Start from the scaffold — it already keeps the shared contract:
+
+```
+python -m tools.new_platform AZ amazon "亚马逊" MX      # CODE PACKAGE 中文名 COUNTRY
+```
+
+It creates `platforms/<package>/` and prints the line to add to
+`core/markets.py` `PLATFORMS` (add it by hand, then run
+`python -m pytest tests/test_platform_contract.py -q`). `--dry-run` works at
+once; a real run says "还没实现" until the pieces below are written:
 
 | File | Job | Model it on |
 |---|---|---|
-| `site.py` | per-country facts: hosts, locale, currency, timezone, quirks | `mercadolibre/meli_site.py` |
-| `forms.py` (one or more) | the routes: request / probe readiness / fetch, each giving up with a reason (`download_diag.give_up`) | `meli_forms.py`, `mercadopago.py` |
-| `run_downloads.py` | one store end to end; writes `run_meta.json` and `REPORT.md` | `mercadolibre/run_downloads.py` |
-| `run_batch.py` | many stores in one session; owed catch-up; summary JSON for the runner | `mercadolibre/run_batch.py` |
-| expected forms | the list of forms a store should yield for a month, and which ones the report does not need | `download_diag.expected_forms` |
+| `site.py` | per-country facts: hosts, locale, currency, timezone, quirks | `falabella/site.py`, `mercadolibre/meli_site.py` |
+| `periods.py` | `form_ids(month)`: the forms a store should yield for a month; `in_report(form)`: which ones the report reads | `falabella/periods.py` |
+| `forms.py` (one or more) | the routes: request / probe readiness / fetch, each giving up with a reason (`ctx.give_up`). Browser helpers from `core/browser_kit.py` (shadow roots, `need`, `real_click`, `wait_new_files`, `retried`); put only this platform's page quirks in a `page_kit.py` next to it | `falabella/forms.py`, `falabella/page_kit.py` |
+| `run_downloads.py` | one store end to end; writes `run_meta.json` and `REPORT.md` (scaffolded; set `IMPLEMENTED = True` when the routes exist) | `falabella/run_downloads.py` |
+| `run_batch.py` | many stores in one session; owed catch-up; summary JSON for the runner (scaffolded, usually unchanged) | `falabella/run_batch.py` |
 
 Rules that carry over unchanged (details in the playbook):
 - two phases: request everything slow first, download fast things meanwhile,
@@ -108,8 +131,13 @@ Follow `REPORT_FAMILY.md`: same sheet order, same styles, same check levels, sam
 (`<PLATFORM>_<COUNTRY>_全店汇总_<month>.xlsx`). Platform-specific content goes in
 the sheets' bodies, not in a different layout.
 
-- `run_reports.py` + `report_build.py` in the platform folder (until the shared
-  report kit exists — see ARCHITECTURE §5)
+- `run_reports.py` (scaffolded) + `report_build.py` in the platform folder. The
+  platform writes load / derive / validate; the sheets come from
+  `core/report_family.py` (`REPORT_FAMILY.md` §6): a P&L row spec with
+  formulas as data, bridge lines with a residual row, column specs for the long
+  tables, the ⑩ gaps sheet. Don't copy layout code from another platform —
+  if a sheet needs something the family lacks, add it to `report_family` with a
+  test, so every platform gets it
 - every check is `error` (numbers can't be trusted) or `warn` (look at this);
   each one says in plain Chinese what it compared and what to do
 - tests with **synthetic** fixtures (`tests/test_<platform>_*.py`). Real exports
@@ -121,12 +149,16 @@ the sheets' bodies, not in a different layout.
 ## 6. Plug into the runner and the window (developer)
 
 - register the platform (code, package, Chinese name, Ziniao platform-name pattern,
-  countries) in `core/markets.py`, and its stores in `config.json`
-  (`allowed`, `catalog` with platform + country, `batches["<CODE>-<COUNTRY>"]`)
+  countries) in `core/markets.py` — `tools/new_platform.py` printed the line —
+  and its stores in `config.json` (`allowed`, `catalog` with platform + country,
+  `batches["<CODE>-<COUNTRY>"]`)
 - nothing to change in `core/run_monthly.py` or the window: they run every
   configured unit; the platform's `run_batch` / `run_reports` only have to keep the
   shared contract (ARCHITECTURE §5: `--month`, `--stores`, `--market`,
-  `--collect-only`, exit codes, `[BATCH_SUMMARY_JSON]`)
+  `--collect-only`, `--dry-run`, exit codes, `[BATCH_SUMMARY_JSON]`).
+  `tests/test_platform_contract.py` checks it for every registered platform
+  whose package imports — it must pass before the platform goes near a test
+  machine
 - run the whole chain from the window on the test machine; then from a
   registered scheduled task (try-run button)
 
