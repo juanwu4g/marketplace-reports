@@ -5,8 +5,8 @@ month (billed or estimated) and the notes under the table."""
 import pandas as pd
 
 from core.report_family import header_row
-from core.report_kit import (BOX, C_AMBER, C_GREY, C_NAVY, C_RED, C_SUB, F, INT, PCT, est_height,
-    fill, wrap)
+from core.report_kit import (BOX, C_AMBER, C_NAVY, C_RED, C_SUB, F, INT, PCT, est_height, fill,
+    title_rows, wrap)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (FEE_BY_ES, SHEET_NAMES, TAX_RATE_NOMINAL_GROSS,
@@ -118,13 +118,10 @@ def trend_table(S):
 
 def sheet_trend(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[7])
-    ws["A1"] = "月度经营趋势"
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = ("数据源：%s（销售报表为滚动窗口导出，窗口两端的月份可能不完整）。"
-                "本期为 %s，灰斜体行表示不完整月份，仅供参考。单位：%s"
-                % (site.VENTAS_SHEET, ctx["period"], site.CUR))
-    ws["A2"].font = F(9, False, C_GREY)
+    title_rows(ws, "月度经营趋势",
+               "数据源：%s（销售报表为滚动窗口导出，窗口两端的月份可能不完整）。"
+               "本期为 %s，灰斜体行表示不完整月份，仅供参考。单位：%s"
+               % (site.VENTAS_SHEET, ctx["period"], site.CUR))
     ws["A3"] = ("平台三项扣费各占一列，不合并。佣金与代扣代缴税金在平台报表里是一个数，"
                 "本表按账单明细逐单还原；账单只覆盖最近两三个计费期，更早的月份改按本店"
                 "实测代扣税率推算代扣税、再倒推佣金（两者之和始终等于平台给出的合并值）。"

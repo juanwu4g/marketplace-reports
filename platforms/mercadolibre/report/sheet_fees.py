@@ -4,13 +4,13 @@ path, reconciled to ②."""
 
 from openpyxl.styles import Alignment
 
+from core.report_family import header_row
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREY, C_NAVY, C_RED, C_SUB, F, INT,
-    PCT, est_height, fill, header_cells)
+    PCT, est_height, fill, header_cells, title_rows)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (CHANNEL_MEANING, CHANNEL_ZH, CH_NA, CH_NO,
     CH_SI, FEE_BY_ES, F_DETALLE, SHEET_NAMES, classify, fmt, money)
-from platforms.mercadolibre.report.sheet_common import Sheet
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -18,14 +18,13 @@ from platforms.mercadolibre.report.sheet_common import Sheet
 # ════════════════════════════════════════════════════════════════════════
 
 def sheet_fees(wb, stores, ctx):
-    sh = Sheet(wb, SHEET_NAMES[3], first_store_col=1, nstores=0)
-    ws = sh.ws
-    sh.title("平台费用明细（%s账单，按计费日归集）" % ctx["period_cn"],
-             "数据源：Reporte_Facturacion_MercadoLibre + Reporte_Notas_Credito。"
-             "结算通道决定这笔钱是“下单时已扣”还是“月底再扣”，混淆两者是平不了账的主因之一。"
-             "未在 FEE_CATALOG 登记的科目以红底标出。单位：%s" % site.CUR)
-    sh.header(4, ["店铺", "西班牙语科目 (Detalle)", "中文科目", "结算通道", "笔数", "金额", "占该店 GMV%"],
-              [18, 52, 30, 16, 10, 16, 14])
+    ws = wb.create_sheet(SHEET_NAMES[3])
+    title_rows(ws, "平台费用明细（%s账单，按计费日归集）" % ctx["period_cn"],
+               "数据源：Reporte_Facturacion_MercadoLibre + Reporte_Notas_Credito。"
+               "结算通道决定这笔钱是“下单时已扣”还是“月底再扣”，混淆两者是平不了账的主因之一。"
+               "未在 FEE_CATALOG 登记的科目以红底标出。单位：%s" % site.CUR)
+    header_row(ws, 4, ["店铺", "西班牙语科目 (Detalle)", "中文科目", "结算通道", "笔数", "金额",
+                       "占该店 GMV%"], [18, 52, 30, 16, 10, 16, 14])
 
     r = 5
     chan_order = {CH_SI: 0, CH_NO: 1, CH_NA: 2}

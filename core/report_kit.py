@@ -87,16 +87,7 @@ class Sheet(object):
         return get_column_letter(self.tcol_idx)
 
     def title(self, text, sub="", sub2=""):
-        ws = self.ws
-        ws["A1"] = text
-        ws["A1"].font = F(14, True, C_NAVY)
-        ws.row_dimensions[1].height = 24
-        if sub:
-            ws["A2"] = sub
-            ws["A2"].font = F(9, False, C_GREY)
-        if sub2:
-            ws["A3"] = sub2
-            ws["A3"].font = F(9, False, C_GREY)
+        title_rows(self.ws, text, sub, sub2)
 
     def header(self, row, cols, widths, height=30, color=C_NAVY):
         ws = self.ws
@@ -104,6 +95,20 @@ class Sheet(object):
         ws.row_dimensions[row].height = height
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
+
+
+def title_rows(ws, text, sub="", sub2=""):
+    """A sheet's head: A1 the title (navy, bold, row 24 high), A2 / A3 grey notes
+    when given (Sheet.title on any worksheet)."""
+    ws["A1"] = text
+    ws["A1"].font = F(14, True, C_NAVY)
+    ws.row_dimensions[1].height = 24
+    if sub:
+        ws["A2"] = sub
+        ws["A2"].font = F(9, False, C_GREY)
+    if sub2:
+        ws["A3"] = sub2
+        ws["A3"].font = F(9, False, C_GREY)
 
 
 def header_cells(ws, row, cols, first_col=1, color=C_NAVY, wrap_text=True):

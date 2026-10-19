@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 
 from core.report_family import set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAND, C_CALC, C_GREEN, C_GREY, C_INPUT, C_NAVY,
-    C_RED, C_SUB, C_WARN, F, INT, PCT, fill, header_cells)
+    C_RED, C_SUB, C_WARN, F, INT, PCT, fill, header_cells, title_rows)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (FEE_BY_ES, RETURN_REASON_ZH, RETURN_RESULT_ZH,
@@ -362,9 +362,7 @@ def classify_abnormal(estado, rv):
 
 def sheet_sku(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[6])
-    ws["A1"] = "SKU 盈利分析（%s）" % ctx["period_cn"]
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
+    title_rows(ws, "SKU 盈利分析（%s）" % ctx["period_cn"])
     ws["A2"] = ("【使用说明】单位采购成本（到岸成本，含头程运费与关税）只在最下方"
                 "【表五】的黄色 M 列填一次，表一与表四会自动引用同一个值，不要分头填。单位：%s" % site.CUR)
     ws["A2"].font = F(9, True, C_RED)

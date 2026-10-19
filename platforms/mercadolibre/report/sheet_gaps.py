@@ -7,8 +7,9 @@ import pandas as pd
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
+from core.report_family import set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREEN, C_GREY, C_NAVY, C_OK, C_RED,
-    C_SUB, C_WARN, F, est_height, fill, header_cells, wrap)
+    C_SUB, C_WARN, F, est_height, fill, header_cells, title_rows, wrap)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.site import is_pe
@@ -24,13 +25,9 @@ from platforms.mercadolibre.report.sheet_common import (agg_tax_rate, storage_co
 
 def sheet_gaps(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[9])
-    ws["A1"] = "本期校验结果 · 数据缺口 · 待办清单"
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = "上半部分是脚本每期自动跑的硬校验；下半部分是需要人处理的事项，按优先级排序。"
-    ws["A2"].font = F(9, False, C_GREY)
-    for i, w in enumerate([10, 30, 60, 54, 40], 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    title_rows(ws, "本期校验结果 · 数据缺口 · 待办清单",
+               "上半部分是脚本每期自动跑的硬校验；下半部分是需要人处理的事项，按优先级排序。")
+    set_widths(ws, [10, 30, 60, 54, 40])
 
     r = 4
     ws.cell(row=r, column=1, value="一、本期校验结果").font = F(12, True, C_NAVY)

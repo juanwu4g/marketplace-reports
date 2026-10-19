@@ -3,8 +3,8 @@
 withheld tax or the "nothing withheld" check)."""
 
 from openpyxl.styles import Alignment
-from openpyxl.utils import get_column_letter
 
+from core.report_family import set_widths
 from core.report_kit import (BOX, C_BAND, C_CALC, C_GREEN, C_GREY, C_INPUT, C_NAVY, C_OK, C_RED,
     C_SUB, C_WARN, F, INT, PCT, PCT2, PCT3, est_height, fill, header_cells, wrap)
 
@@ -25,14 +25,10 @@ def _bridge_head(wb, stores, ctx):
     sh = Sheet(wb, SHEET_NAMES[2], first_store_col=3, nstores=n)
     ws = sh.ws
     ncol_idx = sh.tcol_idx + 1
-    ws["A1"] = "平账勾稽表（%s）" % ctx["period_cn"]
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = ("把“销售报表 / 平台账单 / 实际资金”三张表逐项打通。"
-                "每个桥的最后一行都是差异检验，✓ 表示完全勾稽。单位：%s" % site.CUR)
-    ws["A2"].font = F(9, False, C_GREY)
-    for i, w in enumerate([6, 44] + [16] * n + [16, 60], 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    sh.title("平账勾稽表（%s）" % ctx["period_cn"],
+             "把“销售报表 / 平台账单 / 实际资金”三张表逐项打通。"
+             "每个桥的最后一行都是差异检验，✓ 表示完全勾稽。单位：%s" % site.CUR)
+    set_widths(ws, [6, 44] + [16] * n + [16, 60])
 
     state = {"r": 4}
 

@@ -6,7 +6,7 @@ from openpyxl.utils import get_column_letter
 
 from core.report_family import header_row, set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_GREY, C_NAVY, C_OK, C_SUB, F, INT, PCT, fill,
-    header_cells, wrap)
+    header_cells, title_rows, wrap)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (MONEY_KEPT, MONEY_REFUNDED, RETURN_REASON_ZH,
@@ -21,12 +21,9 @@ from platforms.mercadolibre.report.sheet_common import no_full_text, store_cols
 
 def sheet_returns_money(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[4])
-    ws["A1"] = "退货 · 退款 · 售后分析（%s订单）" % ctx["period_cn"]
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = ("一笔退货会同时影响：退给买家的货款、平台退还的佣金与运费、额外的退货处理费、以及库存能否回收。"
-                "下表按订单状态拆开，并标明责任方。单位：%s" % site.CUR)
-    ws["A2"].font = F(9, False, C_GREY)
+    title_rows(ws, "退货 · 退款 · 售后分析（%s订单）" % ctx["period_cn"],
+               "一笔退货会同时影响：退给买家的货款、平台退还的佣金与运费、额外的退货处理费、以及库存能否回收。"
+               "下表按订单状态拆开，并标明责任方。单位：%s" % site.CUR)
     n_par = sum(len(S["cn"]["partial"]) for S in stores)
     if n_par:
         ws["A3"] = ("⚠ 本页的“实际退款额”直接取自销售报表的 Anulaciones y reembolsos 列，未作修正。"
@@ -156,9 +153,7 @@ def sheet_returns_money(wb, stores, ctx):
 
 def sheet_triage(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[5])
-    ws["A1"] = "Full 仓退货质检明细与原因分析"
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
+    title_rows(ws, "Full 仓退货质检明细与原因分析")
     if not site.HAS_FULL:
         ws["A2"] = no_full_text()
         ws["A2"].font = F(10, False, C_GREY)

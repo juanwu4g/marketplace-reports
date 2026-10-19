@@ -7,7 +7,7 @@ from openpyxl.utils import get_column_letter
 
 from core.report_family import header_row
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREEN, C_GREY, C_NAVY, C_RED, C_SUB,
-    C_WARN, F, INT, fill, header_cells)
+    C_WARN, F, INT, fill, header_cells, title_rows)
 
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import SHEET_NAMES, V_SKU, V_UNITS, money, num, pct
@@ -106,9 +106,7 @@ def stock_verdict(row, ours, tol):
 
 def sheet_inventory(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[8])
-    ws["A1"] = "库存与动销分析"
-    ws["A1"].font = F(14, True, C_NAVY)
-    ws.row_dimensions[1].height = 24
+    title_rows(ws, "库存与动销分析")
     if not site.HAS_FULL:
         ws["A2"] = no_full_text()
         ws["A2"].font = F(10, False, C_GREY)
