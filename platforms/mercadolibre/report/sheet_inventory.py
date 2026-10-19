@@ -5,7 +5,7 @@ import pandas as pd
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
-from core.report_family import header_row
+from core.report_family import Col, Family, header_row
 from core.report_kit import (BOX, C_AMBER, C_BAD, C_BAND, C_GREEN, C_GREY, C_NAVY, C_RED, C_SUB,
     C_WARN, F, INT, fill, header_cells, title_rows)
 
@@ -104,7 +104,28 @@ def stock_verdict(row, ours, tol):
     return chk, days, ("；".join(acts) if acts else "正常")
 
 
+# 表一 · 各店 Full 仓库存结构（core/report_family.Col）。最后一列周转天数 = 平均库存
+# ÷ 日均销量；销量为 0 时不写 0 —— 0 天会被读成"马上就卖完"，恰好与事实相反。
+INV_TABLE1_COLS = (
+    [Col("店铺", 18, font=F(10)), Col("快照日", 12, font=F(10))]
+    + [Col(h, w, INT, font=F(10)) for h, w in (
+        ("SKU 数", 8), ("在途待入库", 12), ("在转运", 10), ("买家退回", 11), ("可售", 10),
+        ("不可售", 10), ("丢失/审核/取消", 14), ("库存合计", 11), ("好品质", 11),
+        ("待促动销", 11), ("待上架", 10), ("待避免丢弃", 12), ("长龄单位", 11),
+        ("平台30天销量", 13), ("自算30天销量", 13), ("销量差异", 11), ("近30天平均库存", 14))]
+    + [Col("库存周转天数", 13, "0.0", font=F(10),
+           formula='=IF(P{r}=0,"无动销",S{r}/(P{r}/%d))' % STOCK_WINDOW_DAYS)])
+# 表三 · 需要处理的清单
+INV_TABLE3_COLS = (
+    [Col("店铺", None, font=F(9)), Col("SKU", None, font=F(9)), Col("商品名称", None, font=F(9)),
+     Col("需要处理的事", None, font=F(9), align=Alignment(wrap_text=True, vertical="top")),
+     Col("核对结论", None, font=F(9))]
+    + [Col(h, None, INT, font=F(9)) for h in (
+        "可售库存", "平台30天销量", "自算30天销量", "可售天数", "不可售+待丢弃")])
+
+
 def sheet_inventory(wb, stores, ctx):
+    fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[8])
     title_rows(ws, "库存与动销分析")
     if not site.HAS_FULL:
@@ -142,12 +163,8 @@ def sheet_inventory(wb, stores, ctx):
     r = 6
     ws.cell(row=r, column=1, value="表一 · 各店 Full 仓库存结构").font = F(12, True, C_NAVY)
     r += 1
-    t1 = ["店铺", "快照日", "SKU 数", "在途待入库", "在转运", "买家退回", "可售",
-          "不可售", "丢失/审核/取消", "库存合计", "好品质", "待促动销", "待上架",
-          "待避免丢弃", "长龄单位", "平台30天销量", "自算30天销量", "销量差异",
-          "近30天平均库存", "库存周转天数"]
-    w1 = [18, 12, 8, 12, 10, 11, 10, 10, 14, 11, 11, 11, 10, 12, 11, 13, 13, 11, 14, 13]
-    header_row(ws, r, t1, w1)
+    t1 = INV_TABLE1_COLS
+    header_row(ws, r, [c.header for c in t1], [c.width for c in t1])
     r += 1
     t1_start = r
     per_store = {}
@@ -166,18 +183,7 @@ def sheet_inventory(wb, stores, ctx):
                 ST["to_list"].sum(), ST["discard"].sum(), ST["aged"].sum(),
                 ST["sales30_u"].sum(), ours, ours - ST["sales30_u"].sum(),
                 ST["avg_stock"].sum()]
-        for i, v in enumerate(vals, 1):
-            c = ws.cell(row=r, column=i, value=cell_int(v))
-            if i >= 3:
-                c.number_format = INT
-        # 周转天数 = 平均库存 ÷ 日均销量。销量为 0 时不写 0 —— 0 天会被读成
-        # "马上就卖完"，恰好与事实相反。
-        ws.cell(row=r, column=20,
-                value="=IF(P%d=0,\"无动销\",S%d/(P%d/%d))" % (r, r, r, STOCK_WINDOW_DAYS)
-                ).number_format = "0.0"
-        for c in range(1, len(t1) + 1):
-            ws.cell(row=r, column=c).border = BOX
-            ws.cell(row=r, column=c).font = F(10)
+        fam.write_row(ws, r, t1, [cell_int(v) for v in vals] + [None])
         r += 1
     if len(have) > 1:
         ws.cell(row=r, column=1, value="合计").font = F(10, True)
@@ -320,9 +326,8 @@ def sheet_inventory(wb, stores, ctx):
         "数量对不上则说明 SKU 映射或渠道口径有问题，会影响后面所有按 SKU 的分析。"
         )).font = F(9, False, C_GREY)
     r += 1
-    t3 = ["店铺", "SKU", "商品名称", "需要处理的事", "核对结论", "可售库存",
-          "平台30天销量", "自算30天销量", "可售天数", "不可售+待丢弃"]
-    header_cells(ws, r, t3, color=C_BAND)
+    t3 = INV_TABLE3_COLS
+    header_cells(ws, r, [c.header for c in t3], color=C_BAND)
     r += 1
     if not problems:
         ws.cell(row=r, column=1, value="本期库存没有需要处理的项。").font = F(10, False, C_GREEN)
@@ -332,16 +337,7 @@ def sheet_inventory(wb, stores, ctx):
         rank = lambda p: (0 if "断货" in p[3] else 1 if "丢弃" in p[3] else
                           2 if "⚠" in p[4] else 3, -p[5])
         for p in sorted(problems, key=rank):
-            for i, v in enumerate(p[:5], 1):
-                ws.cell(row=r, column=i, value=v)
-            for i, v in zip((6, 7, 8, 9, 10), p[5:]):
-                ws.cell(row=r, column=i, value=int(v)).number_format = INT
-            ws.cell(row=r, column=4).alignment = Alignment(wrap_text=True, vertical="top")
-            for c in range(1, len(t3) + 1):
-                ws.cell(row=r, column=c).border = BOX
-                ws.cell(row=r, column=c).font = F(9)
-            if "断货" in p[3]:
-                for c in range(1, len(t3) + 1):
-                    ws.cell(row=r, column=c).fill = fill(C_BAD)
+            fam.write_row(ws, r, t3, list(p[:5]) + [int(v) for v in p[5:]],
+                          fill_color=C_BAD if "断货" in p[3] else None)     # 断货标红
             r += 1
     ws.freeze_panes = "C8"
