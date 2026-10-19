@@ -38,6 +38,9 @@ COUNTRIES = collections.OrderedDict([
     ("CO", "哥伦比亚"),
 ])
 
+# Codes appear in file names finance keeps for years (docs/REPORT_FAMILY.md §1):
+# once used, a code never changes.
+#
 # Stores that config.json does not describe belong here. Everything before the
 # second platform was MercadoLibre Mexico, and production configs still rely on
 # it — see store_config for when this default is NOT applied.

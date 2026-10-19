@@ -69,22 +69,19 @@ T_COLS = {"date": "Fecha de transacción", "type": "Tipo de transacción", "orde
 PL_ROWS = [
     (FC.SALES, "商品销售收入", "Pago por precio del producto", "d",
      "本月结算的商品价款（不含 IVA），按交易日（≈ 送达日）归集；含 CMR 积分支付的部分"),
-    (FC.SHIP_INCOME, "运费收入", "Pago de envío comprador / Pago por envío directo", "d",
-     "买家支付的运费，以及平台付给卖家自配送订单的运费"),
-    (None, "营业收入合计", "", "sum", "＝ 商品销售收入 ＋ 运费收入"),
+    ("ship_net", "运费收入（净额）", "Pago de envío comprador − Reversa / Pago por envío directo", "d",
+     "卖家自己挣的运费：自配送订单买家付的运费，以及平台付给卖家的自配送运费。Falabella 配送的订单，"
+     "买家付的运费原样转付 Falabella —— 卖家只是代收代付（代理人），按 IFRS 15 不计收入，两边金额见下方备查项"),
+    (None, "营业收入合计", "", "sum", "＝ 商品销售收入 ＋ 运费收入（净额）"),
     (FC.REFUND, "减：退货退款", "Descuento por devolución de producto", "d",
      "退货冲回的商品价款（含申诉裁定）"),
     (FC.PROMO, "加：平台出资促销与激励", "Aportes promocionales / Oportunidad Única", "d",
      "Falabella 出资的优惠券、CMR 卡活动补贴、销售目标奖励"),
-    (FC.OTHER_INCOME, "加：丢失损坏赔付", "Compensación por extravío o producto dañado", "d",
-     "物流丢失/损坏的赔付净额"),
-    (None, "净销售收入", "", "f", "＝ 营业收入合计 − 退货退款 ＋ 平台促销 ＋ 赔付"),
+    (None, "净销售收入", "", "f", "＝ 营业收入合计 − 退货退款 ＋ 平台出资促销"),
     (FC.COMMISSION, "减：销售佣金", "Cobro por comisión por venta", "d",
      "按品类费率；退货订单的佣金退还已抵减"),
     (FC.SHIP_COFIN, "减：配送共担费", "Cobro por cofinanciamiento logístico", "d",
      "卖家承担的配送费（FBF 与自配送订单）"),
-    (FC.SHIP_BUYER, "减：买家运费转付平台", "Reversa de pago de envío comprador", "d",
-     "买家付的运费由平台配送，原样转付平台；与运费收入里买家付的部分相抵"),
     (FC.SHIP_PROMO, "减：免运费促销", "Promo envío falabella.com / Promo Envio Seller", "d",
      "平台免运促销先扣后还（净额通常为 0）；卖家出资的免运促销"),
     (FC.SHIP_REVERSE, "减：退货逆向物流", "Cobro por logística inversa", "d", "退货的取回运费"),
@@ -98,23 +95,47 @@ PL_ROWS = [
     ("unregistered", "减：未登记科目 ⚠", "(fee_catalog 里没有)", "d",
      "字典里没有的交易类型。金额照常计入以保证勾稽，但需人工确认科目归属，见 ⑩ 页"),
     (None, "平台费用小计", "", "sum", "从结算款中直接扣除"),
-    (None, "经营贡献毛利（未扣商品成本）", "", "f", "＝ 净销售收入 − 平台费用小计"),
+    (FC.OTHER_INCOME, "加：其他收入（物流丢失/损坏赔付）", "Compensación por extravío o producto dañado", "d",
+     "平台对丢失/损坏商品的赔付，是存货损失的补偿，不是销售收入，单列在费用之后"),
+    (None, "经营贡献毛利（未扣商品成本）", "", "f", "＝ 净销售收入 − 平台费用小计 ＋ 其他收入"),
     ("cogs", "减：商品采购成本", "", "in",
      "⚠ 平台数据不含此项：在【⑦ SKU盈利分析】填单位成本，或直接在此填总额"),
     (None, "税前净利润", "", "f", "＝ 经营贡献毛利 − 商品采购成本"),
 ]
 INCOME_LINES = (FC.SALES, FC.SHIP_INCOME, FC.REFUND, FC.PROMO, FC.OTHER_INCOME)
+# FEE_ROWS: the fee rows of ②. FEE_LINES: every charge line, incl. the buyer-shipping
+# pass-through that ② nets against shipping income.
+FEE_ROWS = (FC.COMMISSION, FC.SHIP_COFIN, FC.SHIP_PROMO, FC.SHIP_REVERSE, FC.FULFILMENT, FC.ADS,
+            FC.SUBSCRIPTION, FC.PENALTY, FC.OTHER, "unregistered")
+LOGISTICS_ROWS = (FC.SHIP_COFIN, FC.SHIP_PROMO, FC.SHIP_REVERSE)
 FEE_LINES = (FC.COMMISSION, FC.SHIP_COFIN, FC.SHIP_BUYER, FC.SHIP_PROMO, FC.SHIP_REVERSE,
              FC.FULFILMENT, FC.ADS, FC.SUBSCRIPTION, FC.PENALTY, FC.OTHER, "unregistered")
 
-ACCOUNTANT_QUESTIONS = [
-    "销项 IVA：Fulfillment by Falabella 订单的 boleta/factura 由 Falabella 以卖家名义开具（见【③】桥 D "
-    "与 Liquidación）；卖家自配送（FBS）订单的销售单据由谁开、是否已开，请会计师确认，避免漏报或重复报。",
-    "进项 IVA：Falabella 每月（21 日–次月 20 日）开具的费用发票（Factura）与贷记单（Nota de Crédito）"
-    "所含 IVA 能否全部作为进项抵扣。",
-    "平台出资的促销补贴、CMR 卡“Oportunidad Única”补贴：本报表计入净销售收入（含 IVA 行另列），"
-    "开票与入账方式请会计师确认。",
-    "物流丢失/损坏赔付：本报表计入“丢失损坏赔付”（收入侧），是否需要开具单据请确认。",
+# The accounting policies the report applies (decided, not open questions), and what
+# the tax filing has to take into account. Shown on ① and ⑩; README.md explains them.
+ACCOUNTING_POLICIES = [
+    ("收入确认", "商品价款在 Falabella 记“Pago por precio del producto”时确认 —— 即送达、控制权转给买家时"
+     "（IFRS 15），按交易日归月。已下单、未送达的订单不确认收入（金额见③桥 A）。"),
+    ("不含 IVA", "卖家是 IVA 纳税人：销项 IVA、进项 IVA 不是收入也不是成本，损益表一律不含 IVA，"
+     "两者列在②备查项。"),
+    ("运费", "Falabella 配送的订单，买家付的运费原样转付 Falabella，卖家只是代收代付（代理人），按净额处理、"
+     "不计收入；卖家自配送订单的运费、以及平台付给卖家的自配送运费才是卖家的收入。"),
+    ("促销", "Falabella 出资的优惠券、CMR 卡“Oportunidad Única”补贴和销售奖励，是这笔销售的对价的一部分，"
+     "计入净销售收入；卖家自己出资的免运费促销是销售费用。"),
+    ("退货", "退货冲减收入；平台退还的佣金冲减佣金；退货的逆向物流计入物流费用。"),
+    ("丢失/损坏赔付", "是对存货损失的补偿，不是销售：单列为“其他收入”，放在平台费用之后。"),
+    ("平台费用", "按 Falabella 的扣费日计入当月（与平台费用发票的口径相同）；佣金、物流、仓储、广告、订阅、"
+     "罚款分行列示，同一科目的退还/更正冲减同一行。"),
+    ("商品成本与存货", "平台数据不含采购成本：在②或⑦录入。⑨的“库存货值”按售价计算，仅用于判断库存规模，"
+     "不是会计上的存货价值。"),
+]
+TAX_NOTES = [
+    "销项 IVA 的单据：Fulfillment by Falabella 订单的 boleta/factura 由 Falabella 以卖家名义开具（Liquidación "
+    "factura，见③桥 D），申报以这些单据为准，不要重复开具；卖家自配送（FBS）订单的单据须由卖家自己开具"
+    "（本月金额见③桥 D 最后一行）。",
+    "进项 IVA 的期间：Falabella 的费用发票按账期（21 日–次月 20 日）在账期结束后开出，进项 IVA 按发票日期"
+    "申报 —— 本月 21–30 日费用所含的进项 IVA 进入下个月的申报。这只影响 IVA 申报的月份，不影响本报表的损益。",
+    "促销补贴与赔付的单据由 Falabella 开具（Nota de crédito / Nota de débito promociones），以平台单据为准。",
 ]
 
 
@@ -299,10 +320,12 @@ def derive(S):
     m["pl"] = {k: float(by[T_COLS["net"]].sum().get(k, 0.0)) for k in INCOME_LINES + FEE_LINES}
     m["pl_iva"] = {k: float(by[T_COLS["iva"]].sum().get(k, 0.0)) for k in INCOME_LINES + FEE_LINES}
     m["pl_gross"] = {k: float(by[T_COLS["gross"]].sum().get(k, 0.0)) for k in INCOME_LINES + FEE_LINES}
+    m["pl"]["ship_net"] = m["pl"][FC.SHIP_INCOME] + m["pl"][FC.SHIP_BUYER]
     m["income"] = sum(m["pl"][k] for k in INCOME_LINES)
-    m["fees"] = sum(m["pl"][k] for k in FEE_LINES)
-    m["revenue"] = m["pl"][FC.SALES] + m["pl"][FC.SHIP_INCOME]
-    m["contrib"] = m["income"] + m["fees"]
+    m["revenue"] = m["pl"][FC.SALES] + m["pl"]["ship_net"]
+    m["net_sales"] = m["revenue"] + m["pl"][FC.REFUND] + m["pl"][FC.PROMO]
+    m["fees"] = sum(m["pl"][k] for k in FEE_ROWS)
+    m["contrib"] = m["net_sales"] + m["fees"] + m["pl"][FC.OTHER_INCOME]
     m["tx_net"] = float(t[T_COLS["net"]].sum())
     m["tx_iva"] = float(t[T_COLS["iva"]].sum())
     m["tx_gross"] = float(t[T_COLS["gross"]].sum())
@@ -514,8 +537,9 @@ def validate(stores):
                                 fmt(d))))
         for P in m["bridge_b_pending"]:
             C.append(K.check("bridge_b_open", st, "桥 B：账期 %s 的费用发票还没出" % P["period"],
-                             False, "%s–%s 的 %d 行应开票的费用 %s（不含 IVA）暂无发票可核对；账期结束后（次月 21 日起）"
-                             "重新下载并重出本报表" % (P["from"], P["to"], P["tx_lines"],
+                             False, "%s–%s 的 %d 行应开票的费用 %s（不含 IVA）暂无发票可核对。"
+                             "这些费用已按交易明细计入②，数字不受影响；发票在账期结束后（次月 21 日起）开出，"
+                             "下个月的下载会取到它，无需人工处理" % (P["from"], P["to"], P["tx_lines"],
                                                    fmt(P["tx_net"])), severity="warn"))
         unpaid = m["paid"].get("No Pagado")
         C.append(K.check("unpaid", st, "本月交易已全部付款", not unpaid,
@@ -611,7 +635,7 @@ def sheet_readme(wb, stores, ctx):
                  "填入商品成本后得到税前净利润。" % SHEETS[1]))
     rows.append(("", "钱对不对得上", "【%s】四座桥：A 订单 → 结算、B 平台费用发票 → 交易明细、"
                  "C 结算净额 → 到账、D 平台代开的销售单据。" % SHEETS[2]))
-    rows.append(("", "还缺什么", "【%s】列出未通过的校验、缺的文件和要会计师确认的问题。" % SHEETS[9]))
+    rows.append(("", "还缺什么", "【%s】列出未通过的校验、缺的文件，以及报税时要注意的事。" % SHEETS[9]))
     rows.append(("", "", ""))
     rows.append(("S", "二、口径（与美客多报表的不同之处）", ""))
     rows.append(("", "按交易日归集", "每一笔收入和费用按 Falabella“Transacciones”报表的交易日"
@@ -649,8 +673,7 @@ def sheet_readme(wb, stores, ctx):
         rows.append(("", "费用率", "平台费用合计 %s，占商品销售收入 %s；其中佣金 %s、物流 %s、Fulfillment %s、广告 %s。"
                      % (fmt(-tot("fees")), pct(-tot("fees") / rev),
                         pct(-sum(S["m"]["pl"][FC.COMMISSION] for S in stores) / rev),
-                        pct(-sum(S["m"]["pl"][k] for S in stores for k in
-                                 (FC.SHIP_COFIN, FC.SHIP_BUYER, FC.SHIP_PROMO, FC.SHIP_REVERSE)) / rev),
+                        pct(-sum(S["m"]["pl"][k] for S in stores for k in LOGISTICS_ROWS) / rev),
                         pct(-sum(S["m"]["pl"][FC.FULFILMENT] for S in stores) / rev),
                         pct(-sum(S["m"]["pl"][FC.ADS] for S in stores) / rev))))
         rows.append(("", "贡献毛利", "经营贡献毛利（未扣商品成本）%s，占商品销售收入 %s。"
@@ -666,7 +689,7 @@ def sheet_readme(wb, stores, ctx):
         (SHEETS[6], "按 SKU 的收入、费用与贡献；黄色列填单位采购成本即得 SKU 毛利。"),
         (SHEETS[7], "本月按周的销售与费用；有往月下载时追加各月对比。"),
         (SHEETS[8], "Fulfillment 库存快照：库存、近 4 周销量、可售周数、滞销与断货风险。"),
-        (SHEETS[9], "校验结果、缺失文件及原因、要会计师确认的问题。空表示没有待办。"),
+        (SHEETS[9], "校验结果、缺失文件及原因、报税提示。校验和缺失为空表示没有待办。"),
     ]:
         rows.append(("", nm, desc))
     rows.append(("", "", ""))
@@ -675,9 +698,13 @@ def sheet_readme(wb, stores, ctx):
                  "（含应缴的销项 IVA、已扣的进项 IVA）。利润看②的经营贡献毛利（不含 IVA）。"
                  % fmt(tot("tx_gross"))))
     rows.append(("", "", ""))
-    rows.append(("S", "七、要请会计师确认的事", ""))
-    for i, q in enumerate(ACCOUNTANT_QUESTIONS, 1):
-        rows.append(("", "问题 %d" % i, q))
+    rows.append(("S", "七、会计处理", ""))
+    for name, text in ACCOUNTING_POLICIES:
+        rows.append(("", name, text))
+    rows.append(("", "", ""))
+    rows.append(("S", "八、报税时要注意", ""))
+    for i, q in enumerate(TAX_NOTES, 1):
+        rows.append(("", "提示 %d" % i, q))
     r = 4
     for tag, b, c in rows:
         if tag == "S":
@@ -737,14 +764,15 @@ def sheet_pl(wb, stores, ctx):
             for i in range(n + (1 if n > 1 else 0)):
                 col = get_column_letter(sh.c0 + i)
                 if zh == "营业收入合计":
-                    f_ = "=%s%d+%s%d" % (col, rows_at[FC.SALES], col, rows_at[FC.SHIP_INCOME])
+                    f_ = "=%s%d+%s%d" % (col, rows_at[FC.SALES], col, rows_at["ship_net"])
                 elif zh == "净销售收入":
-                    f_ = "=%s%d+%s%d+%s%d+%s%d" % (col, rows_at["营业收入合计"], col, rows_at[FC.REFUND],
-                                                 col, rows_at[FC.PROMO], col, rows_at[FC.OTHER_INCOME])
+                    f_ = "=%s%d+%s%d+%s%d" % (col, rows_at["营业收入合计"], col, rows_at[FC.REFUND],
+                                            col, rows_at[FC.PROMO])
                 elif zh == "平台费用小计":
                     f_ = "=SUM(%s%d:%s%d)" % (col, rows_at[FC.COMMISSION], col, rows_at["unregistered"])
                 elif zh.startswith("经营贡献毛利"):
-                    f_ = "=%s%d+%s%d" % (col, rows_at["净销售收入"], col, rows_at["平台费用小计"])
+                    f_ = "=%s%d+%s%d+%s%d" % (col, rows_at["净销售收入"], col, rows_at["平台费用小计"],
+                                            col, rows_at[FC.OTHER_INCOME])
                 else:   # 税前净利润
                     f_ = "=%s%d-%s%d" % (col, rows_at["经营贡献毛利"], col, rows_at["cogs"])
                 c = ws.cell(row=r, column=sh.c0 + i, value=f_)
@@ -763,10 +791,9 @@ def sheet_pl(wb, stores, ctx):
     r += 1
     r = _section(ws, r, "费用率（占商品销售收入）", note_col)
     for label, keys in [("佣金", (FC.COMMISSION,)),
-                        ("物流（配送共担＋运费转付＋免运促销＋逆向物流 − 运费收入）",
-                         (FC.SHIP_COFIN, FC.SHIP_BUYER, FC.SHIP_PROMO, FC.SHIP_REVERSE, FC.SHIP_INCOME)),
+                        ("物流（配送共担＋免运促销＋逆向物流）", LOGISTICS_ROWS),
                         ("Fulfillment 仓储与操作", (FC.FULFILMENT,)), ("广告推广", (FC.ADS,)),
-                        ("平台费用合计", FEE_LINES), ("经营贡献毛利率", "contrib")]:
+                        ("平台费用合计", FEE_ROWS), ("经营贡献毛利率", "contrib")]:
         ws.cell(row=r, column=1, value=label).font = F(10)
         vals = []
         for S in stores:
@@ -794,10 +821,14 @@ def sheet_pl(wb, stores, ctx):
          "本月创建的订单买家实付金额，含 IVA；与结算口径的差见③桥 A"),
         ("订单数（不含已取消）", "", lambda S: S["m"].get("orders_live_n", 0), ""),
         ("已取消订单金额", "Canceladas", lambda S: S["m"].get("cancel_amt", 0.0), ""),
+        ("买家支付的运费（代收，不含 IVA）", "Pago de envío comprador", lambda S: S["m"]["pl"][FC.SHIP_INCOME],
+         "其中 Falabella 配送的部分原样转付平台（下一行），剩余计入“运费收入（净额）”"),
+        ("其中转付 Falabella（不含 IVA）", "Reversa de pago de envío comprador",
+         lambda S: S["m"]["pl"][FC.SHIP_BUYER], "代收代付，不是收入也不是费用"),
         ("销项 IVA（收入各行所含，19%）", "IVA débito fiscal", lambda S: S["m"]["iva_out"],
          "卖家应向 SII 申报；平台不代扣"),
         ("进项 IVA（平台费用各行所含）", "IVA crédito fiscal", lambda S: S["m"]["iva_in"],
-         "Falabella 费用发票所含 IVA，能否全额抵扣见①会计问题"),
+         "Falabella 费用发票所含 IVA；按发票日期申报，见①报税提示"),
         ("本月结算净额（含 IVA）", "Σ Monto con IVA", lambda S: S["m"]["tx_gross"],
          "＝ 经营贡献毛利 ＋ 销项 IVA − 进项 IVA；对到账见③桥 C"),
     ]
@@ -870,7 +901,7 @@ def sheet_bridge(wb, stores, ctx):
             line("　　参考：本账期贷记单总额（含 IVA）", lambda S: B(S, "nc"))
         else:
             line("账期 %s 至 %s：发票还没出 ⏳" % (a_, b_), lambda S: P(S, "tx_net"),
-                 "账期结束后（%s 起）重新下载并重出报表即可核对；本月这几天的费用已按交易明细计入②"
+                 "本月这几天的费用已按交易明细计入②，数字不受影响；发票 %s 起开出，下个月的下载会取到它"
                  % (pd.Timestamp(b_) + pd.Timedelta(days=1)).date(), color=K.C_WARN)
     line("交易明细中不开票的费用（不含 IVA）", lambda S: S["m"]["not_invoiced_net"],
          "没有发票号的费用行（一般为 0）")
@@ -899,7 +930,7 @@ def sheet_bridge(wb, stores, ctx):
     line("参考：本月结算的 FBF 订单商品价款（含 IVA）", lambda S: S["m"]["fbf_sales"],
          "单据在出库/送达时开，结算在送达后，两者有时间差；比较的是量级")
     line("参考：本月结算的卖家自配送（FBS）商品价款（含 IVA）", lambda S: S["m"]["fbs_sales"],
-         "这部分的销售单据不在 Liquidación 里 —— 由谁开具请会计师确认（见①问题 1）")
+         "这部分的销售单据不在 Liquidación 里，须由卖家自己开具（见①报税提示 1）")
 
 
 def per_store(stores, fn, sep="；"):
@@ -1030,14 +1061,14 @@ def sheet_sku(wb, stores, ctx):
     ws["A2"] = ("按交易明细的 SKU 汇总（不含 IVA）。广告、仓储等没有 SKU 的店铺级费用单列一行。"
                 "黄色列填单位采购成本（不含 IVA），右边两列自动算出 SKU 毛利。")
     ws["A2"].font = F(9, False, K.C_GREY)
-    cols = ["店铺", "SKU", "商品", "结算件数", "退货件数", "商品销售收入", "运费收入", "退货退款",
+    cols = ["店铺", "SKU", "商品", "结算件数", "退货件数", "商品销售收入", "运费收入（净额）", "退货退款",
             "平台促销", "佣金", "物流（净）", "Fulfillment", "其他费用", "贡献（未扣成本）",
             "单位成本（录入）", "商品成本", "SKU 毛利"]
     hdr = K.Sheet.__new__(K.Sheet)
     hdr.ws = ws
     K.Sheet.header(hdr, 4, cols, [18, 18, 44, 9, 9, 14, 12, 12, 12, 12, 12, 12, 12, 14, 12, 14, 14])
     r = 5
-    ship = [FC.SHIP_COFIN, FC.SHIP_BUYER, FC.SHIP_PROMO, FC.SHIP_REVERSE]
+    ship = list(LOGISTICS_ROWS)
     other = [FC.ADS, FC.SUBSCRIPTION, FC.PENALTY, FC.OTHER, "unregistered", FC.OTHER_INCOME]
     for S in stores:
         g = S["sku"]
@@ -1045,7 +1076,8 @@ def sheet_sku(wb, stores, ctx):
             vals = [S["store"], sku, x["name"], int(x["units"]), int(x["returns"])]
             for j, v in enumerate(vals, 1):
                 ws.cell(row=r, column=j, value=v).border = BOX
-            money = [x[FC.SALES], x[FC.SHIP_INCOME], x[FC.REFUND], x[FC.PROMO], x[FC.COMMISSION],
+            money = [x[FC.SALES], x[FC.SHIP_INCOME] + x[FC.SHIP_BUYER], x[FC.REFUND], x[FC.PROMO],
+                     x[FC.COMMISSION],
                      sum(x[k] for k in ship), x[FC.FULFILMENT], sum(x[k] for k in other), x["contrib"]]
             for j, v in enumerate(money, 6):
                 _money(ws.cell(row=r, column=j), float(v))
@@ -1085,7 +1117,7 @@ def sheet_trend(wb, stores, ctx):
         t = t.assign(_wk=wk.dt.date)
         for w, x in t.groupby("_wk"):
             sales = x.loc[x["_line"] == FC.SALES, T_COLS["net"]].sum()
-            fees = x.loc[x["_line"].isin(FEE_LINES), T_COLS["net"]].sum()
+            fees = x.loc[x["_line"].isin(FEE_ROWS), T_COLS["net"]].sum()
             row = [S["store"], str(w), int((x["_line"] == FC.SALES).sum())]
             for j, v in enumerate(row, 1):
                 ws.cell(row=r, column=j, value=v).border = BOX
@@ -1134,7 +1166,7 @@ def history(stores, base):
                 seen[mon] = {"items": int((ln == FC.SALES).sum()),
                              "sales": float(t.loc[ln == FC.SALES, T_COLS["net"]].sum()),
                              "refund": float(t.loc[ln == FC.REFUND, T_COLS["net"]].sum()),
-                             "fees": float(t.loc[ln.isin(FEE_LINES), T_COLS["net"]].sum()),
+                             "fees": float(t.loc[ln.isin(FEE_ROWS), T_COLS["net"]].sum()),
                              "contrib": float(t[T_COLS["net"]].sum())}
             except Exception:
                 continue
@@ -1229,9 +1261,9 @@ def sheet_gaps(wb, stores, ctx):
         ws.cell(row=r, column=2, value="没有。应下的文件全部到齐。")
         r += 1
     r += 1
-    r = _section(ws, r, "要请会计师确认的问题", 5)
-    for i, q in enumerate(ACCOUNTANT_QUESTIONS, 1):
-        ws.cell(row=r, column=2, value="问题 %d" % i).font = F(10, True)
+    r = _section(ws, r, "报税时要注意（不影响本报表的数字）", 5)
+    for i, q in enumerate(TAX_NOTES, 1):
+        ws.cell(row=r, column=2, value="提示 %d" % i).font = F(10, True)
         c = ws.cell(row=r, column=5, value=q)
         c.alignment = wrap()
         ws.row_dimensions[r].height = K.est_height(q, 95)

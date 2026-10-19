@@ -192,6 +192,9 @@ def test_pl_lines(folder, tmp_path):
     assert m["pl"]["sales"] == net(11900) + net(23800) + net(11900)
     assert m["pl"]["refund"] == net(-23800)
     assert m["pl"]["ship_income"] == net(2380) and m["pl"]["ship_buyer"] == net(-2380)
+    assert m["pl"]["ship_net"] == 0                         # pass-through: not revenue
+    assert m["revenue"] == m["pl"]["sales"]
+    assert m["fees"] == sum(m["pl"][k] for k in R.FEE_ROWS)  # excludes the pass-through
     assert m["pl"]["commission"] == 2 * net(-1785) + net(-3570) + net(3570)   # A, C; B charged and refunded
     assert m["pl"]["ads"] == net(-5950) and m["pl"]["fulfilment"] == net(-1190)
     assert m["contrib"] == m["tx_net"]                    # every line lands on one row

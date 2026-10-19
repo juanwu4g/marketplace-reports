@@ -24,12 +24,20 @@ Where each form is and how it is fetched: `FORMS.md`.
 
 ## When to run
 
-The report is about **last month**. Forms order, billing (Transacciones), stock,
-billing2 and invoice2 are complete from the 1st. The second fee-invoice period
-(21st of last month to the 20th of this month) appears only after the 20th; until
-then the report shows that part of bridge B as "pending" and everything else as
-final. Re-running downloads and reports after the 21st completes it; no P&L
-number changes, only the check.
+The report is about **last month**, and every number in it is final from the 1st of
+the next month: all seven forms for the month exist then, and the P&L comes from
+"Transacciones", which already holds every sale, fee and refund of the month with
+its own date and IVA.
+
+The one thing that comes later is Falabella's **fee invoice** for the period that
+runs past the month end (21st of last month to the 20th of this month). It is only
+a cross-check of fees that are already in the P&L line by line (③ bridge B), and
+it is the tax document for the input IVA of those days — which belongs to the
+following month's IVA return anyway, because input IVA is declared by invoice
+date. So nothing in the month's report is missing before then; bridge B shows those
+days as "pending". The next month's run downloads that invoice as part of its own
+month (it covers the 1st–20th of that month), so no manual re-run is needed;
+re-running the old month after the 21st only turns its "pending" into "checked".
 
 ## Platform notes
 
@@ -46,55 +54,60 @@ number changes, only the check.
   `stock_fetched_direct` in `run_meta.json`.
 * The stock export is a snapshot of the moment of the run, not of month end.
 
-## Accounting rules (for finance to confirm)
+## Accounting rules
 
-These are the rules `report_build.py` implements. They were chosen to be sound
-for a Chilean IVA taxpayer and to keep the report a sister of MercadoLibre's;
-items marked ⚠ are for the accountant.
+Decided for a Chilean IVA taxpayer reporting under IFRS-style principles, and kept
+a sister of MercadoLibre's report. The workbook states the same rules on ① (七、会计
+处理) and the points that matter for the tax return (八、报税时要注意).
 
-1. **Period basis — transaction date.** Each money line of "Transacciones" counts
-   in the month of its *Fecha de transacción*. For the sale itself this is about
-   the delivery date — when Falabella books and pays it. Fees, refunds and
-   promotions carry their own dates. This is also the basis of Falabella's fee
-   invoices, so bridge B ties line by line.
-   *Order-date* GMV (orders created in the month, from the order list) is shown as a
-   KPI; bridge A explains the difference order by order: orders not settled yet,
-   and earlier orders settled this month.
-2. **Net of IVA.** The P&L uses *Monto (Sin IVA)*. Output IVA (on sales,
-   shipping income, promotions) and input IVA (on Falabella's fees) are memo lines,
-   not income or cost. Bridge C goes from the contribution to the settled amount
-   with IVA. *Differs from the MercadoLibre Chile report*, which is gross because
-   MercadoLibre's files do not split IVA; Falabella's do, line by line.
-3. **Revenue lines.** Product price (incl. the part paid with CMR points); shipping
-   paid by the buyer (and shipping Falabella pays for the seller's own delivery);
-   minus returns; plus Falabella-funded promotions and incentives (coupons, CMR
-   "Oportunidad Única", sales targets); plus lost/damaged compensation.
-4. **Buyer-paid shipping is a pass-through.** It appears as shipping income and,
-   for Falabella-delivered orders, as an equal "reversa" charge. Both lines are
-   shown so the flow is visible; the net is zero.
-5. **Fees** are grouped into fixed rows: commission, logistics co-financing, buyer
-   shipping passed to Falabella, free-shipping promotions, reverse logistics,
-   Fulfillment (storage, picking, pickups, withdrawals), advertising, subscriptions
-   and services, penalties, other corrections. Each transaction type's
-   *Reembolso / Corrección / Ajuste* goes to the same row as the charge, so a row is
-   a net amount. Every type is registered in `fee_catalog.py` (all 147 of
-   Falabella's glossary); an unknown type is an **error** check and its amount is
-   kept in a visible "未登记科目 ⚠" row.
-6. **Product cost** is not in Falabella's data: yellow input row in ②, unit cost
-   column in ⑦.
-7. **Cash.** The settled amount with IVA of the month's lines is what Falabella
-   pays out through Fpay statements (*Nº estado de cuenta*); lines "No Pagado" are
-   paid on the next settlement date. The bank side (Fpay withdrawals) is not
-   downloaded yet.
-8. **Sales documents.** "Liquidación factura" lists the boletas, facturas and
-   credit notes Falabella issued **in the seller's name** — essentially for
-   Fulfillment-by-Falabella orders. ⚠ Who issues the documents for the seller's
-   own-delivery (FBS) orders, and that output IVA is declared exactly once, is for
-   the accountant.
-9. ⚠ Input IVA on Falabella's monthly fee invoices (Factura + Nota de Crédito,
-   21st–20th) — deductible in full?
-10. ⚠ Falabella-funded promotions and compensation are treated as revenue
-    adjustments; their invoicing treatment is for the accountant.
+1. **Revenue recognition — delivery (IFRS 15).** A sale is revenue when Falabella
+   records "Pago por precio del producto" for it, i.e. at delivery, when control
+   passes to the buyer. Every money line counts in the month of its *Fecha de
+   transacción*. Orders placed but not delivered in the month are not revenue;
+   order-date GMV is a KPI, reconciled order by order in ③ bridge A.
+2. **Net of IVA.** The seller is an IVA taxpayer: output IVA and input IVA are
+   neither income nor cost. The P&L uses *Monto (Sin IVA)*; both IVA amounts are
+   memo lines and ③ bridge C walks from the contribution to the cash with IVA.
+   (MercadoLibre Chile's report is gross only because MercadoLibre's files do not
+   split IVA; Falabella's do, per line.)
+3. **Shipping — principal vs agent.** For orders Falabella delivers, the shipping the
+   buyer pays is passed to Falabella unchanged ("Pago de envío comprador" and the
+   equal "Reversa"): the seller is an agent, so it is **not revenue** (net
+   presentation; both legs are memo lines). Shipping the seller earns — buyer-paid
+   shipping on own-delivery orders, and what Falabella pays for the seller's own
+   delivery — is revenue ("运费收入（净额）").
+4. **Promotions.** Falabella-funded coupons, CMR "Oportunidad Única" and sales
+   incentives are part of the consideration for the sale: revenue adjustments in net
+   sales. Seller-funded free-shipping promotions are a selling cost (shipping row).
+5. **Returns.** Contra-revenue ("退货退款"); the commission Falabella refunds on a
+   return reduces the commission row; reverse logistics is a logistics cost.
+6. **Lost/damaged compensation** compensates an inventory loss, it is not a sale:
+   "其他收入", below the platform fees.
+7. **Platform fees** count on Falabella's charge date (the basis of its fee invoice),
+   in fixed rows: commission, logistics co-financing, free-shipping promotions,
+   reverse logistics, Fulfillment (storage, picking, pickups, withdrawals), ads,
+   subscriptions and services, penalties, other corrections. Each type's *Reembolso /
+   Corrección / Ajuste* nets in the same row. All 147 types of Falabella's glossary
+   are registered (`fee_catalog.py`); an unknown one is an **error** check, its
+   amount kept in "未登记科目 ⚠".
+8. **Product cost** is not in Falabella's data: yellow input row in ②, unit cost
+   column in ⑦. The stock value on ⑨ is at selling price — a size indicator, not
+   the accounting value of inventory.
+9. **Cash.** The month's lines with IVA are what Falabella settles through Fpay
+   statements (*Nº estado de cuenta*); "No Pagado" lines are paid on the next
+   settlement date.
+
+Points for the IVA return (they do not change the report):
+
+* Output-IVA documents for Fulfillment-by-Falabella orders are issued by Falabella in
+  the seller's name ("Liquidación factura", ③ bridge D) — declare those, do not
+  issue them again. Own-delivery (FBS) orders need the seller's own documents
+  (amount on ③ bridge D).
+* Input IVA on Falabella's fee invoices is declared by invoice date: the invoice
+  for 21st–20th is issued after the 20th, so fees of the 21st–end of a month go
+  into the next month's IVA return.
+* Promotion and compensation documents are Falabella's (Nota de crédito / Nota de
+  débito promociones).
 
 Checks (⑩): required files present; only the month's lines used; every type
 registered; P&L = sum of lines; IVA = 19% per line; bridge A (warn); bridge B per
