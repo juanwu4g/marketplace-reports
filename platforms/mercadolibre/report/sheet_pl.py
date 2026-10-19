@@ -4,6 +4,7 @@ billed-fee row per FEE_CATALOG entry), their values, ratios and the memo block."
 
 from openpyxl.utils import get_column_letter
 
+from core.report_family import Span, pl_formula
 from core.report_kit import (BOX, C_BAD, C_CALC, C_GREY, C_INPUT, C_NAVY, C_RED, C_SUB, C_TOTAL,
     C_WARN, F, PCT, est_height, fill, wrap)
 
@@ -75,6 +76,21 @@ PL_TAIL = [
      "⚠ 平台数据不含此项，请在【⑦ SKU盈利分析】录入单位成本后回填，或直接在此填总额"),
     (None,           "税前净利润",                "",                                 "f",
      "＝ 经营贡献毛利 − 商品采购成本"),
+]
+
+# 小计行和计算行的公式，写成数据（core/report_family 的写法）：行名的元组 = 逐行相加，
+# "-行名" 表示减；Span(首行, 末行) = 两行之间（含）求和。按**行名**引用 —— 行名
+# 在 build_pl_rows() 里唯一，key 为 None 的行也有名字。顺序即写入顺序。
+PL_FORMULAS = [
+    ("营业收入合计", Span("商品销售收入 (GMV)", "减：卖家承担优惠券/折扣")),
+    ("净销售收入", ("营业收入合计", "减：退款与取消（净）", "加：部分退款重复扣佣金调整")),
+    ("平台交易费用小计", Span("减：平台销售佣金", "减：订单级未登记科目 ⚠")),
+    ("订单毛贡献", ("净销售收入", "平台交易费用小计")),
+    # 账单级费用从 FEE_CATALOG 的第一个账单级科目（Product Ads）起，到"账单级未登记科目"止
+    ("月度账单费用小计", Span("减：" + FEE_BY_ES["Cargo por campaña de publicidad de Product Ads"][0],
+                            "减：账单级未登记科目 ⚠")),
+    ("经营贡献毛利（未扣商品成本）", ("订单毛贡献", "月度账单费用小计")),
+    ("税前净利润", ("经营贡献毛利（未扣商品成本）", "-减：商品采购成本")),
 ]
 
 
@@ -225,27 +241,10 @@ def sheet_pl(wb, stores, ctx):
     def R(label):
         return idx[label]
 
-    def setrow(label, expr_fn):
-        r = R(label)
+    # 小计 / 计算行的公式（每店一列；合计列在下面统一按店求和）
+    for label, formula in PL_FORMULAS:
         for j in range(n):
-            ws.cell(row=r, column=sh.c0 + j, value=expr_fn(sh.scol(j)))
-
-    setrow("营业收入合计",
-           lambda c: "=SUM(%s%d:%s%d)" % (c, R("商品销售收入 (GMV)"), c, R("减：卖家承担优惠券/折扣")))
-    setrow("净销售收入",
-           lambda c: "=%s%d+%s%d+%s%d" % (c, R("营业收入合计"), c, R("减：退款与取消（净）"),
-                                          c, R("加：部分退款重复扣佣金调整")))
-    setrow("平台交易费用小计",
-           lambda c: "=SUM(%s%d:%s%d)" % (c, R("减：平台销售佣金"), c, R("减：订单级未登记科目 ⚠")))
-    setrow("订单毛贡献",
-           lambda c: "=%s%d+%s%d" % (c, R("净销售收入"), c, R("平台交易费用小计")))
-    first_bill = R("减：" + FEE_BY_ES["Cargo por campaña de publicidad de Product Ads"][0])
-    setrow("月度账单费用小计",
-           lambda c: "=SUM(%s%d:%s%d)" % (c, first_bill, c, R("减：账单级未登记科目 ⚠")))
-    setrow("经营贡献毛利（未扣商品成本）",
-           lambda c: "=%s%d+%s%d" % (c, R("订单毛贡献"), c, R("月度账单费用小计")))
-    setrow("税前净利润",
-           lambda c: "=%s%d-%s%d" % (c, R("经营贡献毛利（未扣商品成本）"), c, R("减：商品采购成本")))
+            ws.cell(row=R(label), column=sh.c0 + j, value=pl_formula(formula, sh.scol(j), idx))
 
     gmv_row = R("商品销售收入 (GMV)")
     last = r0 + len(rows) - 1
