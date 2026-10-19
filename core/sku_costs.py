@@ -540,12 +540,17 @@ def source_line(table):
         len(table.rows)))
 
 
-def policy_line(units_basis):
+STOCK_NOT_VALUED = "⑨的库存只有数量，暂不按成本计价（以后的一步）。"
+
+
+def policy_line(units_basis, closing=STOCK_NOT_VALUED):
     """① accounting policies: (label, text). units_basis: the platform's words for
-    which units count (e.g. "本月结算件数 − 本月退货件数")."""
+    which units count (e.g. "本月结算件数 − 本月退货件数"); closing: the last
+    sentence(s) — by default that ⑨ is not valued (a platform whose ⑨ already
+    values stock, or with more to say, passes its own)."""
     return ("商品成本", "商品采购成本 ＝ 成本表的单位成本 × 成本件数。单位成本是财务录入的到岸成本（采购价＋运费＋关税），"
             "取本月最后一天有效的那一行。成本件数：%s，与收入同口径、同月份。成本表里没有的 SKU 不计成本，"
-            "②注明覆盖率。⑨的库存只有数量，暂不按成本计价（以后的一步）。" % units_basis)
+            "②注明覆盖率。%s" % (units_basis, closing))
 
 
 def pl_note(res):

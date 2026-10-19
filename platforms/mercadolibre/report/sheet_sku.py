@@ -7,6 +7,7 @@ import re
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+from core import sku_costs as SC
 from core.report_family import set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAND, C_CALC, C_GREEN, C_GREY, C_INPUT, C_NAVY,
     C_RED, C_SUB, C_WARN, F, INT, PCT, fill, header_cells, title_rows)
@@ -121,8 +122,9 @@ def split_packages(A):
     return A, n_split
 
 
-def sku_grid():
+def sku_grid(costs=False):
     """⑦ 页四张表共用的一套列。主表用 A~P，三张明细多出来的项放到 Q 之后。
+    costs：配了商品成本表（core/sku_costs）时，最后多一列“成本来源”（AE）。
 
     四张表共用同一套列，是为了让人可以直接把鼠标从主表拖到任意一张明细上
     求和 —— 同一列永远是同一个项目。明细上没有的主表列留空（不是 0，
@@ -144,7 +146,7 @@ def sku_grid():
         ("去向", 12), ("判定来源", 16), ("原始状态 (Estado)", 40),
         # ↓ 仅表五使用
         ("其中：正常销售件数", 14), ("其中：损失件数(不可再售)", 15), ("损失件数占比", 12),
-    ]
+    ] + ([("成本来源", 40)] if costs else [])
 
 
 SKU_NCOL = 30
@@ -360,11 +362,111 @@ def classify_abnormal(estado, rv):
     return "other"
 
 
+def sku_agg(D):
+    """一组订单行 → 该 SKU 的各项金额。五张表都用它，口径不会分叉。"""
+    return {
+        "订单数": len(D), "件数": float(num(D, V_UNITS).sum()),
+        "GMV": float(num(D, site.V_REVENUE).sum()),
+        "运费收入": float(num(D, site.V_SHIP_INCOME).sum()),
+        "佣金": float(num(D, "com_pure").sum()),
+        "代扣税": float(num(D, "tax_ret").sum()),
+        "配送费": float(-num(D, site.V_SHIP_COST).sum()),
+        "退款": float(-num(D, site.V_REFUND).sum()),
+        "券": float(D["coupon"].sum()) if "coupon" in D.columns else 0.0,
+    }
+
+
+def sku_prepare(S):
+    """一家店 ⑦ 的底稿：佣金/代扣税拆分、组合单拆分、异常订单归类。
+
+    返回 {"note", "ok"(正常订单), "ab"(异常订单，带 _kind 列), "abnormal": [(类, 行, 质检)]}。
+    ⑦ 页和商品成本表（sku_items）都从这里取，所以只算一次，记在 S["_sku_prep"]。
+    """
+    if "_sku_prep" in S:
+        return S["_sku_prep"]
+    pure, tax, note = split_commission(S)
+    V = S["ventas"].copy()
+    V["com_pure"] = pure
+    V["tax_ret"] = tax
+    A, n_split = split_packages(V)          # 组合单的金额（含新加的两列）摊到子行
+    S["_pkg_split"] = n_split
+    fb = returns_review(S)
+
+    ab = A[A["abnormal"]] if "abnormal" in A.columns else A.iloc[0:0]
+    ok = A[~A["abnormal"]] if "abnormal" in A.columns else A
+    kinds, abnormal = {}, []
+    for i, x in ab.iterrows():
+        rv = review_of(x, fb.get(str(x.get("oid", ""))))
+        k = classify_abnormal(str(x.get(V_STATUS, "")), rv)
+        abnormal.append((k, x, rv))
+        kinds[i] = k
+    ab = ab.copy()
+    ab["_kind"] = pd.Series(kinds) if kinds else ""
+    S["_sku_prep"] = {"note": note, "ok": ok, "ab": ab, "abnormal": abnormal}
+    return S["_sku_prep"]
+
+
+def sku_final_rows(S):
+    """表五（SKU 真实盈利）的各行：正常订单 ＋ 表四“其他异常”订单，按 SKU 合并，
+    按 GMV 从高到低。“件数”就是计商品成本的件数（取消、退货可再售的不在内）。"""
+    P = sku_prepare(S)
+    ok, ab = P["ok"], P["ab"]
+    other = ab[ab["_kind"] == "other"] if len(ab) else ab
+    keys = sorted(set(ok[V_SKU].astype(str)) | set(other[V_SKU].astype(str)))
+    rows = []
+    for sku in keys:
+        o = ok[ok[V_SKU].astype(str) == sku]
+        t = other[other[V_SKU].astype(str) == sku] if len(other) else other
+        a = sku_agg(pd.concat([o, t]) if len(t) else o)
+        title = ""
+        for D in (o, t):
+            if len(D) and V_TITLE in D.columns:
+                title = str(D[V_TITLE].iloc[0])[:45]
+                break
+        a.update({"SKU": sku, "名称": title,
+                  "正常件数": float(num(o, V_UNITS).sum()),
+                  "损失件数": float(num(t, V_UNITS).sum()) if len(t) else 0.0})
+        rows.append(a)
+    rows.sort(key=lambda a: (-a["GMV"], a["SKU"]))
+    return rows
+
+
+# 商品成本表（core/sku_costs）按哪些件数计成本 —— ① 会计处理、README 都引用这一句
+COST_UNITS_BASIS = (
+    "【⑦ SKU盈利分析】表五的“销售件数”：本月订单（按下单日，与②商品销售收入同一批订单）的件数，"
+    "减去发货前取消的订单（货没有出库）和平台质检判定可再售、已回到库存的退货；"
+    "退货不可再售、仲裁、投诉、换货、未送达和尚未质检的照计成本（货收不回来或去向未定）")
+# ① 会计处理里接在口径后面的话：IVA/IGV 与⑨
+COST_CLOSING = ("单位成本按不含可抵扣 %s 的到岸成本录入；②的收入按含税售价列示，商品成本不受 %s 影响。")
+COST_CLOSING_STOCK = "⑨的可售库存金额用同一单位成本估算（参考，不进损益）。"
+
+
+def cost_policy_closing():
+    return (COST_CLOSING % (site.VAT_NAME, site.VAT_NAME)
+            + (COST_CLOSING_STOCK if site.HAS_FULL else ""))
+
+
+def sku_items(S):
+    """表五的 SKU → 商品成本表的 core/sku_costs.Item：件数 ＝ 表五“销售件数”（已不含
+    取消与可再售退货，所以 returned 记 0），销售额 ＝ 表五 GMV。"""
+    return [SC.Item(a["SKU"], a["名称"], int(a["件数"]), 0, float(a["GMV"]))
+            for a in sku_final_rows(S)]
+
+
 def sheet_sku(wb, stores, ctx):
     ws = wb.create_sheet(SHEET_NAMES[6])
     title_rows(ws, "SKU 盈利分析（%s）" % ctx["period_cn"])
-    ws["A2"] = ("【使用说明】单位采购成本（到岸成本，含头程运费与关税）只在最下方"
-                "【表五】的黄色 M 列填一次，表一与表四会自动引用同一个值，不要分头填。单位：%s" % site.CUR)
+    # 配了商品成本表（core/sku_costs）：表五 M 列由成本表填，AE 列写成本来源
+    costs = ctx.get("sku_costs") is not None
+    ncol = SKU_NCOL + (1 if costs else 0)
+    if costs:
+        ws["A2"] = ("【使用说明】单位采购成本（到岸成本，含头程运费与关税，不含可抵扣 %s）取自商品成本表，"
+                    "填在最下方【表五】的 M 列，表一与表四自动引用；AE 列写明每个 SKU 的成本来源。"
+                    "“未录入成本”的 SKU 黄色格可临时填写，长期请补录到成本表。单位：%s"
+                    % (site.VAT_NAME, site.CUR))
+    else:
+        ws["A2"] = ("【使用说明】单位采购成本（到岸成本，含头程运费与关税）只在最下方"
+                    "【表五】的黄色 M 列填一次，表一与表四会自动引用同一个值，不要分头填。单位：%s" % site.CUR)
     ws["A2"].font = F(9, True, C_RED)
     ws["A3"] = ("本页共五张表。**要看某个 SKU 到底赚不赚钱，直接看最下方的【表五】** —— "
                 "它是最终口径。表一只算正常订单，表二至表四是三类异常订单的逐单明细。"
@@ -390,7 +492,7 @@ def sheet_sku(wb, stores, ctx):
                 "故本页是“订单级贡献”，未分摊店铺级共同费用。")
     ws["A4"].font = F(9, False, C_GREY)
 
-    grid = sku_grid()
+    grid = sku_grid(costs)
     HDR = 6
 
     def header(r, main):
@@ -405,7 +507,7 @@ def sheet_sku(wb, stores, ctx):
     header(HDR, True)
 
     def band(r, color, bold=False):
-        for c in range(1, SKU_NCOL + 1):
+        for c in range(1, ncol + 1):
             ws.cell(row=r, column=c).fill = fill(color)
             ws.cell(row=r, column=c).border = BOX
             if bold:
@@ -425,47 +527,18 @@ def sheet_sku(wb, stores, ctx):
         for col, v in vals:
             ws.cell(row=r, column=col, value=money(v)).number_format = site.MNY
 
-    def sku_agg(D):
-        """一组订单行 → 该 SKU 的各项金额。五张表都用它，口径不会分叉。"""
-        return {
-            "订单数": len(D), "件数": float(num(D, V_UNITS).sum()),
-            "GMV": float(num(D, site.V_REVENUE).sum()),
-            "运费收入": float(num(D, site.V_SHIP_INCOME).sum()),
-            "佣金": float(num(D, "com_pure").sum()),
-            "代扣税": float(num(D, "tax_ret").sum()),
-            "配送费": float(-num(D, site.V_SHIP_COST).sum()),
-            "退款": float(-num(D, site.V_REFUND).sum()),
-            "券": float(D["coupon"].sum()) if "coupon" in D.columns else 0.0,
-        }
-
     buckets = {"cancel": [], "back": [], "other": []}   # 跨店收集，明细按类分表
     split_notes = []
     other_cost_cell = {}      # 店铺 → 表一"其他异常小计"行号，稍后回指表四
-    frames = {}               # 店铺 → (正常订单, 全部异常订单)
     cost_ref_rows = []        # 表一里需要回指表五取成本的行
 
     r = HDR + 1
     for S in stores:
-        pure, tax, note = split_commission(S)
-        split_notes.append("%s：%s" % (S["store"], note))
-        V = S["ventas"].copy()
-        V["com_pure"] = pure
-        V["tax_ret"] = tax
-        A, n_split = split_packages(V)          # 组合单的金额（含新加的两列）摊到子行
-        S["_pkg_split"] = n_split
-        fb = returns_review(S)
-
-        ab = A[A["abnormal"]] if "abnormal" in A.columns else A.iloc[0:0]
-        ok = A[~A["abnormal"]] if "abnormal" in A.columns else A
-        kinds = {}
-        for i, x in ab.iterrows():
-            rv = review_of(x, fb.get(str(x.get("oid", ""))))
-            k = classify_abnormal(str(x.get(V_STATUS, "")), rv)
+        P = sku_prepare(S)
+        split_notes.append("%s：%s" % (S["store"], P["note"]))
+        ok = P["ok"]
+        for k, x, rv in P["abnormal"]:
             buckets[k].append((S["store"], x, rv))
-            kinds[i] = k
-        ab = ab.copy()
-        ab["_kind"] = pd.Series(kinds) if kinds else ""
-        frames[S["store"]] = (ok, ab)
 
         g = ok.groupby(ok[V_SKU].astype(str)).apply(lambda x: pd.Series(dict(
             sku_agg(x), 名称=(str(x[V_TITLE].iloc[0])[:45] if V_TITLE in x.columns else "")
@@ -487,7 +560,7 @@ def sheet_sku(wb, stores, ctx):
             ws.cell(row=r, column=14, value="=E%d*M%d" % (r, r)).number_format = site.MNY
             ws.cell(row=r, column=15, value=SKU_NET.format(r=r)).number_format = site.MNY
             ws.cell(row=r, column=16, value=SKU_RATE.format(r=r)).number_format = PCT
-            for c in range(1, SKU_NCOL + 1):
+            for c in range(1, ncol + 1):
                 ws.cell(row=r, column=c).border = BOX
             for c in list(range(1, 13)) + list(range(14, 17)):
                 ws.cell(row=r, column=c).font = F(10)
@@ -587,7 +660,7 @@ def sheet_sku(wb, stores, ctx):
             ws.cell(row=r, column=25, value=rdest)
             ws.cell(row=r, column=26, value=rsrc)
             ws.cell(row=r, column=27, value=estado)
-            for c in range(1, SKU_NCOL + 1):
+            for c in range(1, ncol + 1):
                 ws.cell(row=r, column=c).border = BOX
                 if c != 13 and ws.cell(row=r, column=c).font.color is None:
                     ws.cell(row=r, column=c).font = F(9)
@@ -644,6 +717,9 @@ def sheet_sku(wb, stores, ctx):
     )).font = F(9, False, C_GREY)
     r += 1
     ws.cell(row=r, column=1, value=(
+        "★ M 列的单位成本来自商品成本表（AE 列是来源），商品成本 ＝ 单位成本 × 销售件数（E 列，"
+        "已不含取消与可再售退货）。“未录入成本”的 SKU 黄色格可临时填写，表一与表四会自动引用。"
+        if costs else
         "★ 黄色 M 列是全页**唯一**的成本录入位：填在这里，表一与表四会自动引用。"
     )).font = F(9, True, C_RED)
     r += 1
@@ -652,24 +728,7 @@ def sheet_sku(wb, stores, ctx):
     t5_start = r
 
     for S in stores:
-        ok, ab = frames[S["store"]]
-        other = ab[ab["_kind"] == "other"] if len(ab) else ab
-        keys = sorted(set(ok[V_SKU].astype(str)) | set(other[V_SKU].astype(str)))
-        rows = []
-        for sku in keys:
-            o = ok[ok[V_SKU].astype(str) == sku]
-            t = other[other[V_SKU].astype(str) == sku] if len(other) else other
-            a = sku_agg(pd.concat([o, t]) if len(t) else o)
-            title = ""
-            for D in (o, t):
-                if len(D) and V_TITLE in D.columns:
-                    title = str(D[V_TITLE].iloc[0])[:45]
-                    break
-            a.update({"SKU": sku, "名称": title,
-                      "正常件数": float(num(o, V_UNITS).sum()),
-                      "损失件数": float(num(t, V_UNITS).sum()) if len(t) else 0.0})
-            rows.append(a)
-        rows.sort(key=lambda a: (-a["GMV"], a["SKU"]))
+        rows = sku_final_rows(S)
 
         start = r
         for a in rows:
@@ -681,10 +740,20 @@ def sheet_sku(wb, stores, ctx):
             money_cells(r, [(6, a["GMV"]), (7, a["运费收入"]), (8, a["佣金"]),
                             (9, a["代扣税"]), (10, a["配送费"]), (11, a["退款"]),
                             (12, a["券"])])
-            cc = ws.cell(row=r, column=13, value=0)
-            cc.number_format = site.MNY
-            cc.fill = fill(C_INPUT)
-            cc.font = F(10, True, "0000FF")
+            ln = S["cost"].line(a["SKU"]) if costs else None
+            if ln is not None and ln.status == SC.OK:
+                cc = ws.cell(row=r, column=13, value=ln.unit_cost)
+                cc.number_format = site.MNY
+                cc.font = F(10)
+            else:
+                cc = ws.cell(row=r, column=13, value=0)
+                cc.number_format = site.MNY
+                cc.fill = fill(C_INPUT)
+                cc.font = F(10, True, "0000FF")
+            if costs:
+                src = ws.cell(row=r, column=ncol, value=SC.status_text(ln))
+                src.font = (F(9, False, C_GREY) if ln is not None and ln.status == SC.OK
+                            else F(9, True, C_AMBER))
             ws.cell(row=r, column=14, value="=E%d*M%d" % (r, r)).number_format = site.MNY
             ws.cell(row=r, column=15, value=SKU_NET.format(r=r)).number_format = site.MNY
             ws.cell(row=r, column=16, value=SKU_RATE.format(r=r)).number_format = PCT
@@ -692,7 +761,7 @@ def sheet_sku(wb, stores, ctx):
             ws.cell(row=r, column=29, value=int(a["损失件数"])).number_format = INT
             ws.cell(row=r, column=30,
                     value="=IF(E%d=0,0,AC%d/E%d)" % (r, r, r)).number_format = PCT
-            for c in range(1, SKU_NCOL + 1):
+            for c in range(1, ncol + 1):
                 ws.cell(row=r, column=c).border = BOX
             for c in list(range(1, 13)) + list(range(14, 17)) + [28, 29, 30]:
                 ws.cell(row=r, column=c).font = F(10)
@@ -720,6 +789,8 @@ def sheet_sku(wb, stores, ctx):
             ws.cell(row=r, column=15, value=SKU_NET.format(r=r)).number_format = site.MNY
             ws.cell(row=r, column=16, value=SKU_RATE.format(r=r)).number_format = PCT
             band(r, C_WARN)
+            if costs:
+                ws.cell(row=r, column=ncol, value="不计商品成本").font = F(9, False, C_GREY)
             r += 1
 
         total_row(r, start, "%s 合计（＝表一同名行）" % S["store"], extra=(28, 29))

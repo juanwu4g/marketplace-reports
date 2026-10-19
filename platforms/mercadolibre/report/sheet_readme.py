@@ -3,6 +3,7 @@
 
 import os
 
+from core import sku_costs as SC
 from core.report_family import readme_rows, set_widths
 from core.report_kit import C_GREY, C_NAVY, C_RED, C_WARN, F, est_height, fill, wrap
 
@@ -67,6 +68,9 @@ def sheet_readme(wb, stores, ctx):
                      % (S["store"], ctx["period_short"], fmt0(s["rows"]),
                         fmt0(s["units"]), fmt(s["ing"]))))
     rows.append(("", "数据来源", sources))
+    costs = ctx.get("sku_costs")          # core/sku_costs 的成本表；没配是 None
+    if costs is not None:
+        rows.append(("",) + SC.source_line(costs))
     rows.append(("", "", ""))
 
     rows.append(("S", "二、为什么你以前“平不了账”——六个结构性原因", ""))
@@ -126,9 +130,16 @@ def sheet_readme(wb, stores, ctx):
         rows.append(("", "⑤ 卖家优惠券被导出成空白",
                      "Ventas 报表的“Descuentos y bonificaciones”列被平台导出成空白。本期各店由 Total 倒推的券额均为 0，"
                      "但这一列随时可能再次出现金额，本报表每期都会自动倒推核对。"))
-    rows.append(("", "⑥ 缺少商品采购成本",
-                 "平台所有报表都不含你的进货成本，因此平台数据最多算到“经营贡献毛利”。"
-                 "本报表在【⑦ SKU盈利分析】页留出黄色单元格供录入单位成本，录入后净利润会自动重算。"))
+    if costs is not None:
+        rows.append(("", "⑥ 平台数据不含商品采购成本",
+                     "平台所有报表都不含你的进货成本，因此平台数据最多算到“经营贡献毛利”。"
+                     "本报表从商品成本表取每个 SKU 的单位成本（见一、数据来源与七、商品成本），"
+                     "填进【⑦ SKU盈利分析】表五和【%s】；成本表里没有的 SKU 仍是黄色单元格，可临时录入。"
+                     % SHEET_NAMES[1]))
+    else:
+        rows.append(("", "⑥ 缺少商品采购成本",
+                     "平台所有报表都不含你的进货成本，因此平台数据最多算到“经营贡献毛利”。"
+                     "本报表在【⑦ SKU盈利分析】页留出黄色单元格供录入单位成本，录入后净利润会自动重算。"))
     rows.append(("", "", ""))
 
     rows.append(("S", "三、本报表的核心勾稽等式（每期自动校验）", ""))
@@ -259,12 +270,22 @@ def sheet_readme(wb, stores, ctx):
                             fmt(mm["cargos_full_report_total"] - mm["full_bill_total"]))
                          if M["files"].get("cargos_full") else "本期未下载到 Full 费用明细报表，无法交叉核对。"))))
 
+    if costs is not None:
+        results = [S["cost"] for S in stores]
+        rows.append(("",) + SC.point_line(
+            results, sum(ctx["contrib"].values()) - sum(r.cogs for r in results if r is not None)))
+        rows.append(("", "", ""))
+        rows.append(("S", "七、商品成本（会计处理）", ""))
+        rows.append(("",) + SC.policy_line(ctx["cost_units_basis"], ctx["cost_policy_closing"]))
+
     rows.append(("", "", ""))
-    rows.append(("S", "七、重要提示", ""))
+    rows.append(("S", "八、重要提示" if costs is not None else "七、重要提示", ""))
 
     r = readme_rows(ws, 4, rows)
 
-    notes = ["本报表所有金额均为%s(%s)，不含商品采购成本（平台数据不提供）。" % (site.CUR_CN, site.CUR)]
+    notes = ["本报表所有金额均为%s(%s)，%s" % (
+        site.CUR_CN, site.CUR, "商品采购成本取自商品成本表（覆盖率见【%s】“减：商品采购成本”行）。"
+        % SHEET_NAMES[1] if costs is not None else "不含商品采购成本（平台数据不提供）。")]
     if site.WITHHOLDING:
         notes.append("“平台代扣代缴税金”在损益表中单列为备查项，不计入费用。请与你的墨西哥会计师核对该笔预缴税款的抵扣处理。")
     else:

@@ -4,6 +4,7 @@ billed-fee row per FEE_CATALOG entry), their values, ratios and the memo block."
 
 from openpyxl.utils import get_column_letter
 
+from core import sku_costs as SC
 from core.report_family import Span, pl_formula
 from core.report_kit import (BOX, C_BAD, C_CALC, C_GREY, C_INPUT, C_NAVY, C_RED, C_SUB, C_TOTAL,
     C_WARN, F, PCT, est_height, fill, wrap)
@@ -159,7 +160,8 @@ def pl_value(S, key):
     if key == "unc_bill_neg":
         return -m["unc_bill"]
     if key == "cogs":
-        return 0.0
+        # 配了商品成本表（core/sku_costs）时是有成本的 SKU 的商品成本，否则 0 待录入
+        return S["cost"].cogs if S.get("cost") is not None else 0.0
     if key.startswith("fee:"):
         return -m["bill_fee_net"].get(key[4:], 0.0)
     return 0.0
@@ -222,6 +224,11 @@ def sheet_pl(wb, stores, ctx):
     sh.header(4, cols, widths, 26)
 
     rows = build_pl_rows()
+    if ctx.get("sku_costs") is not None:
+        rows = [(k, lab, es, kind, per_store(stores, lambda S: SC.pl_note(S["cost"]))
+                 if len(stores) > 1 else SC.pl_note(stores[0]["cost"]))
+                if k == "cogs" else (k, lab, es, kind, note)
+                for k, lab, es, kind, note in rows]
     r0 = 5
     idx = {}
     for i, (key, label, es, kind, note) in enumerate(rows):

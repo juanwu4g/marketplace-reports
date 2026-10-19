@@ -66,6 +66,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 from core import report_kit  # noqa: E402
+from core import sku_costs as SC  # noqa: E402
 from platforms.mercadolibre.report import (  # noqa: E402
     site as _site, catalog, loading, derived, checks, sheet_common, sheet_readme as _m_readme,
     sheet_pl as _m_pl, sheet_bridge as _m_bridge, sheet_fees as _m_fees,
@@ -103,7 +104,8 @@ from platforms.mercadolibre.report.sheet_pl import sheet_pl  # noqa: E402
 from platforms.mercadolibre.report.sheet_bridge import sheet_bridge  # noqa: E402
 from platforms.mercadolibre.report.sheet_fees import sheet_fees  # noqa: E402
 from platforms.mercadolibre.report.sheet_returns import sheet_returns_money, sheet_triage  # noqa: E402
-from platforms.mercadolibre.report.sheet_sku import sheet_sku  # noqa: E402
+from platforms.mercadolibre.report.sheet_sku import (  # noqa: E402
+    COST_UNITS_BASIS, cost_policy_closing, sheet_sku, sku_items)
 from platforms.mercadolibre.report.sheet_trend import sheet_trend  # noqa: E402
 from platforms.mercadolibre.report.sheet_inventory import sheet_inventory  # noqa: E402
 from platforms.mercadolibre.report.sheet_gaps import sheet_gaps  # noqa: E402
@@ -129,6 +131,48 @@ EXIT_CHECKS = 1         # 报表已写出，但有 error 级校验未过，或�
 EXIT_NO_STORE = 2       # 没有一家店铺的数据可用，没写文件
 EXIT_STRICT_ABORT = 10  # --strict 且有校验未过：按要求不写文件
 EXIT_CRASH = 70         # 未处理的异常（traceback 已打印）。70 = sysexits 的 EX_SOFTWARE
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 商品成本表（core/sku_costs，config.json → reports.sku_costs）
+# ════════════════════════════════════════════════════════════════════════
+# 没配成本表时这里什么也不做，工作簿与以前一字不差。配了的话：每家店的 ⑦ 表五
+# 各 SKU 按成本表取单位成本，件数 ＝ 表五“销售件数”（口径见 sheet_sku.COST_UNITS_BASIS），
+# ② 商品采购成本 ＝ 有成本的 SKU 之和（仍是黄色可改的录入格），⑩ 多几条成本表校验。
+PLATFORM = "ML"         # core/markets.py 的平台代码（成本表的“平台”列）
+
+
+def apply_costs(stores, month, checks, ctx=None, table=None):
+    """有成本表时：每家店得到 S["cost"]（core/sku_costs.Result），校验追加进 checks，
+    ctx 记下成本表和件数口径。返回成本表；没配返回 None。国家、币种取当前站点。"""
+    table = table or SC.load_configured()
+    if table is None:
+        return None
+    country = _site.SITE.upper()
+    for S in stores:
+        S["cost"] = SC.apply(table, PLATFORM, country, _site.CUR, month, sku_items(S))
+    checks.extend(SC.checks(table, [(S["store"], S["cost"]) for S in stores], PLATFORM, country))
+    if ctx is not None:
+        ctx["sku_costs"] = table
+        ctx["cost_units_basis"] = COST_UNITS_BASIS
+        ctx["cost_policy_closing"] = cost_policy_closing()
+    return table
+
+
+def sku_list(store, folder, month):
+    """(平台, 国家, 币种, [core/sku_costs.Item]) —— 一家店一个月 ⑦ 表五的 SKU，
+    给 tools/sku_cost_template 用。只读下载目录；站点取目录 run_meta.json 的 site
+    （和 main() 一样，没有就是 mx），读完把站点换回原来的。没有 SKU 的行（换货单
+    第一行等，SKU 显示为 nan）不列：成本表里填不了它。"""
+    before = _site.SITE
+    try:
+        set_site(load_run_meta(folder).get("site") or "mx")
+        p0, p1 = month_bounds(month)
+        items = [it for it in sku_items(derive(store, folder, p0, p1))
+                 if str(it.sku).strip().lower() not in ("", "nan", "none")]
+        return PLATFORM, _site.SITE.upper(), _site.CUR, items
+    finally:
+        set_site(before)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -215,6 +259,9 @@ def metrics_record(S, ctx):
         v = m.get(k)
         rec[k] = round(v, 6) if isinstance(v, float) else v
     rec["contribution"] = round(ctx["contrib"][S["store"]], 2)
+    if S.get("cost") is not None:          # 配了商品成本表才有
+        rec["cogs"] = round(S["cost"].cogs, 2)
+        rec["profit"] = round(ctx["contrib"][S["store"]] - S["cost"].cogs, 2)
     for es, v in m["bill_fee_net"].items():
         rec["fee:" + es] = round(v, 2)
     return rec
@@ -312,6 +359,7 @@ def main(argv=None):
     checks = [_chk("store_usable", name, "店铺数据可用", False, why)
               for name, why in unusable] + checks
     ctx["checks"] = checks
+    apply_costs(stores, a.month, checks, ctx)        # 商品成本表；没配什么也不做
 
     # 每条校验只在这里打印一次。未通过的那几条，排查提示就跟在它下面 —— 以前
     # 另有一个 [诊断] 段把未通过的校验原样再打一遍，同一句话在一份报表的输出
@@ -338,6 +386,11 @@ def main(argv=None):
     print("  %-16s %18s %19s %18s"
           % ("合计", fmt(sum(S["m"]["ing"] for S in stores)),
              fmt(sum(S["m"]["total"] for S in stores)), fmt(sum(ctx["contrib"].values()))))
+    if ctx.get("sku_costs") is not None:
+        for S in stores:
+            print("  %-16s 商品采购成本 %s（%s）  税前净利润 %s"
+                  % (S["store"], fmt(S["cost"].cogs), S["cost"].coverage_text(),
+                     fmt(ctx["contrib"][S["store"]] - S["cost"].cogs)))
 
     # --strict 的承诺是"数据有问题就不出文件"。ventas_incomplete 是 warn 级的
     # （不 strict 时照常出报表、只做标记，这一点不动），但它的意思是**平台自己

@@ -68,12 +68,25 @@ def sheet_gaps(wb, stores, ctx):
                           "重新生成并下载 Ventas，核对订单数和金额后重新出报表。",
                           "本店及包含本店的合计金额可能偏低，当前数字不可视为完整结果。"))
     nsku = sum(S["ventas"][V_SKU].nunique() for S in stores)
-    items.append(("高", "补齐商品采购成本",
-                  "平台所有报表都不含进货成本，因此本报表只能算到“经营贡献毛利”（本期合计 %s）。"
-                  % fmt(sum(ctx["contrib"].values())),
-                  "在【%s】表五的黄色“单位采购成本”列填入每个 SKU 的到岸单位成本（进货价＋头程运费＋关税＋清关杂费），"
-                  "本期共 %d 个 SKU。" % (SHEET_NAMES[6], nsku),
-                  "这是算出真实净利润的唯一缺口，填完即可得出完整损益。"))
+    costs = ctx.get("sku_costs")          # core/sku_costs 的成本表；没配是 None
+    if costs is None:
+        items.append(("高", "补齐商品采购成本",
+                      "平台所有报表都不含进货成本，因此本报表只能算到“经营贡献毛利”（本期合计 %s）。"
+                      % fmt(sum(ctx["contrib"].values())),
+                      "在【%s】表五的黄色“单位采购成本”列填入每个 SKU 的到岸单位成本（进货价＋头程运费＋关税＋清关杂费），"
+                      "本期共 %d 个 SKU。" % (SHEET_NAMES[6], nsku),
+                      "这是算出真实净利润的唯一缺口，填完即可得出完整损益。"))
+    else:
+        un = [(S["store"], ln) for S in stores for ln in S["cost"].uncovered]
+        if un or not costs.usable:
+            items.append(("高", "补录商品成本表",
+                          ("商品成本表读不出来：%s。" % costs.error) if not costs.usable else
+                          "%d 个售出 SKU 在成本表里没有可用的单位成本（%s），它们的商品采购成本按 0 计。"
+                          % (len(un), "；".join("%s %s" % (st, ln.item.sku) for st, ln in un[:20])
+                             + ("；另有 %d 个" % (len(un) - 20) if len(un) > 20 else "")),
+                          "在商品成本表（%s）补录这些 SKU 的到岸单位成本后重新生成报表；"
+                          "也可以先在【%s】表五的黄色格临时填写。" % (costs.path, SHEET_NAMES[6]),
+                          "没有成本的 SKU 会让税前净利润偏高；覆盖率见⑩上方“商品成本覆盖全部售出 SKU”。"))
 
     unk_all = [(S, u) for S in stores for u in S["unknown_fees"]]
     if unk_all:

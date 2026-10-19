@@ -3,12 +3,16 @@
 
     python -m tools.sku_cost_template --out sku_costs.xlsx
     python -m tools.sku_cost_template --out sku_costs.xlsx --month 2026-09 --market FA-CL --market AZ-MX
+    python -m tools.sku_cost_template --out sku_costs.xlsx --market ML-MX --market ML-CL
 
 Reads the newest download folder of the month of every configured store of each
 market (the same folder the monthly report uses) through the platform's own
 report_build — files only, it never opens a browser or a store. Writes one row per
 (platform, country, SKU) with the product name, the stores, units and sales of the
-month, and empty 单位成本 / 生效日期 cells to fill.
+month, and empty 单位成本 / 生效日期 cells to fill. The units and sales come
+from the platform's ⑦ (each platform's README says its basis): for MercadoLibre
+the units net of cancellations and resellable returns, and the sales VAT
+included; for Falabella and Amazon the units posted, returns not subtracted.
 
 If --out already exists it is merged, never replaced: every existing row stays as
 it is (costs, dates, notes, extra columns); the reference columns of rows that
@@ -37,7 +41,7 @@ from core.store_config import StoreConfigError, StoreNotAllowed
 # reference columns: written for finance, ignored when the table is read
 REF_COLS = collections.OrderedDict([
     ("name", "商品名称（参考）"), ("stores", "店铺（参考）"), ("month", "统计月份（参考）"),
-    ("units", "本月件数（参考）"), ("sales", "本月销售额（参考，不含 IVA）")])
+    ("units", "本月件数（参考）"), ("sales", "本月销售额（参考，同各平台报表⑦）")])
 
 
 def last_month(today=None):
