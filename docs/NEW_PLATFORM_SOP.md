@@ -96,7 +96,7 @@ once; a real run says "还没实现" until the pieces below are written:
 | `periods.py` | `form_ids(month)`: the forms a store should yield for a month; `in_report(form)`: which ones the report reads | `falabella/periods.py` |
 | `forms.py` (one or more) | the routes: request / probe readiness / fetch, each giving up with a reason (`ctx.give_up`). Browser helpers from `core/browser_kit.py` (shadow roots, `need`, `real_click`, `wait_new_files`, `retried`); put only this platform's page quirks in a `page_kit.py` next to it | `falabella/forms.py`, `falabella/page_kit.py` |
 | `run_downloads.py` | one store end to end; writes `run_meta.json` and `REPORT.md` (scaffolded; set `IMPLEMENTED = True` when the routes exist) | `falabella/run_downloads.py` |
-| `run_batch.py` | many stores in one session; owed catch-up; summary JSON for the runner (scaffolded, usually unchanged) | `falabella/run_batch.py` |
+| `run_batch.py` | a thin module on `core/platform_batch.py` (many stores in one session, owed catch-up, summary JSON for the runner — all shared). Scaffolded; it only declares its modules and hooks (`log_collected` …, ARCHITECTURE §5 "runner hooks"). A fix to the batch goes in `core/platform_batch.py`, never into one platform's copy | `falabella/run_batch.py`, `amazon/run_batch.py` |
 
 Rules that carry over unchanged (details in the playbook):
 - two phases: request everything slow first, download fast things meanwhile,
@@ -131,7 +131,10 @@ Follow `REPORT_FAMILY.md`: same sheet order, same styles, same check levels, sam
 (`<PLATFORM>_<COUNTRY>_全店汇总_<month>.xlsx`). Platform-specific content goes in
 the sheets' bodies, not in a different layout.
 
-- `run_reports.py` (scaffolded) + `report_build.py` in the platform folder. The
+- `run_reports.py` (scaffolded; a thin module on `core/platform_reports.py` — set
+  `folder_markers` to the file that proves a download folder is usable, e.g.
+  Amazon's `<YYYY><Mon>*Transaction.csv`, and `no_folder_reason` if you like)
+  + `report_build.py` in the platform folder. The
   platform writes load / derive / validate; the sheets come from
   `core/report_family.py` (`REPORT_FAMILY.md` §6): a P&L row spec with
   formulas as data, bridge lines with a residual row, column specs for the long
