@@ -31,6 +31,8 @@ import json
 import os
 import re
 
+import warnings
+
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
@@ -40,6 +42,11 @@ from core import report_kit as K
 from core.report_kit import F, fill, wrap, BOX
 from platforms.falabella import fee_catalog as FC
 from platforms.falabella import periods
+
+# Falabella's exports carry no default cell style; openpyxl says so for every file it
+# reads, and the runner would show each of those lines as a warning in the run log.
+warnings.filterwarnings("ignore", message="Workbook contains no default style",
+                        category=UserWarning)
 
 SHEETS = K.SHEET_NAMES
 CUR = "CLP"
