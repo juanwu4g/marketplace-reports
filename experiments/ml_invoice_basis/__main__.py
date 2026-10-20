@@ -3,14 +3,19 @@
 
     python -m experiments.ml_invoice_basis --store <name> --month YYYY-MM
         [--folder DIR] [--base DIR] [--out-dir DIR] [--no-recalc] [--no-stability]
+        [--threshold-pct 1.0] [--threshold-abs 1000]
 
 --folder   the download folder to use; default: the newest folder of the month
            under downloads/<store>/ that holds the month's Facturación
 --base     the folder that holds the store folders (default: the repo's downloads/)
 --out-dir  default: downloads/data/reports/experiments/
+--threshold-pct / --threshold-abs
+           materiality of ② 差异摘要: a difference is flagged when it is at least
+           this % of the current basis' net revenue, or at least this amount in the
+           store's currency (defaults 1 % and 1,000; both editable in the workbook)
 
 Writes `<store>_<YYYY-MM>_账单口径实验.xlsx`. When the folder has sibling
-downloads of the same month (`*_m<YYYYMM>`), ⑥ compares them; otherwise ⑥ says
+downloads of the same month (`*_m<YYYYMM>`), ⑨ compares them; otherwise ⑨ says
 how to run the stability command. Exit 0 on success, 1 when the written file has
 formula errors, 2 on a problem the person must fix (message in Chinese).
 """
@@ -22,7 +27,8 @@ import sys
 from core import console  # noqa: F401  中文输出编码保护
 from platforms.mercadolibre.report.catalog import fmt
 
-from experiments.ml_invoice_basis import report, stability, workbook
+from experiments.ml_invoice_basis import accounting, report, stability, workbook
+from experiments.ml_invoice_basis import mercadopago as MP
 from experiments.ml_invoice_basis.common import (REPORT_SUFFIX, ExperimentError, month_folders,
     out_path, parse_month, pick_folder, store_root)
 
@@ -38,7 +44,11 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=None,
                     help="输出目录，默认 downloads/data/reports/experiments/")
     ap.add_argument("--no-recalc", action="store_true", help="不用 LibreOffice 重算公式")
-    ap.add_argument("--no-stability", action="store_true", help="⑥ 不比较同月的其他下载")
+    ap.add_argument("--no-stability", action="store_true", help="⑨ 不比较同月的其他下载")
+    ap.add_argument("--threshold-pct", type=float, default=accounting.DEFAULT_PCT,
+                    help="② 重要性标准一：差额占现行净收入的百分比，默认 %g" % accounting.DEFAULT_PCT)
+    ap.add_argument("--threshold-abs", type=float, default=accounting.DEFAULT_ABS,
+                    help="② 重要性标准二：差额金额（店铺币种），默认 %g" % accounting.DEFAULT_ABS)
     a = ap.parse_args(argv)
     try:
         y, m = parse_month(a.month)
@@ -68,16 +78,16 @@ def main(argv=None):
                 reason = ("这个下载目录旁边没有同一月（*_m%s）的其他下载，无法比较。"
                           % a.month.replace("-", ""))
         out = out_path(a.out_dir, a.store, a.month, REPORT_SUFFIX)
-        workbook.write_report_workbook(D, A, out, reason)
+        workbook.write_report_workbook(D, A, out, reason, a.threshold_pct, a.threshold_abs)
         print("[输出] %s" % out)
-        print_summary(D)
+        print_summary(D, a.threshold_pct, a.threshold_abs)
         return workbook.finish(out, a.no_recalc)
     except ExperimentError as e:
         print("[错误] %s" % e)
         return 2
 
 
-def print_summary(D):
+def print_summary(D, pct=accounting.DEFAULT_PCT, absv=accounting.DEFAULT_ABS):
     P, C, m = D["invs"]["period"], D["invs"]["calendar"], D["S"]["m"]
     dec = D["dec"]
     print("\n[期间] 账单期 %s – %s；自然月切 %s – %s"
@@ -95,6 +105,22 @@ def print_summary(D):
                          ("经营贡献毛利", D["S"]["contrib"], P["n"]["contribution"],
                           C["n"]["contribution"])):
         print("%-18s %16s %16s %16s" % (lab, fmt(a, dec), fmt(b, dec), fmt(c, dec)))
+    AP, AC = D["acc"]["period"], D["acc"]["calendar"]
+    for lab, b, c in (("调整后（含税）", AP["contrib_adj"], AC["contrib_adj"]),
+                      ("调整后（不含税）", AP["vat"]["contrib_net"], AC["vat"]["contrib_net"])):
+        print("%-18s %16s %16s %16s" % (lab, "", fmt(b, dec), fmt(c, dec)))
+    t = AC["rev"]
+    print("\n[MercadoPago] %s" % MP.source_text(D["mp"]))
+    if AC["mp"]["available"]:
+        print("  冲销（自然月切）：估算 %s，实际 %s（%d/%d 笔有实际数），误差 %s；优惠券 %s；应计 %s"
+              % (fmt(t["est"], dec), fmt(t["value"], dec), t["n_known"], t["n"], fmt(t["err"], dec),
+                 fmt(AC["coupon"], dec), fmt(AC["accrual"]["total"], dec)))
+    rows = accounting.summary_rows(D)
+    base = accounting.base_net_revenue(D)
+    fl = accounting.flagged(rows, base, pct, absv)
+    print("[重要性] 净收入 %s；标准 %g%% 或 %s：%d 项超过" % (fmt(base, dec), pct, fmt(absv, dec), len(fl)))
+    for x in fl:
+        print("  ⚠ %-30s %16s  %s" % (x["label"][:30], fmt(x["value"], dec), x["cat"]))
 
 
 if __name__ == "__main__":

@@ -12,11 +12,14 @@ import io
 from core import report_kit as K
 from platforms.mercadolibre.report import site
 
-from experiments.ml_invoice_basis import compare, invoice
+from experiments.ml_invoice_basis import accounting, compare, invoice, vat
+from experiments.ml_invoice_basis import mercadopago as MP
 from experiments.ml_invoice_basis.common import ExperimentError, folder_site
 
 
-def compute(store, folder, month, quiet=True):
+def compute(store, folder, month, quiet=True, cost_table=None):
+    """cost_table: (table, note) to use instead of the configured SKU cost table
+    (tests); None reads core.sku_costs.load_configured()."""
     with folder_site(folder) as code:
         buf = io.StringIO()
         with (contextlib.redirect_stdout(buf) if quiet else contextlib.nullcontext()):
@@ -34,7 +37,24 @@ def compute(store, folder, month, quiet=True):
                         for v in invs)
             lines = compare.comparison(S, invs, recs, ctx["cycle_day"])
             unavailable = compare.unavailable(S)
-        return {
+            D = {"store": store, "folder": folder, "month": month, "site": code, "S": S,
+                 "ctx": ctx, "docs": ctx["docs"], "invs": invs, "recs": recs, "lines": lines,
+                 "orders": orders, "parent_of": parent_of, "dec": site.MONEY_DEC}
+            D["mp"] = MP.load(folder)
+            D["links"] = accounting.links(ctx["B"])
+            D["vat"] = vat.policy(code)
+            D["vat_ev"] = vat.evidence(folder, ctx["B"], D["mp"]["rows"], site.CN_TOL)
+            D["vat_verdict"], D["vat_lines"] = vat.conclusion(D["vat_ev"], D["vat"])
+            table, table_note = (cost_table if cost_table is not None
+                                 else accounting.load_cost_table())
+            D["cost_note"] = table_note
+            D["acc"] = dict((v, accounting.reading(invs[v], D, D["mp"], D["links"], table))
+                            for v in invs)
+            D["dates"] = accounting.three_dates(D)
+            D["cash"] = accounting.cash_bridge(D, "calendar", D["acc"]["calendar"])
+            D["coupon_check"] = accounting.coupon_check(D, D["mp"], D["links"])
+            D["withholding"] = site.WITHHOLDING
+        return dict(D, **{
             "store": store, "folder": folder, "month": month, "site": code,
             "country": site.COUNTRY_CN, "cur": site.CUR, "dec": site.MONEY_DEC,
             "money": K.money_format(site.MONEY_DEC), "withholding": site.WITHHOLDING,
@@ -42,7 +62,7 @@ def compute(store, folder, month, quiet=True):
             "recs": recs, "lines": lines, "unavailable": unavailable, "orders": orders,
             "parent_of": parent_of,
             "log": buf.getvalue() if quiet else "",
-        }
+        })
 
 
 def key_numbers(D):
@@ -74,5 +94,24 @@ def key_numbers(D):
         for f in inv["fees"]:
             if not f["order_level"]:
                 d["fee:" + f["es"]] = -f["net"]
+        a = D["acc"][v]
+        have = a["mp"]["available"]
+        d.update({"refund_actual": -a["rev"]["value"],
+                  "refund_err": a["rev"]["err"] if have and a["rev"]["n_known"] else None,
+                  "coupon_mp": -a["coupon"] if a["mp"]["coupon_available"] else None,
+                  "accrual": -a["accrual"]["total"], "contrib_adj": a["contrib_adj"],
+                  "net_sales_exvat": a["vat"]["rev_net"], "contrib_exvat": a["vat"]["contrib_net"]})
         out[v] = d
+    # the order basis on the same net-of-VAT rule (revenue lines ÷ (1 + rate); fees too
+    # when their VAT is creditable)
+    r, credit = D["vat"]["rate"], D["vat"]["credit"]
+    rev_keys = ("gmv", "refund", "cn_adj", "ship_in", "coupon")
+    money = [ln for ln in D["lines"] if ln["kind"] == "m"]
+    rev = sum(ln["cur"] or 0.0 for ln in money if ln["key"] in rev_keys)
+    fees = sum(ln["cur"] or 0.0 for ln in money if ln["key"] not in rev_keys)
+    out["order"].update({"refund_actual": None, "refund_err": None, "coupon_mp": None,
+                         "accrual": None, "contrib_adj": None,
+                         "net_sales_exvat": rev / (1 + r),
+                         "contrib_exvat": rev / (1 + r) + (fees / (1 + r) if credit else fees)})
+    out["mp_source"] = D["mp"]["source"]
     return out

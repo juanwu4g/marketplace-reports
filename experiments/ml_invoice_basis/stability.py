@@ -56,8 +56,54 @@ def metric_rows(snaps):
     rows += fees
     rows += [("unc", "未登记科目", "m"), ("fees", "平台费用合计", "m"),
              ("tax", "平台代扣税（墨西哥，Ventas − 账单）", "m"),
-             ("contrib", "经营贡献毛利（未扣商品成本）", "m")]
+             ("contrib", "经营贡献毛利（未扣商品成本；账单口径冲销按估算）", "m")]
+    rows += [(k, lab, "m") for k, lab in ADDED]
     return rows
+
+
+# The accountant's lines (actual refunds, coupons, accrual, net of VAT): on the
+# invoice basis from MercadoPago / later invoices; the order basis has only the
+# net-of-VAT pair.
+ADDED = (("refund_actual", "取消与退款（实际，MercadoPago；没有流水的沿用估算）"),
+         ("refund_err", "冲销估算的误差（估算 − 实际，仅有实际数的笔）"),
+         ("coupon_mp", "卖家承担优惠券（MercadoPago 实际）"),
+         ("accrual", "应计费用（下期账单已出现的本期费用）"),
+         ("contrib_adj", "经营贡献毛利（调整后，含税）"),
+         ("net_sales_exvat", "净收入（不含税）"),
+         ("contrib_exvat", "经营贡献毛利（不含税；账单口径为调整后）"))
+
+
+SHORT = {"refund_actual": "实际退款", "refund_err": "估算误差", "coupon_mp": "优惠券", "accrual": "应计费用",
+         "contrib_adj": "调整后毛利（含税）", "net_sales_exvat": "不含税净收入",
+         "contrib_exvat": "不含税毛利"}
+
+
+def _f(v, dec):
+    return "无法得到" if v is None else fmt(round(v, dec) + 0.0, dec)     # no "-0.00"
+
+
+def mp_sentence(k1, k2, view, dec, src1, src2):
+    """Why the accountant's lines of one invoice reading moved between two snapshots."""
+    a, b = k1[view], k2[view]
+    moved = []
+    for k, lab in ADDED:
+        x, y = a.get(k), b.get(k)
+        if x is None and y is None:
+            continue
+        if x is None or y is None:
+            moved.append("%s：%s → %s" % (SHORT[k], _f(x, dec), _f(y, dec)))
+        elif abs(y - x) > 0.004:
+            moved.append("%s %s" % (SHORT[k], _f(y - x, dec)))
+    head = "实际数与不含税数："
+    if src1 != src2:
+        head += "MercadoPago 来源不同（前一次 %s，后一次 %s），实际退款/优惠券的取数方法随之不同；" % (
+            SRC_ZH.get(src1, "没有文件"), SRC_ZH.get(src2, "没有文件"))
+    if not moved:
+        return head + "都没有变。"
+    return head + "变了的有 " + "；".join(moved) + "。"
+
+
+SRC_ZH = {"settlement": "结算流水 settlement_v2", "collection": "Cobros（没有 settlement_v2）"}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -231,8 +277,11 @@ def analyse(store, month, folders, quiet=True, cache=None):
         vd = ventas_diff(D1, D2)
         ids = dict((v, invoice_diff(D1, D2, v)) for v in ("period", "calendar"))
         lrd = linked_rows_diff(D1, D2)
-        pairs.append({"a": D1, "b": D2, "ventas": vd, "invoice": ids, "linked": lrd,
-                      "why": explain(D1, D2, vd, ids, lrd)})
+        why = explain(D1, D2, vd, ids, lrd)
+        k1, k2 = report.key_numbers(D1), report.key_numbers(D2)
+        for v in ("period", "calendar"):
+            why[v] += " " + mp_sentence(k1, k2, v, D1["dec"], k1["mp_source"], k2["mp_source"])
+        pairs.append({"a": D1, "b": D2, "ventas": vd, "invoice": ids, "linked": lrd, "why": why})
     return {"store": store, "month": month, "snaps": snaps, "kns": kns, "pairs": pairs,
             "rows": metric_rows(kns)}
 

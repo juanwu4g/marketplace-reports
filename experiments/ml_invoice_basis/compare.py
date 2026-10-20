@@ -265,7 +265,7 @@ def _rev_text(rs):
 
 
 def comparison(S, invs, recs, cycle_day):
-    """Rows for ③: (key, label, original term, kind, current, {view: value},
+    """Rows for ④: (key, label, original term, kind, current, {view: value},
     category keys, {view: note}). kind: 'n' count, 'm' money, 'sub' subtotal,
     'tot' total. Money is signed as on the P&L (deductions negative)."""
     m = S["m"]
@@ -303,7 +303,7 @@ def comparison(S, invs, recs, cycle_day):
         "m", -m["refund"], per(lambda v: -invs[v]["n"]["rev_sales"]), ["rev", "time"],
         per(lambda v: "现行 = Ventas 退款列：退给买家的净额（平台退回的佣金/运费/税已抵掉），按下单月；"
                       "账单 = 本期冲销的销售额估算（冲销佣金 ÷ 原佣金 × 售价），按冲销的计费日。"
-                      "%d 笔冲销，其中全额 %d 笔；关联方法见 ⑤" % (invs[v]["n"]["n_rev"],
+                      "%d 笔冲销，其中全额 %d 笔；关联方法见 ⑥" % (invs[v]["n"]["n_rev"],
                                                     invs[v]["n"]["rev_full"])))
     add("cn_adj", "加：部分退款重复扣佣金调整", "(现行报表修正)", "m", S["cn"]["partial_total"],
         per(lambda v: 0.0), ["na"],
@@ -346,7 +346,7 @@ def comparison(S, invs, recs, cycle_day):
                       "账单口径把它们单列（冲销毛额与费用冲销分开）"))
     add("unc_order", "减：订单级未登记科目 ⚠", "(未在 FEE_CATALOG 登记)", "m", -m["unc_order"],
         per(lambda v: -invs[v]["n"]["unk_order"]), ["same"],
-        per(lambda v: "字典里没有的订单级费用，逐项见 ④"))
+        per(lambda v: "字典里没有的订单级费用，逐项见 ⑤"))
     add("_order_fees", "订单级费用小计", "", "sub", None, {}, [], {})
     for es, zh, bucket, order_level in FEE_CATALOG:
         if order_level:
@@ -360,7 +360,7 @@ def comparison(S, invs, recs, cycle_day):
                 if cl and v == "period" else "两边都是按计费日归入本月的同一批账单行")))
     add("unc_bill", "减：账单级未登记科目 ⚠", "(未在 FEE_CATALOG 登记)", "m", -m["unc_bill"],
         per(lambda v: -invs[v]["n"]["unk_bill"]), per(lambda v: cyc(v, ["same"])),
-        per(lambda v: "字典里没有的账单级费用，逐项见 ④"))
+        per(lambda v: "字典里没有的账单级费用，逐项见 ⑤"))
     add("_bill_fees", "月度账单费用小计", "", "sub", None, {}, [], {})
     add("_contrib", "经营贡献毛利（未扣商品成本）", "", "tot", S["contrib"],
         per(lambda v: invs[v]["n"]["contribution"]), [], {})
@@ -374,11 +374,14 @@ def unavailable(S):
     if site.WITHHOLDING:
         out.append(("平台代扣代缴税金 (IVA/ISR)", "Retenciones (en Cargo por venta e impuestos)",
                     m["tax_ret"], "账单只有纯佣金；代扣税只在 Ventas 的“佣金及税金”列里和佣金混在一起，"
-                                  "要用 Ventas 减账单才得到。现行报表不把它当费用（是可抵税款），但报税要用"))
+                                  "要用 Ventas 减账单才得到。现行报表不把它当费用（是可抵税款），但报税要用。"
+                                  "正式凭证是平台每月出具的 CFDI de retenciones（见下面的“检查”）"))
     out.append(("卖家承担优惠券", "Descuentos y bonificaciones", m["coupon"],
-                "账单没有买家优惠；现行报表由 Ventas 的 Total 倒推"))
+                "账单没有买家优惠；现行报表由 Ventas 的 Total 倒推。有 MercadoPago 结算流水时，"
+                "③“调整为实际”取流水的实际数（见 ⑦）"))
     out.append(("实际退给买家的金额（净额）", "Anulaciones y reembolsos", m["refund"],
-                "账单只有被冲销的佣金/配送费；退给买家多少钱只能按冲销比例估算（见 ② 的冲销行）"))
+                "账单只有被冲销的佣金/配送费；退给买家多少钱账单只能按冲销比例估算。有 MercadoPago "
+                "流水时，③“调整为实际”取实际退款，估算的误差见 ⑦"))
     if site.BONIF_COL:
         out.append(("Flex 配送补贴（秘鲁）", "Descuentos y bonificaciones", m.get("bonif", 0.0),
                     "平台付给卖家的配送补贴，在 Ventas 和 MercadoPago 里，不在账单里"))
