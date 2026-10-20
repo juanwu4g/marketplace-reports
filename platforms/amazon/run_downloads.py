@@ -102,14 +102,14 @@ def run_store(client, store_name, month, out_dir=None, only=None, collect_timeou
                                 exception_class="Blocked")
         except forms.LanguageWrong as e:
             ctx.errors.append("language: %s" % e)
-            ev = download_diag.exception_evidence(e, step="language")
+            ev = download_diag.exception_evidence(e, step="language", driver=d)
             for f in exp:
                 diag.items.setdefault(f, {"evidence": dict(ev), "period": None,
                                           "required": True})
         except Exception as e:
             # the browser died or the first page never rendered: the whole store
             ctx.errors.append("store: %s: %s" % (e.__class__.__name__, str(e)[:200]))
-            ev = download_diag.exception_evidence(e, step="store")
+            ev = download_diag.exception_evidence(e, step="store", driver=d)
             for f in exp:
                 if f not in ctx.files:
                     diag.items.setdefault(f, {"evidence": dict(ev), "period": None,
