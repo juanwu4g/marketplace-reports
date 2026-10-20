@@ -1288,6 +1288,7 @@ MercadoPago 那边没有语言切换器，只能读 `<html lang>` 并**警告**�
 | `financial_report.py` | 到 `report_build.py` 的接口；挑每家店最近一个**文件齐全**的下载目录 |
 | `report_build.py` | 报表生成器的入口，10 张子表；具体代码在旁边的 `report/` 文件夹（国别口径、读文件、算数、校验、每页一个文件）。可以单独当脚本跑 |
 | `pl_billing_basis.py` | 验证工具：用纯计费口径重做损益表与现行口径对比。可随时删 |
+| `experiments/ml_invoice_basis/` | 实验（不参与每月运行）：账单口径损益表、与现行订单口径对比、多次下载的口径稳定性。见该目录 README |
 
 **文档**
 

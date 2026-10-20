@@ -194,6 +194,7 @@ personal login will not work with this API.
 | `financial_report.py` | The seam to `report_build.py`: picks each store's newest *complete* run folder and runs it as a subprocess. |
 | `run_reports.py` | Entry point for the monthly reports: one workbook per store plus an all-store roll-up. |
 | `pl_billing_basis.py` | Verification tool: rebuilds the P&L on a pure billing-date basis to compare against the current hybrid basis. Safe to delete. |
+| `experiments/ml_invoice_basis/` | Experiment, not part of the monthly run: MercadoLibre P&L on the invoice basis (Facturación + Notas de crédito) vs the order basis, and their stability across downloads. See its README. |
 | `downloads/` | **Gitignored.** Output, one folder per run. |
 | `config.json` | **Gitignored.** Real credentials and machine-specific paths. |
 | `config.example.json` | Template with every field documented. Copy → `config.json`. |
