@@ -237,8 +237,7 @@ def test_fa_without_a_table_is_as_before(fa_folder, tmp_path):
     assert pl.cell(row=at, column=3).value == 0
     assert pl.cell(row=at, column=4).value.startswith("⚠ 平台数据不含此项")
     sk = wb[K.SHEET_NAMES[6]]
-    assert sk.max_column == 19 and sk.cell(row=4, column=15).value == "单位成本（录入）"
-    assert [sk.cell(row=4, column=j).value for j in (18, 19)] == ["销项 IVA", "进项 IVA"]
+    assert sk.max_column == 17 and sk.cell(row=4, column=15).value == "单位成本（录入，含 IVA）"
     assert sk.cell(row=sku_rows(sk)["SKU1"], column=16).value == "=-O%d*D%d" % ((sku_rows(sk)["SKU1"],) * 2)
 
 
@@ -248,14 +247,17 @@ def test_fa_full_coverage(fa_folder, tmp_path, monkeypatch):
     r, out = build_fa(fa_folder, tmp_path)
     C = by_key(r["checks"])
     assert C["sku_costs_coverage"]["ok"] and C["sku_costs_currency"]["ok"]
-    # SKU1: 2 delivered, 0 returned -> 8,000; SKU2: 1 delivered, 1 returned -> 0
-    assert r["metrics"][FAT.STORE]["cogs"] == 8000
-    assert r["metrics"][FAT.STORE]["profit"] == r["metrics"][FAT.STORE]["contrib"] - 8000
+    # SKU1: 2 delivered, 0 returned -> 8,000 net of IVA; SKU2: 1 delivered, 1 returned -> 0.
+    # Falabella's report is with IVA: the table's costs are multiplied by 1.19.
+    cogs = 8000 * 1.19
+    assert r["metrics"][FAT.STORE]["cogs"] == pytest.approx(cogs)
+    assert r["metrics"][FAT.STORE]["profit"] == pytest.approx(r["metrics"][FAT.STORE]["contrib"] - cogs)
     wb = load_workbook(out)
     pl = wb[K.SHEET_NAMES[1]]
     rows = pl_rows(pl)
     c = pl.cell(row=rows["减：商品采购成本"], column=3)
-    assert c.value == 8000 and c.fill.fgColor.rgb.endswith(K.C_INPUT)       # still an input cell
+    assert c.value == pytest.approx(cogs) and c.fill.fgColor.rgb.endswith(K.C_INPUT)  # still an input cell
+    assert "× 1.19" in pl.cell(row=rows["减：商品采购成本"], column=4).value
     assert "c.xlsx" in pl.cell(row=rows["减：商品采购成本"], column=4).value
     assert "100.0% 销售额已有成本" in pl.cell(row=rows["减：商品采购成本"], column=4).value
     assert pl.cell(row=rows["税前净利润"], column=3).value == "=C%d-C%d" % (
@@ -263,7 +265,7 @@ def test_fa_full_coverage(fa_folder, tmp_path, monkeypatch):
     sk = wb[K.SHEET_NAMES[6]]
     s = sku_rows(sk)
     assert sk.cell(row=4, column=18).value == "成本来源"
-    assert sk.cell(row=s["SKU1"], column=15).value == 4000
+    assert sk.cell(row=s["SKU1"], column=15).value == pytest.approx(4000 * 1.19)
     assert sk.cell(row=s["SKU1"], column=16).value == "=-O{0}*(D{0}-E{0})".format(s["SKU1"])
     assert sk.cell(row=s["SKU1"], column=18).value.startswith("成本表第 2 行（FA/CL")
     assert sk.cell(row=s[FA.NO_SKU], column=15).value is None

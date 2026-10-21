@@ -68,21 +68,17 @@ a sister of MercadoLibre's report. The workbook states the same rules on ① (�
    passes to the buyer. Every money line counts in the month of its *Fecha de
    transacción*. Orders placed but not delivered in the month are not revenue;
    order-date GMV is a KPI, reconciled order by order in ③ bridge A.
-2. **Net of IVA.** The seller is an IVA taxpayer: output IVA and input IVA are
-   neither income nor cost. The P&L uses *Monto (Sin IVA)*; both IVA amounts are
-   memo lines and ③ bridge C walks from the contribution to the cash with IVA.
-   (MercadoLibre Chile's report is gross only because MercadoLibre's files do not
-   split IVA; Falabella's do, per line.)
-   **IVA reference (added 2026-10-21, adds cells only — no P&L row or column moves):**
-   below ②'s memo, "IVA 明细 · 按损益表行" lists the IVA of every income and fee row
-   (transaction date, the same lines as the P&L; buyer shipping as its two memo legs),
-   their totals (= the memo's 销项 / 进项 IVA) and 应缴 IVA 净额 = 销项 − 进项, so that
-   contribution + 应缴 IVA 净额 = the settlement with IVA. "IVA 明细 · 按单据日期" gives
-   the F29 reference by document date: input IVA of the fee invoice whose period ends in
-   the month (all its lines, from InvoiceReport; 0 with a note when not downloaded),
-   output IVA of the Liquidación documents (estimated as total × 19/119) and of FBS
-   sales and returns (the seller's own documents). ⑦ gets 销项 / 进项 IVA columns and ⑧
-   销项 / 进项 / 应缴 IVA columns, at the right end.
+2. **With IVA — the accountant's decision (2026-10-21).** Every amount on every
+   sheet is *Monto con IVA*: what buyers pay and what Falabella settles, the figure
+   of Falabella's seller centre and of the bank, and the same basis as MercadoLibre
+   Chile's report. Every Falabella line carries exactly 19 % IVA, so every amount is
+   the net one × 1.19 (± Falabella's rounding per line) and every ratio is the same
+   as on a net basis. The contribution therefore equals the month's settlement (③
+   bridge C). It contains the IVA owed to SII (output − input, transaction date):
+   one memo line on ② ("其中含 IVA") shows it, and ① says it is not profit.
+   *Monto (Sin IVA)* and *IVA* are still read for the per-line IVA check and that
+   memo line. (Until 2026-10-21 the report was net of IVA; the change moved every
+   amount × 1.19 and nothing else.)
 3. **Shipping — principal vs agent.** For orders Falabella delivers, the shipping the
    buyer pays is passed to Falabella unchanged ("Pago de envío comprador" and the
    equal "Reversa"): the seller is an agent, so it is **not revenue** (net
@@ -111,12 +107,14 @@ a sister of MercadoLibre's report. The workbook states the same rules on ① (�
    devolución de producto" lines of the SKU, on the same transaction-date basis as
    the revenue lines; a returned unit is taken as back in stock. Unit cost = the
    landed cost per unit as finance enters it (purchase + freight + duties, net of
-   IVA, in CLP — no FX conversion). ② 商品采购成本 holds only the covered SKUs'
+   IVA, in CLP — no FX conversion) × 1.19, because this report is with IVA
+   (`sku_costs.apply(..., factor)`; the table itself stays net, MercadoLibre reads it
+   with factor 1). ② 商品采购成本 holds only the covered SKUs'
    cost (still a yellow cell, its note gives the coverage); ⑦ shows each SKU's cost
    and margin, "未录入成本" where the table has none. The stock value on ⑨ stays at
    selling price — a size indicator, not the accounting value of inventory; valuing
    stock at cost is a later step.
-9. **Cash.** The month's lines with IVA are what Falabella settles through Fpay
+9. **Cash.** The month's lines (with IVA) are what Falabella settles through Fpay
    statements (*Nº estado de cuenta*); "No Pagado" lines are paid on the next
    settlement date.
 

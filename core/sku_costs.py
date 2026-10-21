@@ -324,11 +324,12 @@ returned in the month (0 when the platform's data does not identify them), sales
 class Line(object):
     """One SKU's cost in one report."""
 
-    def __init__(self, item, status, row=None, rows=()):
+    def __init__(self, item, status, row=None, rows=(), factor=1.0):
         self.item = item
         self.status = status
         self.row = row              # the Row used (OK) or rejected (CURRENCY)
         self.rows = list(rows)      # CONFLICT: the rows in conflict
+        self.factor = factor        # see apply()
 
     @property
     def cost_units(self):
@@ -336,12 +337,12 @@ class Line(object):
 
     @property
     def unit_cost(self):
-        return self.row.cost if self.status == OK else None
+        return self.row.cost * self.factor if self.status == OK else None
 
     @property
     def cost(self):
         """Cost of goods of the SKU in the month (positive); 0 when uncovered."""
-        return self.row.cost * self.cost_units if self.status == OK else 0.0
+        return self.row.cost * self.factor * self.cost_units if self.status == OK else 0.0
 
     @property
     def counts(self):
@@ -375,8 +376,9 @@ def lookup(table, platform, country, sku, until):
 class Result(object):
     """The cost table applied to one store's month."""
 
-    def __init__(self, table, platform, country, currency, month, items):
+    def __init__(self, table, platform, country, currency, month, items, factor=1.0):
         self.table = table
+        self.factor = factor
         self.platform, self.country = platform.upper(), country.upper()
         self.currency = currency.upper()
         self.month = month
@@ -390,7 +392,7 @@ class Result(object):
                     st = CURRENCY
             else:
                 st, row, rows = NO_COST, None, []
-            ln = Line(it, st, row, rows)
+            ln = Line(it, st, row, rows, factor)
             self.lines.append(ln)
             self._by[sku_key(it.sku)] = ln
 
@@ -449,11 +451,13 @@ def point_line(results, profit):
         _fmt(cogs), _pct(sales_share(results)), _fmt(profit)))
 
 
-def apply(table, platform, country, currency, month, items):
-    """The table applied to one store's ⑦ SKUs; None when no table is configured."""
+def apply(table, platform, country, currency, month, items, factor=1.0):
+    """The table applied to one store's ⑦ SKUs; None when no table is configured.
+    factor multiplies every unit cost — for a report whose amounts include a tax the
+    table's costs do not (Falabella's report is with IVA: 1.19)."""
     if table is None:
         return None
-    return Result(table, platform, country, currency, month, items)
+    return Result(table, platform, country, currency, month, items, factor)
 
 
 def _pct(x):
