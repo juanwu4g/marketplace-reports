@@ -14,6 +14,7 @@ import re
 import time
 import traceback
 
+from core import browser_kit
 from core import download_diag
 from platforms.falabella import page_kit as pk
 from platforms.falabella import periods
@@ -282,20 +283,11 @@ def orders_chunk(ctx, form, a, b):
 
 
 def retried(ctx, what, fn, *a, attempts=2):
-    """Run a page interaction again on a freshly loaded page when it fails the first
-    time. Calendars sometimes swallow a click (2026-10-19 on production: the order
-    page still showed the previous run's range and kept it); a second try from a
-    clean page is cheap and nearly always enough. The last failure is raised."""
-    for i in range(attempts):
-        try:
-            return fn(ctx, *a)
-        except LanguageWrong:
-            raise
-        except pk.PageError as e:
-            if i == attempts - 1:
-                raise
-            ctx.log("  %s 第 %d 次没成功（%s），重新打开页面再试" % (what, i + 1, str(e)[:120]))
-            time.sleep(3)
+    """browser_kit.retried for Falabella routes: a PageError is tried again on a
+    freshly loaded page (2026-10-19 on production: the order page still showed
+    the previous run's range and kept it); a wrong language never is."""
+    return browser_kit.retried(ctx, what, fn, *a, attempts=attempts,
+                               retry_on=(pk.PageError,), never_retry=(LanguageWrong,))
 
 
 def _orders_chunk_retried(ctx, form, a, b):

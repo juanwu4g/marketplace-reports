@@ -501,6 +501,21 @@ def test_git_commit_reads_this_checkout():
     assert c is None or (len(c) == 7 and int(c, 16) >= 0)
 
 
+def test_code_fingerprint_ignores_line_endings_and_data(tmp_path):
+    for root, eol in ((tmp_path / "a", b"\n"), (tmp_path / "b", b"\r\n")):
+        (root / "core").mkdir(parents=True)
+        (root / "core" / "x.py").write_bytes(b"print(1)" + eol + b"print(2)" + eol)
+        (root / "run_monthly.py").write_bytes(b"pass" + eol)
+    (tmp_path / "b" / "logs").mkdir()
+    (tmp_path / "b" / "logs" / "x.py").write_bytes(b"not code")
+    fa = runlog.code_fingerprint(str(tmp_path / "a"))
+    assert fa and len(fa) == 10
+    assert fa == runlog.code_fingerprint(str(tmp_path / "b"))
+    (tmp_path / "b" / "core" / "x.py").write_bytes(b"print(3)\n")
+    assert runlog.code_fingerprint(str(tmp_path / "b")) != fa
+    assert "没有 .git" in runlog.code_version(str(tmp_path / "a"))
+
+
 def test_spawn_detached_survives_and_captures_stderr(tmp_path):
     import sys
     err = str(tmp_path / "runs" / "_launch.err")

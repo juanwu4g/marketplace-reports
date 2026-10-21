@@ -69,10 +69,16 @@
 cd D:\Projects\mx_sales_data
 
 python -m venv .venv
+set PYTHONUTF8=1
 .venv\Scripts\pip install -r requirements.txt
 
 copy config.example.json config.json
 ```
+
+**以后更新代码：双击 `update.cmd`**（或 `.venv\Scripts\python -m tools.update`）。它会：月度报表
+正在跑或这台机器上改过代码文件时拒绝更新；否则 `git pull` → 装依赖（自动带 `PYTHONUTF8=1`）→
+`bootstrap.py` 自检（含 config.json 的店铺配置）→ 所有国家/平台试运行（不打开任何店铺）。
+哪一步失败都会说原因，并给出退回更新前代码的那一条命令。`config.json` 和下载的数据不会被动。
 
 > ⚠️ **中文 Windows 上第一次装依赖，先敲一句 `set PYTHONUTF8=1`。** Python 3.11.9
 > 自带的那版 pip 会按系统编码（GBK）去读 `requirements.txt`，而这个文件里有中文
@@ -718,6 +724,54 @@ python -m platforms.falabella.run_reports --dry-run   # 看看用哪批数据
 界面语言必须是**西班牙语**：脚本每次先检查，发现是英语等其他语言会**自动改回 Español**（在店铺的 REPORT.md 里记一笔），改不回来才报 `LANGUAGE_WRONG`。会计处理的完整说明在
 `platforms/falabella/README.md`。
 
+### 3.8 多平台：亚马逊（墨西哥）
+
+市场代码 `AZ-MX`。config.json 里这样写（只有 `SM-Amazon`；`PW-Amazon` 闲置，**不要加**）：
+
+```json
+"allowed": [..., "SM-Amazon"],
+"catalog": {..., "SM-Amazon": {"platform": "AZ", "country": "MX"}},
+"batches": {..., "AZ-MX": ["SM-Amazon"]}
+```
+
+窗口「国家」下拉框里多一项「亚马逊 墨西哥」；「全部国家」和计划任务会在最后跑它。
+
+```
+python run_monthly.py --region AZ-MX                  # 上个月，下载 + 出报表
+python run_monthly.py --region AZ-MX --step report    # 只重出报表
+python run_monthly.py --region AZ-MX --step collect   # 只补取欠账（费用发票等）
+```
+
+下载五样：交易明细月报（CSV）、月度汇总（PDF）、平台费用发票（CFDI XML+PDF）、FBA 库存快照、
+月度预扣税证明（Certificado de retención）。**每月 7 号以后再跑**：预扣税证明大约 6 号才出。
+
+* 费用发票页经常临时显示 "No invoices available"（亚马逊那边的问题）：脚本会等、重试，还不行就
+  记成欠账，下次运行或 `--step collect` 自动补取。费用发票缺了**不影响报表数字**。
+* 遇到登录、验证码页面脚本会停下，在「需要人工处理」里提示，**脚本从不自己过验证码**。
+* 报表读月度汇总 PDF 需要 `pypdf`（已写进 requirements.txt），装依赖时先 `set PYTHONUTF8=1`。
+
+**口径**（和 Falabella 一样不含 IVA）：收入和平台费用都**不含 IVA**（亚马逊的费用是含税价，÷1.16）；
+Amazon 代扣的 IVA、ISR 是预缴税款，列在备查项，不算费用。**交易明细里每月 11 日前后那笔大额
+Ajuste 是上个月的 ISR**，本月的 ISR 以预扣税证明为准。文件名 `MX_AZ_全店汇总_<月>.xlsx`、
+告警 `！报表异常_MX_AZ_<年月>.txt`。完整会计说明见 `platforms/amazon/README.md`。
+
+### 3.9 SKU 成本表：让报表算出商品成本和毛利
+
+平台数据里没有进货成本，所以报表默认只到"经营贡献毛利"。财务填一张**所有平台共用**的成本表后，
+美客多（墨西哥、智利、秘鲁）、Falabella、亚马逊的报表会自动算出商品成本和税前利润。
+美客多按⑦表五的“销售件数”计成本：本月订单的件数，不含发货前取消的、和平台质检判定可再售已回库的退货。
+
+1. 生成模板（列出最近一次下载里出现过的全部 SKU，只读文件、不打开店铺）：
+   `.venv\Scripts\python -m tools.sku_cost_template --out sku_costs.xlsx --month 2026-09`
+2. 在 `sku_costs.xlsx` 里填 `单位成本`（到岸成本：进价＋运费＋关税，每件）和 `币种`（与报表币种一致，
+   不做汇率换算）。涨价时**加一行**并填 `生效日期`，不要改旧行。`平台`/`国家` 留空 = 所有平台/国家通用。
+   再次运行第 1 步会保留已填的成本，只补新 SKU。
+3. 在 `config.json` 加一段：`"reports": {"sku_costs": "sku_costs.xlsx"}`，然后重出报表
+   （`--step report`）。
+
+没填成本的 SKU 不算成本，② 页会写明覆盖了多少销售额，⑩ 页列出缺成本的 SKU。成本表是业务数据，
+不进 git。`bootstrap.py` 会检查配置的成本表能不能读。
+
 ---
 
 ## 4. 财务报表：十张子表
@@ -1232,8 +1286,9 @@ MercadoPago 那边没有语言切换器，只能读 `<html lang>` 并**警告**�
 |---|---|
 | `run_reports.py` | **财报入口**，每月跑的第二条命令（运行器的「出报表」一步调的就是它） |
 | `financial_report.py` | 到 `report_build.py` 的接口；挑每家店最近一个**文件齐全**的下载目录 |
-| `report_build.py` | 报表生成器本体，10 张子表。独立运行，不 import 项目里任何模块 |
+| `report_build.py` | 报表生成器的入口，10 张子表；具体代码在旁边的 `report/` 文件夹（国别口径、读文件、算数、校验、每页一个文件）。可以单独当脚本跑 |
 | `pl_billing_basis.py` | 验证工具：用纯计费口径重做损益表与现行口径对比。可随时删 |
+| `experiments/ml_invoice_basis/` | 实验（不参与每月运行）：账单口径损益表、与现行订单口径对比、多次下载的口径稳定性。见该目录 README |
 
 **文档**
 

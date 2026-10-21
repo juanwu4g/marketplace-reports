@@ -120,7 +120,8 @@ NOT_REGISTERED_ACTIONS = ("generar", "no-format-row", "no-panel")
 # "verifica" 的正常页面太多了。
 BLOCKED_URL = re.compile(
     r"/login|/lgz/|/registration|/authentication|/verification|/captcha|"
-    r"/security/|chrome-error://|/gz/account-verification|about:blank", re.I)
+    r"/security/|chrome-error://|/gz/account-verification|about:blank|"
+    r"/ap/(signin|mfa|cvf)|validatecaptcha", re.I)
 # 平台自己挂了，和"被挡在登录/验证页外面"不是一回事：前者谁也不用去处理，等
 # 一会儿重跑就行。2026-10-13 实测 MercadoPago 的页面标题就是
 # 「503 Service Temporarily Unavailable」，当时被归成了要人工进店验证。
@@ -128,7 +129,7 @@ SERVER_ERROR = re.compile(
     r"\b50[0234]\b|service (temporarily )?unavailable|bad gateway|"
     r"gateway time-?out|internal server error", re.I)
 BLOCKED_TITLE = re.compile(
-    r"ingresa a tu cuenta|iniciar sesi[oó]n|inicia sesi[oó]n|\blog ?in\b|"
+    r"ingresa a tu cuenta|iniciar sesi[oó]n|inicia sesi[oó]n|\blog ?in\b|\bsign-?in\b|"
     r"verifica|captcha|no es posible acceder|p[aá]gina no encontrada|"
     r"\b40[34]\b|\b50[023]\b|ERR_|no se puede acceder", re.I)
 
@@ -195,11 +196,20 @@ def _safe_name(label):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label or "form")).strip("_")[:60]
 
 
-def exception_evidence(exc, step=None):
-    """一个异常能留下的全部：类名、文字、哪一步，以及紫鸟的原始回应（若有）。"""
+def exception_evidence(exc, step=None, driver=None):
+    """一个异常能留下的全部：类名、文字、哪一步，紫鸟的原始回应（若有），
+    以及给了 driver 时浏览器当时停在的地址和标题 —— 整店失败（还没进任何一张
+    报表）时只有靠它才分得清"被踢到登录页"（PAGE_BLOCKED，要人去登录）和
+    "脚本出错"（INTERNAL_ERROR）。2026-10-20 Falabella 登录过期就被归成了后者。"""
     ev = {"signal": "exception",
           "exception_class": exc.__class__.__name__,
           "exception": str(exc)[:500]}
+    if driver is not None:
+        try:
+            ev["url"] = driver.current_url or ""
+            ev["title"] = driver.title or ""
+        except Exception:
+            pass                                 # 浏览器已经没了：只留异常本身
     step = step or getattr(exc, "ziniao_step", None)
     if step:
         ev["step"] = step

@@ -5,7 +5,8 @@
 A system that downloads seller reports from marketplace back offices through the
 Ziniao anti-detect browser and builds monthly financial workbooks (one per store,
 one combined per country). MercadoLibre is done for Mexico, Chile and Peru; Falabella for Chile
-(`platforms/falabella/`, market `FA-CL`). The
+(`platforms/falabella/`, market `FA-CL`); Amazon for Mexico (`platforms/amazon/`, market
+`AZ-MX`, store `SM-Amazon` only — `PW-Amazon` is idle, never open it). The
 goal is to add more platforms (TikTok Shop, Temu, Falabella, Walmart, Amazon,
 SHEIN …) to this same repo, each as `platforms/<name>/`, sharing `core/` and the
 one window, with "sister" reports that look like one family.
@@ -54,8 +55,14 @@ cd downloads && ../.venv/bin/python -m pytest tests -q
 # Windows / production
 .venv\Scripts\python run_monthly.py --region CL --stores "<store>" --month 2026-09
 .venv\Scripts\python run_monthly.py --region FA-CL --stores "<store>" --month 2026-09   # Falabella Chile
+.venv\Scripts\python run_monthly.py --region AZ-MX --stores SM-Amazon --month 2026-09     # Amazon Mexico
 .venv\Scripts\python list_stores.py --mx|--cl|--pe       # lists, opens nothing
 .venv\Scripts\python -m tools.probe_pages --store <name> --out <dir> <url> …
+.venv\Scripts\python -m tools.probe_session --store <name> --cmd-dir <dir> --out <dir>
+
+# new platform (dev box): scaffold, then register in core/markets.py by hand
+.venv/bin/python -m tools.new_platform AZ amazon "亚马逊" MX
+.venv/bin/python -m pytest tests/test_platform_contract.py -q
 ```
 
 ## Where things are (this machine)
@@ -71,4 +78,4 @@ cd downloads && ../.venv/bin/python -m pytest tests -q
   desktop with `~/vm/win11/pljob <name> <script> args…` (log in
   `logs\job_<name>.log`, ends with `EXIT=<code>`). Ziniao cannot open windows from
   the SSH session — use the job helpers.
-- Golden data: `~/report-golden/{mx,cl,pe}/<store>/` + `<case>.baseline.json`.
+- Golden data: `~/report-golden/{mx,cl,pe,cl-fa,mx-az}/<store>/` + `<case>.baseline.json`.

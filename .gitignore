@@ -25,6 +25,10 @@ downloads/data/
 downloads/mx_sales/**/__pycache__/
 downloads/tests/**/__pycache__/
 
+# 商品成本表（config.json → reports.sku_costs）：财务的经营数据，不进库
+sku_costs.xlsx
+sku_costs.csv
+
 # 每次运行的日志与待办登记
 logs/
 *.log

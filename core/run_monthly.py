@@ -939,7 +939,7 @@ def _header_tail(log, args, out_dir, out_src, downloads, per_region=False):
         user = "?"
     log.info(S, "机器　　：%s　用户：%s" % (platform.node() or "?", user))
     log.info(S, "Python　：%s（%s）" % (platform.python_version(), sys.executable))
-    log.info(S, "代码版本：%s" % (runlog.git_commit(ROOT) or "读不到 .git"))
+    log.info(S, "代码版本：%s" % runlog.code_version(ROOT))
     log.info(S, "日志文件：%s" % log.path)
 
 

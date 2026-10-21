@@ -29,6 +29,9 @@ PLATFORMS = collections.OrderedDict([
                     re.compile(r"mercado\s*libre", re.I), ("MX", "CL", "PE"))),
     ("FA", Platform("FA", "platforms.falabella", "Falabella", "Falabella",
                     re.compile(r"falabella", re.I), ("CL",))),
+    # Ziniao names Amazon's platforms in Chinese: "亚马逊-墨西哥".
+    ("AZ", Platform("AZ", "platforms.amazon", "亚马逊", "Amazon",
+                    re.compile(r"amazon|亚马逊", re.I), ("MX",))),
 ])
 
 COUNTRIES = collections.OrderedDict([

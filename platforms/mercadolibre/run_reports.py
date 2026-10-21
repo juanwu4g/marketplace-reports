@@ -90,6 +90,12 @@ def resolve(names, month=None):
     return usable, unusable
 
 
+def latest_folder(store, month, base=None):
+    """这家店做 month 月报表要用的下载目录（和 resolve() 同一条规则：
+    financial_report.latest_run），没有返回 None。tools/sku_cost_template 用它。"""
+    return financial_report.latest_run(store, base=base, month=month)[0]
+
+
 def summarize_checks(checks):
     """把一份报表里未通过的校验压成一两行。返回 [文字, ...]。
 

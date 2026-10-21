@@ -36,8 +36,13 @@ from platforms.mercadolibre import report_build
 ROOT = os.environ.get("REPORT_GOLDEN_ROOT", os.path.expanduser("~/report-golden"))
 BUILD_DATE = "2026-10-14"
 
-# case id -> (store name as in config.json, site, month)
+# case id -> (store name as in config.json, site, month)          MercadoLibre
+# case id -> (store name, "<platform code>", month)                 other platforms
+# (other platforms build with platforms.<pkg>.report_build.build(pairs, month, out,
+#  build_date=...); the case folder is the store's download folder for the month)
 CASES = {
+    "cl-fa/DAB_CL-Fala": ("DAB_CL-Fala (Coco)", "FA", "2026-09"),
+    "mx-az/SM-Amazon": ("SM-Amazon", "AZ", "2026-09"),
     "mx/BOCINA_TA02": ("BOCINA_TA02", "mx", "2026-09"),
     "cl/DAB_CL": ("DAB_CL (Coco) 子账号", "cl", "2026-09"),
     "cl/Tecnohub_CL": ("Tecnohub_CL (个人店)", "cl", "2026-09"),
@@ -69,6 +74,13 @@ def dump(path):
 
 def build(case, out):
     store, site, month = CASES[case]
+    if site.isupper():                                   # another platform's report
+        import importlib
+        from core import markets
+        pkg = markets.platform(site).package
+        rb = importlib.import_module(pkg + ".report_build")
+        r = rb.build([(store, os.path.join(ROOT, case))], month, out, build_date=BUILD_DATE)
+        return report_build.EXIT_OK if r["outcome"] == "ok" else report_build.EXIT_CHECKS
     # start from another site on purpose: the build must switch by the folder
     report_build.set_site("cl" if site != "cl" else "mx")
     rc = report_build.main(["--month", month, "--store", "%s=%s" % (store, os.path.join(ROOT, case)),

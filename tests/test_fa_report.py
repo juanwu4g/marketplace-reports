@@ -201,15 +201,16 @@ def checks(r):
 def test_pl_lines(folder, tmp_path):
     r, out = build(folder, tmp_path)
     m = r["metrics"][STORE]
-    assert m["pl"]["sales"] == net(11900) + net(23800) + net(11900)
-    assert m["pl"]["refund"] == net(-23800)
-    assert m["pl"]["ship_income"] == net(2380) and m["pl"]["ship_buyer"] == net(-2380)
+    # amounts are Monto con IVA (the accountant's choice)
+    assert m["pl"]["sales"] == 11900 + 23800 + 11900
+    assert m["pl"]["refund"] == -23800
+    assert m["pl"]["ship_income"] == 2380 and m["pl"]["ship_buyer"] == -2380
     assert m["pl"]["ship_net"] == 0                         # pass-through: not revenue
     assert m["revenue"] == m["pl"]["sales"]
     assert m["fees"] == sum(m["pl"][k] for k in R.FEE_ROWS)  # excludes the pass-through
-    assert m["pl"]["commission"] == 2 * net(-1785) + net(-3570) + net(3570)   # A, C; B charged and refunded
-    assert m["pl"]["ads"] == net(-5950) and m["pl"]["fulfilment"] == net(-1190)
-    assert m["contrib"] == m["tx_net"]                    # every line lands on one row
+    assert m["pl"]["commission"] == 2 * -1785 - 3570 + 3570   # A, C; B charged and refunded
+    assert m["pl"]["ads"] == -5950 and m["pl"]["fulfilment"] == -1190
+    assert m["contrib"] == m["tx_gross"]                  # every line lands on one row
     assert m["lines"] == len(TX) - 1                      # the October line is excluded
     assert r["outcome"] == "ok"
 
@@ -222,14 +223,33 @@ def test_bridges(folder, tmp_path):
     assert A["not_settled"] == 35700 and A["earlier"] == 11900
     assert A["resid"] == 0
     (B,) = m["bridge_b"]
-    assert B["inv_net"] == B["tx_net"] and B["inv_lines"] == B["tx_lines"]
+    assert B["inv_gross"] == B["tx_gross"] and B["inv_lines"] == B["tx_lines"]
     (P,) = m["bridge_b_pending"]
     assert P["period"] == "2026-09-21_2026-10-20" and P["tx_lines"] == 1   # storage on the 30th
     c = {x["key"]: x for x in r["checks"]}
     assert c["bridge_b"]["ok"] and not c["bridge_b_open"]["ok"]
     assert c["bridge_b_open"]["severity"] == "warn"
-    assert m["iva_out"] > 0 and m["iva_in"] > 0
-    assert abs(m["contrib"] + m["iva_out"] - m["iva_in"] - m["tx_gross"]) < 1e-6
+    assert m["contrib"] == m["tx_gross"]                  # bridge C: the P&L is the settlement
+
+
+def test_with_iva_basis_and_the_iva_memo(folder, tmp_path):
+    """Every sheet is Monto con IVA; ② keeps one memo line with the IVA inside."""
+    r, out = build(folder, tmp_path)
+    m = r["metrics"][STORE]
+    lines = [x for x in TX if x["Fecha de transacción"] < "2026-10"]
+    assert m["tx_iva"] == sum(x["IVA"] for x in lines)
+    wb = load_workbook(out)
+    pl = wb[report_kit.SHEET_NAMES[1]]
+    rows = {pl.cell(row=i, column=1).value: pl.cell(row=i, column=3).value
+            for i in range(1, pl.max_row + 1)}
+    assert rows["商品销售收入"] == 11900 + 23800 + 11900
+    assert rows["其中含 IVA（应缴 SII 的 IVA 净额，参考）"] == m["tx_iva"]
+    assert not any(str(k).startswith(("销项 IVA", "进项 IVA", "IVA 明细")) for k in rows)
+    fees = wb[report_kit.SHEET_NAMES[3]]
+    assert [c.value for c in fees[4]][-1] == "金额（含 IVA）" and fees.max_column == 7
+    trend = wb[report_kit.SHEET_NAMES[7]]
+    assert [c.value for c in trend[4]][-1] == "费用率"
+    assert trend.cell(row=5, column=4).value == 11900 * 2 + 23800   # week of 31 Aug: A, B, C with IVA
 
 
 def test_workbook_sheets_and_no_customer_data(folder, tmp_path):
@@ -251,7 +271,7 @@ def test_unregistered_type_is_an_error(folder, tmp_path):
     r, _ = build(folder, tmp_path)
     c = {x["key"]: x for x in r["checks"]}
     assert not c["unregistered"]["ok"] and c["unregistered"]["severity"] == "error"
-    assert r["metrics"][STORE]["pl"]["unregistered"] == net(-1190)
+    assert r["metrics"][STORE]["pl"]["unregistered"] == -1190
     assert c["pl_tie"]["ok"]                               # still ties: the amount is kept
     assert r["outcome"] == "checks_failed"
     r2, _ = build(folder, tmp_path, strict=True)
