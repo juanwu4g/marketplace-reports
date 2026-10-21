@@ -22,13 +22,36 @@ CFG = {"default": "BOCINA_SM",
        "batches": {"CL": ["Tecnohub_CL", "Andes_CL"]}}
 
 
+# three platforms: MercadoLibre Mexico + Chile, Falabella Chile, Amazon Mexico
+MULTI = {"default": "BOCINA_SM",
+         "allowed": ["BOCINA_SM", "EWTTO_SM", "Andes_CL", "AIS_CL-Fala", "DAB_CL-Fala",
+                     "SM-Amazon"],
+         "catalog": {"BOCINA_SM": {"platform": "ML", "country": "MX"},
+                     "EWTTO_SM": {"platform": "ML", "country": "MX"},
+                     "Andes_CL": {"platform": "ML", "country": "CL"},
+                     "AIS_CL-Fala": {"platform": "FA", "country": "CL"},
+                     "DAB_CL-Fala": {"platform": "FA", "country": "CL"},
+                     "SM-Amazon": {"platform": "AZ", "country": "MX"}},
+         "batches": {"ML-MX": ["BOCINA_SM", "EWTTO_SM"], "ML-CL": ["Andes_CL"],
+                     "FA-CL": ["AIS_CL-Fala", "DAB_CL-Fala"], "AZ-MX": ["SM-Amazon"]}}
+
+
 @pytest.fixture
 def app(tmp_path, monkeypatch):
+    yield from _app(tmp_path, monkeypatch, CFG)
+
+
+@pytest.fixture
+def app3(tmp_path, monkeypatch):
+    yield from _app(tmp_path, monkeypatch, MULTI)
+
+
+def _app(tmp_path, monkeypatch, cfg):
     saved = fake_tk.install()
     fake_tk.ANSWERS[:] = []
     fake_tk.SHOWN[:] = []
     try:
-        d = json.loads(json.dumps(CFG))
+        d = json.loads(json.dumps(cfg))
         monkeypatch.setattr(store_config, "_stores", lambda: d)
         logs = str(tmp_path / "logs")
         monkeypatch.setattr(runlog, "LOG_DIR", logs)
@@ -60,10 +83,15 @@ def app(tmp_path, monkeypatch):
 
 def test_window_builds_with_all_countries_by_default(app):
     assert app.fake_root.title() == "月度报表"
-    assert app.choice == "ALL"
-    assert app.region_box.get() == "全部国家"
-    assert app.scope_var.get() == "墨西哥 2 家、智利 2 家，共 4 家"
-    assert app.lb.items[0] == "BOCINA_SM　（墨西哥）"
+    tv = app.run_picker.tv
+    # 平台 → 国家 → 店铺，全都勾着
+    assert tv.get_children("") == ("p:ML",)
+    assert tv.get_children("p:ML") == ("u:MX", "u:CL")
+    assert tv.get_children("u:CL") == ("s:CL:Tecnohub_CL", "s:CL:Andes_CL")
+    marks = app.run_picker.marks
+    assert tv.text("p:ML") == " 美客多 MercadoLibre" and tv.text("u:MX") == " 墨西哥"
+    assert marks["p:ML"] == marks["u:MX"] == marks["s:CL:Andes_CL"] == "all"
+    assert app.scope_var.get() == "已选：美客多：墨西哥 2 家、智利 2 家 —— 共 4 家"
     assert app.btn_run.cget("state") == "normal"
     assert app.stop_btn.cget("state") == "disabled"
     assert "约 1.0 小时" in app.estimate_var.get()
@@ -76,8 +104,8 @@ def test_run_all_countries_confirms_and_spawns_region_all(app):
     app.btn_run.invoke()
     kind, title, text = fake_tk.SHOWN[-1]
     assert kind == "askokcancel" and title == "下载并出报表"
-    assert "墨西哥 2 家、智利 2 家，共 4 家" in text and "约 1.0 小时" in text
-    assert "顺序：墨西哥 → 智利" in text
+    assert "美客多 墨西哥：全部 2 家" in text and "约 1.0 小时" in text
+    assert "顺序：美客多 墨西哥 → 美客多 智利" in text
     cmd = app.spawned[-1]
     assert cmd[2].endswith("run_monthly.py")
     assert cmd[3:] == ["--entrance", "manual", "--region", "ALL", "--month",
@@ -94,20 +122,38 @@ def test_cancel_does_not_start(app):
 
 
 def test_single_country_with_a_subset(app):
-    app.region_box.set("智利")
-    app._pick_region()
-    assert app.choice == "CL" and app.lb.items == ["Tecnohub_CL", "Andes_CL"]
-    app.all_stores.set(False)
-    app._toggle_stores()
-    app.btn_download.invoke()                     # 一家都没选：提示，不跑
-    assert fake_tk.SHOWN[-1][0] == "showwarning" and app.spawned == []
-    app.lb.selection_set(1)
+    app.run_picker.set_all(False)
+    assert app.estimate_var.get() == "一家店都没勾"
+    # 一家都没勾：按钮灰掉，点了也不跑
+    assert app.btn_run.cget("state") == "disabled"
+    assert app.btn_download.cget("state") == "disabled"
+    app.btn_download.invoke()
+    assert app.spawned == []
+    app.run_picker.toggle("s:CL:Andes_CL")
+    tv = app.run_picker.tv
+    marks = app.run_picker.marks
+    assert marks["u:CL"] == marks["p:ML"] == "some" and marks["u:MX"] == "none"
+    assert marks["s:CL:Andes_CL"] == "all" and marks["s:CL:Tecnohub_CL"] == "none"
+    assert tv.item("u:CL")["values"][0] == "1/2 家"
     fake_tk.ANSWERS[:] = [True]
     app.btn_report.invoke()
-    assert "智利的 1 家：Andes_CL" in fake_tk.SHOWN[-1][2]
+    assert "美客多 智利：只跑 1 家（Andes_CL）" in fake_tk.SHOWN[-1][2]
     assert app.spawned[-1][3:] == ["--entrance", "manual", "--region", "CL",
                                    "--step", "report", "--month", app.months[0],
                                    "--stores", "Andes_CL", "--out-dir", app._out_dir()]
+
+
+def test_whole_country_plus_part_of_another(app):
+    app.run_picker.set_all(False)
+    app.run_picker.toggle("u:MX")                 # 墨西哥全部
+    app.run_picker.toggle("s:CL:Tecnohub_CL")     # 智利只要一家
+    fake_tk.ANSWERS[:] = [True]
+    app.btn_run.invoke()
+    assert app.spawned[-1][3:7] == ["--entrance", "manual", "--region", "MX,CL"]
+    assert app.spawned[-1][-4:-2] == ["--stores", "Tecnohub_CL"]
+    # 平台那一行：点一下从部分 -> 全部
+    app.run_picker.toggle("p:ML")
+    assert app.scope_var.get().endswith("共 4 家")
 
 
 def test_human_actions_tab_and_rerun(app, tmp_path):
@@ -123,7 +169,7 @@ def test_human_actions_tab_and_rerun(app, tmp_path):
                        "regions": [{"region": "CL", "batch_summary": batch}]})
     open(runlog.run_paths(rid, app.logs)["log"], "w").close()
     app._refresh_human(announce=False)
-    assert app.human_lb.items == ["Andes_CL（智利） —— 要登录 / 验证"]
+    assert app.human_lb.items == ["Andes_CL（美客多 智利） —— 要登录 / 验证"]
     tab = [t for t in app.tabs.tabs_ if t[0] is app.tab_human.outer][0]
     assert "需要人工处理（1）" in tab[1]["text"]
     assert app.human_rerun.cget("state") == "normal"
@@ -150,8 +196,9 @@ def test_schedule_overview_renders(app):
     assert app.legacy_frames["MX月度报表"].winfo_ismapped()
     assert not app.legacy_frames["CL月度报表"].winfo_ismapped()
     assert not app.legacy_none.winfo_ismapped()
-    assert app.sched_detail.get().startswith("会跑：")
+    assert app.sched_detail.get().startswith("勾选：")   # 新任务还没登记：说的是勾选
     app._show_schedule({region_choice.ALL_TASK: dict(st, ARGS="--entrance scheduled --region ALL")})
+    assert app.sched_detail.get().startswith("会跑：美客多：墨西哥 2 家、智利 2 家")
     assert not app.legacy_frames["MX月度报表"].winfo_ismapped()
     assert app.legacy_none.winfo_ismapped()
 
@@ -228,3 +275,83 @@ def test_live_run_shows_in_banner_and_log_columns(app):
     fake_tk.ANSWERS[:] = [True]
     app.stop_btn.invoke()
     assert runlog.stop_requested(rid, app.logs)
+
+
+# ------------------------------------------------------------ 三个平台
+
+def _sync_threads(monkeypatch):
+    from core import app as app_mod
+
+    class T(object):
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+    monkeypatch.setattr(app_mod.threading, "Thread", T)
+
+
+def test_three_platforms_are_grouped_platform_first(app3):
+    tv = app3.run_picker.tv
+    assert tv.get_children("") == ("p:ML", "p:FA", "p:AZ")
+    assert [tv.text(i) for i in tv.get_children("")] == [
+        " 美客多 MercadoLibre", " Falabella", " 亚马逊 Amazon"]
+    assert tv.get_children("p:FA") == ("u:FA-CL",)
+    assert tv.item("u:FA-CL")["values"][0] == "2 家"
+    # the schedule tab has the same tree, countries only (no store rows)
+    st = app3.sched_picker.tv
+    assert st.get_children("p:AZ") == ("u:AZ-MX",) and st.get_children("u:AZ-MX") == ()
+
+
+def test_run_now_over_two_platforms(app3):
+    app3.run_picker.set_all(False)
+    app3.run_picker.toggle("p:FA")
+    app3.run_picker.toggle("u:AZ-MX")
+    fake_tk.ANSWERS[:] = [True]
+    app3.btn_run.invoke()
+    text = fake_tk.SHOWN[-1][2]
+    assert "Falabella 智利：全部 2 家" in text and "亚马逊 墨西哥：全部 1 家" in text
+    assert "顺序：Falabella 智利 → 亚马逊 墨西哥" in text
+    assert app3.spawned[-1][3:7] == ["--entrance", "manual", "--region", "FA-CL,AZ-MX"]
+    assert "--stores" not in app3.spawned[-1]
+
+
+def test_schedule_follows_the_ticks_and_the_registered_task(app3, monkeypatch):
+    from core import app as app_mod
+    _sync_threads(monkeypatch)
+    got = []
+    monkeypatch.setattr(app_mod.W, "install", lambda name, xml: got.append((name, xml)) or (0, ""))
+    app3._show_schedule({region_choice.ALL_TASK: None})
+    # everything ticked: the same task production already has (--region ALL)
+    fake_tk.ANSWERS[:] = [True]
+    app3.do_install()
+    app3.fake_root.pump()
+    assert got[-1][0] == "月度报表" and "--region ALL" in got[-1][1]
+    assert "以后新加的平台 / 国家也会自动跑" in fake_tk.SHOWN[-1][2]
+    # untick Amazon: the same task, an explicit list
+    app3.sched_picker.toggle("u:AZ-MX")
+    assert "改过了" in app3.sched_scope_var.get()
+    fake_tk.ANSWERS[:] = [True]
+    app3.do_install()
+    app3.fake_root.pump()
+    assert got[-1][0] == "月度报表" and "--region MX,CL,FA-CL" in got[-1][1]
+    assert "只跑勾上的" in fake_tk.SHOWN[-1][2]
+    assert "改过了" not in app3.sched_scope_var.get()
+    # a registered list shows up as ticks and in the page's notes
+    reg = {"DAY": "15", "TIME": "02:00", "RESULT": "0", "XML": "",
+           "ARGS": "--entrance scheduled --region FA-CL"}
+    app3._show_schedule({region_choice.ALL_TASK: reg})
+    assert dict(app3.sched_picker.selection()) == {"FA-CL": None}
+    assert app3.sched_detail.get().startswith("会跑：Falabella：智利 2 家")
+    assert app3.sched_head.get().endswith("自动跑勾选的平台和国家")
+
+
+def test_last_run_column(app3, tmp_path):
+    rid = "20261015_020000_scheduled"
+    runlog.write_json(runlog.run_paths(rid, app3.logs)["json"],
+                      {"run_id": rid, "region": "ALL", "status": "done", "exit": 1,
+                       "regions": [{"region": "FA-CL", "exit": 1, "status": "done"}]})
+    open(runlog.run_paths(rid, app3.logs)["log"], "w").close()
+    app3._on_run_state({"state": "finished"})
+    assert app3.run_picker.tv.item("u:FA-CL")["values"][1] == "10-15 ⚠ 需关注"
+    assert app3.sched_picker.tv.item("u:FA-CL")["values"][1] == "10-15 ⚠ 需关注"

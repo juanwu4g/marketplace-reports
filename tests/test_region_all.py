@@ -89,8 +89,10 @@ def test_region_all_parses():
 
 def _dry(env, capsys, argv):
     assert env.run(argv + ["--dry-run"]) == 0
-    return [l.strip() for l in capsys.readouterr().out.splitlines()
-            if "run_batch.py" in l or "run_reports.py" in l]
+    lines = [l.strip() for l in capsys.readouterr().out.splitlines()
+             if "run_batch" in l or "run_reports" in l]
+    assert lines, "dry run printed no child command"
+    return lines
 
 
 @pytest.mark.parametrize("step", ["both", "download", "report", "collect"])
@@ -376,3 +378,67 @@ def test_live_status_says_country_step_store_and_time():
     assert runlog.live_status(single, [], now=now).startswith("墨西哥（MX）  ·  2026-09")
     assert runlog.live_status({"state": "finished"}, recs) is None
     assert runlog.live_status(None) is None
+
+
+# ------------------------------------------------------------ 勾选的几个（窗口按平台 / 国家勾）
+
+def test_a_chosen_list_parses_in_the_all_order():
+    assert run_monthly.parse_args(["--region", "cl,mx"]).region == "MX,CL"
+    assert run_monthly.parse_args(["--region", "CL, MX,CL"]).region == "MX,CL"
+    with pytest.raises(SystemExit):
+        run_monthly.parse_args(["--region", "MX,XX"])
+    with pytest.raises(SystemExit):
+        run_monthly.parse_args(["--region", "MX,ALL"])
+
+
+def test_a_chosen_list_with_a_store_subset_in_one_region(env, capsys):
+    """墨西哥整个 + 智利只一家：墨西哥的命令和单独跑一样，智利那段只跑这一家、不出汇总。"""
+    mx = _dry(env, capsys, [])
+    lines = _dry(env, capsys, ["--region", "CL,MX", "--stores", "Andes_CL"])
+    assert lines[:len(mx)] == mx
+    cl = lines[len(mx):]
+    assert cl and all("--stores Andes_CL" in l for l in cl)
+    assert any("run_reports" in l and "--no-combined" in l for l in cl)
+    assert env.run(["--region", "MX,CL", "--stores", "Andes_CL", "--dry-run"]) == 0
+    assert "只跑 1 家：Andes_CL" in capsys.readouterr().out
+
+
+def test_a_store_outside_the_chosen_regions_is_exit_3(env, capsys):
+    assert env.run(["--region", "CL", "--stores", "BOCINA_SM", "--dry-run"]) == 3
+    capsys.readouterr()
+    assert env.run(["--region", "MX,PE", "--stores", "Andes_CL", "--dry-run"]) == 3
+    assert "不在所选的区域里" in capsys.readouterr().out
+
+
+def test_a_chosen_list_runs_like_all_and_marks_partial_regions(env):
+    code = env.run(["--region", "MX,CL", "--stores", "Andes_CL"], {
+        "MX": plan(("report", child(0, "单店报表：BOCINA_SM"))),
+        "CL": plan(("report", child(0, "单店报表：Andes_CL")))})
+    assert code == 0
+    _, doc, recs = env.last()
+    assert doc["region"] == "MX,CL" and doc["stores"] == ["Andes_CL"]
+    assert [(r["region"], r["all_stores"], r["stores"]) for r in doc["regions"]] == [
+        ("MX", True, MX), ("CL", False, ["Andes_CL"])]
+    heads = [r["message"] for r in recs if "区域　　：" in (r["message"] or "")]
+    assert heads and heads[0].startswith("区域　　：所选的 2 个，依次跑")
+    assert runlog.region_name(doc["region"]) == "墨西哥、智利"
+    assert runlog.is_multi(doc["region"]) and not runlog.is_multi("FA-CL")
+
+
+def test_human_actions_of_a_partial_region_do_not_hide_older_ones(tmp_path, cfg):
+    """勾选的几个里只跑了智利一家：智利更早那轮的待办（别的店）不能因此消失。"""
+    d = str(tmp_path / "logs")
+    _write_all_run(d, "20261014_020000_scheduled", [("CL", [_login("Tecnohub_CL")])])
+    os.makedirs(runlog.runs_dir(d), exist_ok=True)
+    batch = os.path.join(d, "batch_part.json")
+    with open(batch, "w", encoding="utf-8") as f:
+        json.dump({"stores": [{"store": "Andes_CL", "status": "ok"}]}, f)
+    rid = "20261014_090000_manual"
+    runlog.write_json(runlog.run_paths(rid, d)["json"],
+                      {"run_id": rid, "month": MONTH, "region": "MX,CL",
+                       "stores": ["Andes_CL"], "status": "done", "exit": 0,
+                       "regions": [{"region": "CL", "all_stores": False,
+                                    "batch_summary": batch}]})
+    open(runlog.run_paths(rid, d)["log"], "w").close()
+    got = runlog.pending_human_actions(d)
+    assert [a["store"] for a in got["actions"]] == ["Tecnohub_CL"]

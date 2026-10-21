@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""「月度报表」—— MercadoLibre 全部国家月度报表的统一窗口。
+"""「月度报表」—— 全部平台、全部国家月度报表的统一窗口。
+
+「立即运行」和「每月自动运行」两页的范围都是同一棵 平台 → 国家（→ 店铺）勾选树
+（core/scope.py + core/scope_picker.py），从 markets.py 和 config.json 算出来：加平台、
+加国家不用改这个文件。
 
     双击 月度报表.cmd        （打开「立即运行」页；唯一的双击入口）
     或   .venv\\Scripts\\pythonw -m core.app [--tab run|human|schedule]
@@ -48,9 +52,11 @@ from tkinter import ttk, messagebox, filedialog
 from core import entrance as E
 from core import region_choice as RC
 from core import runlog
+from core import scope as SC
 from core import ui_style as S
 from core import win_tasks as W
 from core.log_view import LogView, fit_to_screen
+from core.scope_picker import ScopePicker
 # 报表输出目录的解析规则只有一份，在 run_monthly 里 —— 定时任务真正跑的是它。
 from core.run_monthly import resolve_out_dir
 
@@ -58,7 +64,7 @@ ROOT = E.ROOT
 LOG_DIR = os.path.join(ROOT, "logs")
 TITLE = "月度报表"
 LEFT_W = 560          # 左边那一栏的宽度（像素）
-WRAP = LEFT_W - 60    # 左边说明文字的折行宽度
+WRAP = LEFT_W - 85    # 左边说明文字的折行宽度（留出分组框边距和页面滚动条）
 WHO = "月度报表窗口"     # 写进中止请求：是哪个窗口点的
 
 
@@ -85,7 +91,7 @@ def _scale_widths(root):
         k = 1.0
     if k > 1.05:
         LEFT_W = int(LEFT_W * k)
-        WRAP = LEFT_W - int(60 * k)
+        WRAP = LEFT_W - int(85 * k)
 
 
 class App(object):
@@ -98,7 +104,13 @@ class App(object):
         root.minsize(1100, 640)
 
         s = E.load_settings()
-        self.choice = RC.remembered_choice(s)   # 立即运行的范围：ALL 或某个国家
+        # 平台 → 国家 → 店铺 这棵树（markets.py + config.json）和两页各自的勾选。
+        self.tree = SC.tree()
+        old = RC.remembered_choice(s)          # 以前记的是一个国家或 ALL
+        self.sel = SC.from_settings(s.get("run_scope"), self.tree,
+                                    default=SC.from_region_arg(old, self.tree))
+        self.results = SC.last_results(LOG_DIR)
+        self.sched_dirty = False               # 计划任务那页的勾选改过、还没登记
         self.months = E.recent_months()
         self.launch = None            # 刚起、日志还没出现的那一轮
         self.busy = None
@@ -134,7 +146,7 @@ class App(object):
         self.view.pack(fill="both", expand=True, padx=(S.GAP, 0))
 
         self.show_tab(tab)
-        self._fill_stores()
+        self._load_scope()
         self._refresh_human(announce=False)
         self.root.after(200, self._watch)
         self.root.after(80, self._drain)
@@ -228,42 +240,32 @@ class App(object):
     def _build_run(self, page):
         f = section(page, "范围")
         f.columnconfigure(1, weight=1)
-        ttk.Label(f, text="国家").grid(row=0, column=0, sticky="w")
-        self.region_box = ttk.Combobox(f, values=RC.choice_labels(), width=14,
-                                       state="readonly")
-        self.region_box.set(RC.label(self.choice))
-        self.region_box.grid(row=0, column=1, sticky="w", padx=(S.GAP, 0))
-        self.region_box.bind("<<ComboboxSelected>>", lambda e: self._pick_region())
-
-        ttk.Label(f, text="月份").grid(row=1, column=0, sticky="w", pady=(S.GAP, 0))
+        ttk.Label(f, text="月份").grid(row=0, column=0, sticky="w")
         self.month = ttk.Combobox(f, values=self.months, width=14, state="readonly")
         self.month.set(self.months[0])
-        self.month.grid(row=1, column=1, sticky="w", padx=(S.GAP, 0), pady=(S.GAP, 0))
+        self.month.grid(row=0, column=1, sticky="w", padx=(S.GAP, 0))
         hint(f, "默认是上一个完整月份。当月还没过完，做月报没有意义。"
-             ).grid(row=2, column=1, sticky="w", padx=(S.GAP, 0))
-
-        ttk.Label(f, text="店铺").grid(row=3, column=0, sticky="nw", pady=(S.GAP, 0))
-        box = ttk.Frame(f)
-        box.grid(row=3, column=1, sticky="we", padx=(S.GAP, 0), pady=(S.GAP, 0))
-        self.all_stores = tk.BooleanVar(value=True)
-        self.all_chk = ttk.Checkbutton(box, text="全部店铺", variable=self.all_stores,
-                                       command=self._toggle_stores)
-        self.all_chk.pack(anchor="w")
+             ).grid(row=1, column=1, sticky="w", padx=(S.GAP, 0))
+        # 平台 → 国家 → 店铺：点一行勾选 / 取消，点展开标记看店铺。平台和国家从
+        # config / markets.py 来，加平台、加国家不用改窗口。
+        self.run_picker = ScopePicker(f, with_stores=True, on_change=self._scope_changed,
+                                      height=10)
+        self.run_picker.grid(row=2, column=0, columnspan=2, sticky="we", pady=(S.GAP, 0))
+        row = ttk.Frame(f)
+        row.grid(row=3, column=0, columnspan=2, sticky="we", pady=(S.SMALL, 0))
+        ttk.Button(row, text="全选", width=6,
+                   command=lambda: self.run_picker.set_all(True)).pack(side="left")
+        ttk.Button(row, text="全不选", width=7,
+                   command=lambda: self.run_picker.set_all(False)
+                   ).pack(side="left", padx=(S.SMALL, 0))
         self.scope_var = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.scope_var, style="Section.TLabel",
-                  wraplength=WRAP - 60, justify="left").pack(anchor="w", pady=(2, 0))
-        lb_row = ttk.Frame(box)
-        lb_row.pack(fill="x", pady=(S.SMALL, 0))
-        self.lb = tk.Listbox(lb_row, selectmode="extended", height=5,
-                             exportselection=False, activestyle="none")
-        sb = ttk.Scrollbar(lb_row, orient="vertical", command=self.lb.yview)
-        self.lb.configure(yscrollcommand=sb.set)
-        self.lb.pack(side="left", fill="x", expand=True)
-        sb.pack(side="left", fill="y")
-        self.lb.bind("<<ListboxSelect>>", lambda e: self._update_estimate())
-        self.store_hint = tk.StringVar(value="")
-        hint(box, var=self.store_hint, wrap=WRAP - 60).pack(anchor="w", pady=(2, 0))
-        self.stores = []
+        ttk.Label(f, textvariable=self.scope_var, style="Section.TLabel",
+                  wraplength=WRAP, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(S.SMALL, 0))
+        hint(f, "点一行勾选或取消；点左边的展开标记（⊞）看店铺。勾上一个平台就是它下面的全部国家，"
+                "勾上一个国家就是它的全部店铺。一个国家只勾了部分店铺时，这个国家不出"
+                "全店汇总表（避免覆盖真正的那份）。"
+             ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         f = section(page, "报表输出到")
         f.columnconfigure(0, weight=1)
@@ -313,51 +315,21 @@ class App(object):
         hint(f, "先看用哪批数据：不生成任何文件，只列出每家店会用哪个下载目录、缺不缺"
                 "该月账单。秒出，任何时候都能点。").pack(anchor="w", pady=(S.SMALL, 0))
 
-    def _fill_stores(self):
-        """按所选范围重填店铺清单。换国家时选中的店全部作废。"""
-        self.groups = RC.lineup(self.choice)
-        self.stores = [] if self.choice == RC.ALL else (
-            self.groups[0][1] if self.groups else [])
-        self.lb.configure(state="normal")
-        self.lb.delete(0, "end")
-        if self.choice == RC.ALL:
-            for r, ss in self.groups:
-                for s in ss:
-                    self.lb.insert("end", "%s　（%s）" % (s, RC.label(r)))
-            self.all_stores.set(True)
-            self.all_chk.configure(state="disabled")
-            self.store_hint.set("选了「全部国家」：一个国家跑完再跑下一个，每个国家"
-                                "各出一份全店汇总表。只跑几家店请先选具体的国家。")
-        else:
-            for s in self.stores:
-                self.lb.insert("end", s)
-            self.all_chk.configure(state="normal")
-            self.store_hint.set("取消勾选“全部店铺”后，可按住 Ctrl 多选。只选部分"
-                                "店铺时不出全店汇总表（避免覆盖真正的那份）。")
-        self.scope_var.set(RC.scope_text(self.groups))
-        self._toggle_stores()
+    def _load_scope(self):
+        """（重新）把树和勾选摆到「立即运行」页上。"""
+        self.run_picker.load(self.tree, self.sel, self.results)
+        self._scope_changed()
+
+    def _scope_changed(self):
+        self.sel = self.run_picker.selection()
+        self.scope_var.set("已选：" + SC.scope_text(self.sel, self.tree))
         self._update_estimate()
         self._lock(self.busy, force=True)
 
-    def _pick_region(self):
-        choice = RC.from_label(self.region_box.get())
-        if choice == self.choice:
-            return
-        self.choice = choice
-        E.update_settings(region=choice)
-        self._fill_stores()
-
-    def _toggle_stores(self):
-        on = not self.all_stores.get() and self.choice != RC.ALL
-        self.lb.configure(state="normal" if on else "disabled")
-        self._update_estimate()
-
     def _update_estimate(self):
-        n = sum(len(ss) for _, ss in getattr(self, "groups", []))
-        if not self.all_stores.get() and self.choice != RC.ALL:
-            n = len(self.lb.curselection()) or n
+        n = SC.store_count(self.sel, self.tree)
         self.estimate_var.set("%d 家店，%s" % (n, E.estimate("both", n))
-                              if n else "所选范围里没有店铺")
+                              if n else "一家店都没勾")
 
     def _pick_outdir(self):
         d = filedialog.askdirectory(title="选择报表输出目录",
@@ -373,31 +345,31 @@ class App(object):
     def _out_dir(self):
         return (self.outdir.get() or "").strip() or E.DEFAULT_REPORT_DIR
 
-    def _picked_stores(self):
-        picked = [self.stores[i] for i in self.lb.curselection()
-                  if i < len(self.stores)]
-        subset, problem = E.check_stores(self.choice, self.all_stores.get(), picked)
-        if problem:
-            messagebox.showwarning("没选店铺", problem)
-            return False, None
-        return True, subset
+    def _region(self):
+        """勾选 -> run_monthly 的 (--region, --stores)。一个都没勾：提示，返回 (None, None)。"""
+        region = SC.region_arg(self.sel, self.tree)
+        if not region:
+            messagebox.showwarning("没选店铺", "一家店都没勾。\n在「范围」里点平台、国家"
+                                             "或店铺把它勾上，或者点「全选」。")
+            return None, None
+        return region, SC.subset(self.sel, self.tree)
 
     def do_start(self, step):
-        ok, subset = self._picked_stores()
-        if not ok:
+        region, subset = self._region()
+        if not region:
             return
         month = self.month.get()
         if step != "collect":
-            title, text = E.confirm_text(step, self.choice, month, subset,
-                                         latest=self.months[0], groups=self.groups)
+            title, text = E.confirm_scope(step, SC.groups(self.sel, self.tree), month,
+                                          latest=self.months[0])
             if not messagebox.askokcancel(title, text):
                 return
         self.start(step, E.STEP_TITLES[step], subset if step != "collect" else None,
-                   month=month)
+                   month=month, region=region)
 
     def start(self, step, title, stores, month=None, reports_for=None, region=None):
         """起一轮：run_monthly.py --entrance manual ...，独立的后台进程。"""
-        region = region or self.choice
+        region = region or SC.region_arg(self.sel, self.tree)
         cur = runlog.active_run()
         if cur or self.launch:
             messagebox.showwarning(
@@ -415,7 +387,8 @@ class App(object):
         except Exception as e:
             self._set_banner("✗ 启动失败：%s" % e, "bad")
             return
-        title = "%s：%s" % (RC.label(region), title)
+        title = "%s：%s" % ("全部平台和国家" if region == RC.ALL else "、".join(
+            RC.unit_title(u) for u in RC.split_units(region)), title)
         self.launch = {"proc": proc, "at": datetime.datetime.now(), "title": title}
         self.view.follow_current()
         self._set_banner("● 正在启动：%s …（几秒后右边开始出日志）" % title, "run")
@@ -443,13 +416,14 @@ class App(object):
     def do_preview(self):
         """只读预览：直接调 run_reports.py --dry-run，不经过运行器、不拿锁、
         不留运行记录；有一轮正在跑的时候也能点。全部国家时每个国家看一遍。"""
-        ok, subset = self._picked_stores()
-        if not ok:
+        region, _ = self._region()
+        if not region:
             return
         month = self.month.get()
-        cmds = RC.preview_cmds(E.interpreter(),
-                               ["-m", "platforms.mercadolibre.run_reports"],
-                               month, subset, self.choice)
+        script = ["-m", "platforms.mercadolibre.run_reports"]
+        cmds = [(u.unit, RC.preview_cmd(E.interpreter(), script, month,
+                                        ss if part else None, u.unit))
+                for u, ss, part in SC.groups(self.sel, self.tree)]
         box = {}
 
         def body():
@@ -469,7 +443,7 @@ class App(object):
                     out = (p.stdout or b"").decode("utf-8", "replace")
                 except Exception as e:
                     out = "没跑成：%s: %s" % (e.__class__.__name__, e)
-                parts.append("━━━━━━━━ %s ━━━━━━━━\n%s" % (RC.label(region), out))
+                parts.append("━━━━━━━━ %s ━━━━━━━━\n%s" % (RC.unit_title(region), out))
             box["out"] = "\n".join(parts)
 
         def wait():
@@ -477,8 +451,7 @@ class App(object):
                 self.root.after(150, wait)
                 return
             self.btn_preview.configure(state="normal")
-            self._show_text("先看用哪批数据 —— %s %s" % (RC.label(self.choice), month),
-                            box["out"])
+            self._show_text("先看用哪批数据 —— %s" % month, box["out"])
 
         self.btn_preview.configure(state="disabled")
         threading.Thread(target=body, daemon=True).start()
@@ -496,7 +469,8 @@ class App(object):
         t.tag_config(runlog.WARN, foreground=S.LOG_WARN_FG, background=S.LOG_WARN_BG)
         t.tag_config(runlog.ERROR, foreground=S.LOG_ERROR_FG, background=S.LOG_ERROR_BG)
         t.tag_config("banner", font=S.FONT_BOLD)
-        cls = runlog.LineClassifier("report", [s for _, ss in self.groups for s in ss])
+        cls = runlog.LineClassifier("report", [s for _, ss, _ in SC.groups(self.sel, self.tree)
+                                               for s in ss])
         for line in (text or "").splitlines():
             if line.startswith("━━"):
                 t.insert("end", line + "\n", "banner")
@@ -545,8 +519,8 @@ class App(object):
         self.human_rerun = ttk.Button(page, text="② 处理好了：重跑这些店铺并重出全部报表",
                                       command=self.do_rerun_human)
         self.human_rerun.pack(anchor="w", fill="x", pady=(S.GAP, 0))
-        hint(page, "重跑：只重新下载选中的店，然后给它们所在国家的全部店铺重出报表"
-                   "（含全店汇总）。一次只能补跑一个国家的店。"
+        hint(page, "重跑：只重新下载选中的店，然后给它们所在的平台 / 国家的全部店铺"
+                   "重出报表（含全店汇总）。可以一次选好几个平台、国家的店。"
              ).pack(anchor="w", pady=(S.GAP, 0))
 
     def _refresh_human(self, announce=True):
@@ -659,7 +633,7 @@ class App(object):
     # ================================================================ 每月自动运行
 
     def _build_schedule(self, page):
-        ttk.Label(page, text="推荐：一个任务，每月自动跑全部国家", style="Section.TLabel"
+        ttk.Label(page, text="推荐：一个任务，每月自动跑全部平台和国家", style="Section.TLabel"
                   ).pack(anchor="w")
         # 平台和国家从 config / markets.py 来，不在这里写死：加平台、加国家不用改窗口。
         hint(page, "任务名「%s」：%s，一个跑完接着跑下一个，同一份日志；不会再有两个任务"
@@ -678,6 +652,21 @@ class App(object):
         self.sched_notes.pack(fill="x", pady=(S.SMALL, 0))
         ttk.Button(f, text="刷新", command=self.refresh_schedule, width=8
                    ).pack(anchor="w", pady=(S.GAP, 0))
+
+        f = section(page, "自动跑哪些")
+        self.sched_picker = ScopePicker(f, with_stores=False,
+                                        on_change=self._sched_scope_changed, height=12,
+                                        fit=True)
+        self.sched_picker.pack(fill="x")
+        self.sched_picker.load(self.tree, SC.from_settings(
+            E.load_settings().get("sched_scope"), self.tree), self.results)
+        self.sched_scope_var = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.sched_scope_var, style="Section.TLabel",
+                  wraplength=WRAP, justify="left").pack(anchor="w", pady=(S.SMALL, 0))
+        hint(f, "全都勾上 = 以后新加的平台、国家也会自动跑（推荐）。只勾一部分 = 只跑勾上"
+                "的，以后新加的要回来勾。改了勾选要点下面的「设为每月自动运行」才生效。"
+             ).pack(anchor="w", pady=(2, 0))
+        self._sched_scope_changed(dirty=False)
 
         f = section(page, "什么时候自动跑")
         s = E.load_settings()
@@ -813,6 +802,18 @@ class App(object):
                              k("sched_hour"): self.hour.get(),
                              k("sched_minute"): self.minute.get()})
 
+    def _sched_region(self):
+        return SC.region_arg(self.sched_picker.selection(), self.tree)
+
+    def _sched_scope_changed(self, dirty=True):
+        sel = self.sched_picker.selection()
+        self.sched_dirty = self.sched_dirty or dirty
+        text = SC.scope_text(sel, self.tree)
+        if sel and not SC.is_everything(sel, self.tree):
+            text += "（以后新加的平台 / 国家不会自动包含）"
+        self.sched_scope_var.set("勾选：" + text + (
+            "　—— 改过了，点「设为每月自动运行」才生效" if self.sched_dirty else ""))
+
     def refresh_schedule(self):
         if os.name != "nt":
             self.sched_head.set("计划任务只在 Windows 上能设置。")
@@ -825,15 +826,23 @@ class App(object):
             self.sched_head_lbl.configure(foreground=S.FG["bad"])
             self.log_op(states[1], "bad")
             return
-        n = len(RC.lineup(RC.ALL))
+        main = states.get(RC.ALL_TASK)
+        reg = RC.args_region(main.get("ARGS")) if main else None
+        if main and not self.sched_dirty:
+            # 勾选跟着已登记的任务走（和下面的几号几点一样），除非人刚改过还没登记。
+            self.sched_picker.load(self.tree, SC.from_region_arg(reg, self.tree))
+            self._sched_scope_changed(dirty=False)
+        n = len(RC.lineup(reg or RC.ALL))
         ov = RC.schedule_overview(states, n)
         self.overview = ov
         self.sched_head.set(ov["headline"])
         self.sched_head_lbl.configure(foreground=S.FG[ov["kind"]])
         main = ov["main"]
         out, src = resolve_out_dir()
-        # 这个任务跑哪些店：和「全部国家」同一份清单，从 config 来。
-        lines = ["会跑：%s" % RC.scope_text(RC.lineup(RC.ALL))]
+        # 这个任务跑哪些店：按登记的参数（ALL = 全部），从 config 来。
+        lines = ["会跑：%s" % SC.scope_text(SC.from_region_arg(reg, self.tree), self.tree)
+                 if main else "勾选：%s" % SC.scope_text(self.sched_picker.selection(),
+                                                       self.tree)]
         if main:
             lines += ["下次：%s" % (main.get("NEXT") or "还没排上"),
                       "上次：%s —— %s" % (main.get("LAST") or "还没跑过",
@@ -883,12 +892,19 @@ class App(object):
             self.refresh_schedule()
             return
         d, h, m = self.day.get(), self.hour.get(), self.minute.get()
-        groups = RC.lineup(RC.ALL)
+        region = self._sched_region()
+        if not region:
+            messagebox.showwarning("设为每月自动运行", "「自动跑哪些」一个都没勾。")
+            return
+        sel = self.sched_picker.selection()
+        groups = RC.lineup(region)
         legacy = self.overview.get("legacy") or []
         what = ("以后每月 %d 号 %02d:%02d，这台电脑会自己跑一轮：\n"
-                "下载上个月的数据并出报表 —— %s。\n\n"
+                "下载上个月的数据并出报表 —— %s。\n%s\n"
                 "那时候电脑必须开着、已经登录、没睡着、没锁屏。\n\n"
-                % (d, h, m, RC.scope_text(groups)))
+                % (d, h, m, SC.scope_text(sel, self.tree),
+                   "以后新加的平台 / 国家也会自动跑。\n" if region == RC.ALL else
+                   "只跑勾上的；以后新加的平台 / 国家不会自动包含。\n"))
         q = RC.replace_question(legacy)
         if q:
             ans = messagebox.askyesnocancel("设为每月自动运行", what + q)
@@ -900,8 +916,9 @@ class App(object):
                 return
             drop = []
         self._save_time()
+        E.update_settings(sched_scope=SC.to_settings(sel, self.tree))
         hours = RC.time_limit_hours(len(groups))
-        args = RC.task_args(RC.ALL)
+        args = RC.task_args(region)
         self.log_op("")
         self.log_op("正在登记「%s」：每月 %d 号 %02d:%02d（%s，时限 %d 小时）"
                     % (RC.ALL_TASK, d, h, m, args, hours))
@@ -923,6 +940,8 @@ class App(object):
             return
         rc, out, gone = r
         if rc == 0:
+            self.sched_dirty = False
+            self._sched_scope_changed(dirty=False)
             self.log_op("✓ 登记好了。电脑那天要是关着，开机后会补跑；用电池也照跑。", "good")
             for name, drc, dout in gone:
                 self.log_op("✓ 已删除旧任务「%s」" % name if drc == 0 else
@@ -937,13 +956,14 @@ class App(object):
     def do_rehearse(self):
         if not messagebox.askokcancel(
                 "试跑一次",
-                "会让 Windows 真的把程序拉起来跑一遍，但只出报表（全部国家）——\n"
+                "会让 Windows 真的把程序拉起来跑一遍，但只出报表（勾选的平台和国家）——\n"
                 "不下载、不开浏览器，跑完自己收拾干净。约 1–2 分钟。\n\n开始？"):
             return
         self.log_op("")
         self.log_op(">>> 试跑  %s" % datetime.datetime.now().strftime("%H:%M:%S"))
         self.view.follow_current()
-        self._work(lambda: W.rehearse(RC.ALL), self._after_rehearse, label="试跑一次")
+        region = self._sched_region() or RC.ALL
+        self._work(lambda: W.rehearse(region), self._after_rehearse, label="试跑一次")
 
     def _after_rehearse(self, r):
         kind, val = r
@@ -971,13 +991,15 @@ class App(object):
         if runlog.active_run():
             messagebox.showwarning("正在运行", "已经有一轮在跑了。等它结束，或先中止它。")
             return
-        n = sum(len(ss) for _, ss in RC.lineup(RC.ALL))
+        reg = RC.args_region(self.overview["main"].get("ARGS"))
+        sel = SC.from_region_arg(reg, self.tree)
+        n = SC.store_count(sel, self.tree)
         if not messagebox.askokcancel(
                 "现在就跑一次",
                 "立刻按正式任务完整跑一遍：%s，%s。\n\n"
                 "跑的时候浏览器会自己反复开关，别去点它。\n"
                 "这个窗口可以关掉，不影响后台继续跑。\n\n开始？"
-                % (RC.scope_text(RC.lineup(RC.ALL)), E.estimate("both", n))):
+                % (SC.scope_text(sel, self.tree), E.estimate("both", n))):
             return
         self.view.follow_current()
         self._work(lambda: W.run_task(RC.ALL_TASK), self._after_run_now,
@@ -996,7 +1018,7 @@ class App(object):
             return
         if not messagebox.askokcancel(
                 "取消每月自动运行",
-                "以后不再每月自动跑全部国家了。\n\n只是撤掉 Windows 里的登记 —— 程序、"
+                "以后不再每月自动跑了。\n\n只是撤掉 Windows 里的登记 —— 程序、"
                 "下载好的数据、已经出的报表都不动，手动跑也照常。\n\n确定？"):
             return
         self._work(lambda: W.delete_task(RC.ALL_TASK), self._after_delete,
@@ -1122,6 +1144,9 @@ class App(object):
     def _on_run_state(self, st):
         """所看那一轮的状态变了：结束了就刷新人工处理清单和计划任务状态。"""
         if st and st.get("state") != "running":
+            self.results = SC.last_results(LOG_DIR)
+            self.run_picker.set_results(self.results)
+            self.sched_picker.set_results(self.results)
             self.human_at = datetime.datetime.now().timestamp()
             self._refresh_human()
             if not self.sched_busy:
@@ -1131,7 +1156,8 @@ class App(object):
         if running == self.busy and not force:
             return
         self.busy = running
-        has = bool(getattr(self, "groups", None))
+        has = bool(getattr(self, "tree", None)) and bool(
+            SC.store_count(getattr(self, "sel", {}), self.tree))
         picked = bool(self.human_lb.curselection()) if hasattr(self, "human_lb") else False
         st = E.button_states(bool(running), has, bool(self.human["actions"]), picked)
         for name, b in (("run", self.btn_run), ("download", self.btn_download),
@@ -1144,7 +1170,8 @@ class App(object):
             self.human_rerun.configure(state="normal" if st["rerun"] else "disabled")
 
     def _on_close(self):
-        E.update_settings(out_dir=self._out_dir(), region=self.choice)
+        E.update_settings(out_dir=self._out_dir(),
+                          run_scope=SC.to_settings(self.sel, self.tree))
         self._save_time()
         if (self.launch or runlog.active_run()) and not messagebox.askokcancel(
                 "还在运行",

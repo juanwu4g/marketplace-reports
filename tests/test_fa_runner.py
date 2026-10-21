@@ -187,7 +187,9 @@ def test_window_choices(monkeypatch):
     assert plan_["region"] == "FA-CL"
     mixed = RC.rerun_plan([{"store": "AIS_CL-Fala", "title": "x", "rerun": True},
                            {"store": "Tecnohub_CL", "title": "x", "rerun": True}])
-    assert mixed["region"] is None                                  # one unit per run
+    # stores of two units: one run over both (run_monthly --region CL,FA-CL --stores …)
+    assert mixed["region"] == "CL,FA-CL"
+    assert mixed["stores"] == ["AIS_CL-Fala", "Tecnohub_CL"]
 
 
 def test_preview_command_uses_the_platform_package(monkeypatch):

@@ -120,7 +120,7 @@ def test_overview_two_old_tasks_that_clash():
 def test_overview_new_task_plus_leftover_old_one_is_red():
     main = _st(args="--entrance scheduled --region ALL", limit="PT12H")
     ov = RC.schedule_overview(_states(**{"月度报表": main, "MX月度报表": _st()}), 2)
-    assert ov["headline"] == "● 已设置：每月 15 号 02:00 自动跑全部国家"
+    assert ov["headline"] == "● 已设置：每月 15 号 02:00 自动跑全部平台和国家"
     assert ov["kind"] == "bad"
     assert any("MX月度报表" in t and "两次" in t for k, t in ov["notes"] if k == "bad")
 
@@ -131,9 +131,11 @@ def test_overview_new_task_alone_is_green():
     assert ov["kind"] == "good" and ov["notes"] == []
 
 
-def test_overview_new_task_with_wrong_args_or_short_limit():
+def test_overview_new_task_with_wrong_args_or_short_limit(cfg):
+    # a task over part of the platforms/countries is allowed; the page says what it leaves out
     ov = RC.schedule_overview(_states(**{"月度报表": _st(limit="PT12H")}), 2)
-    assert any(k == "bad" and "不是全部国家" in t for k, t in ov["notes"])
+    assert any(k == "warn" and "没有包含" in t for k, t in ov["notes"])
+    assert ov["headline"].endswith("自动跑勾选的平台和国家")
     ov = RC.schedule_overview(_states(**{"月度报表": _st(
         args="--entrance scheduled --region ALL", limit="PT6H")}), 3)
     assert any(k == "warn" and "6 小时" in t and "18 小时" in t for k, t in ov["notes"])
@@ -233,11 +235,11 @@ def test_human_texts(cfg):
     assert E.human_headline({"actions": []})[1] == "good"
     assert "（处理之前重跑没用）" in E.human_detail(h["actions"])
     ok, title, text = E.rerun_confirm(RC.rerun_plan(h["actions"]), "2026-09")
-    assert ok is True and "Andes_CL" in text and "智利全部店铺" in text
+    assert ok is True and "Andes_CL" in text and "美客多 智利 的全部店铺" in text
     mixed = [dict(h["actions"][0]), {"store": "BOCINA_SM", "title": "x", "how": "",
                                      "rerun": True}]
     ok, _, text = E.rerun_confirm(RC.rerun_plan(mixed), "2026-09")
-    assert ok is False and "分属不同的国家" in text
+    assert ok is True and "美客多 墨西哥、美客多 智利 的全部店铺" in text
 
 
 def test_status_line(cfg):

@@ -470,7 +470,8 @@ def test_rerun_plan_derives_region_from_the_store(cfg):
     p = region_choice.rerun_plan([a("BOCINA_SM"), a("EWTTO_SM", rerun=False)])
     assert (p["region"], p["stores"], p["useless"]) == (
         "MX", ["BOCINA_SM"], ["EWTTO_SM（要登录）"])
-    p = region_choice.rerun_plan([a("BOCINA_SM"), a("Andes_CL")])
-    assert p["region"] is None and len(p["groups"]) == 2
-    assert region_choice.action_line(a("Andes_CL")) == "Andes_CL（智利） —— 要登录"
-    assert region_choice.action_line(a("BOCINA_SM")) == "BOCINA_SM —— 要登录"
+    # stores of two countries: one run over both, in the ALL order
+    p = region_choice.rerun_plan([a("Andes_CL"), a("BOCINA_SM")])
+    assert p["region"] == "MX,CL" and len(p["groups"]) == 2
+    assert region_choice.action_line(a("Andes_CL")) == "Andes_CL（美客多 智利） —— 要登录"
+    assert region_choice.action_line(a("BOCINA_SM")) == "BOCINA_SM（美客多 墨西哥） —— 要登录"
