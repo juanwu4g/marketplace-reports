@@ -37,6 +37,7 @@ import warnings
 
 import pandas as pd
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 from core import report_family as RF
 from core import report_kit as K
@@ -138,7 +139,8 @@ ACCOUNTING_POLICIES = [
     ("收入确认", "商品价款在 Falabella 记“Pago por precio del producto”时确认 —— 即送达、控制权转给买家时"
      "（IFRS 15），按交易日归月。已下单、未送达的订单不确认收入（金额见③桥 A）。"),
     ("不含 IVA", "卖家是 IVA 纳税人：销项 IVA、进项 IVA 不是收入也不是成本，损益表一律不含 IVA，"
-     "两者列在②备查项。"),
+     "两者列在②备查项；②下方的 IVA 明细逐行列出各收入/费用所含的 IVA、应缴 IVA 净额，"
+     "以及按单据日期（F29 申报口径）的数字。"),
     ("运费", "Falabella 配送的订单，买家付的运费原样转付 Falabella，卖家只是代收代付（代理人），按净额处理、"
      "不计收入；卖家自配送订单的运费、以及平台付给卖家的自配送运费才是卖家的收入。"),
     ("促销", "Falabella 出资的优惠券、CMR 卡“Oportunidad Única”补贴和销售奖励，是这笔销售的对价的一部分，"
@@ -157,6 +159,9 @@ TAX_NOTES = [
     "进项 IVA 的期间：Falabella 的费用发票按账期（21 日–次月 20 日）在账期结束后开出，进项 IVA 按发票日期"
     "申报 —— 本月 21–30 日费用所含的进项 IVA 进入下个月的申报。这只影响 IVA 申报的月份，不影响本报表的损益。",
     "促销补贴与赔付的单据由 Falabella 开具（Nota de crédito / Nota de débito promociones），以平台单据为准。",
+    "②最下方“IVA 明细 · 按单据日期”给出本月 F29 的参考数：本月开出的 Falabella 费用发票所含进项 IVA（精确，"
+    "取自发票明细）、Falabella 代开的 FBF 销售单据所含销项 IVA（按含税合计估算）、卖家须自行开票的 FBS "
+    "订单所含销项 IVA。申报前请与 SII 上的单据核对。",
 ]
 
 
@@ -483,10 +488,36 @@ def derive(S):
         m["liq"]["total"] = m["liq"]["boleta"] + m["liq"]["factura"] + m["liq"]["nc"]
     m["fbf_sales"] = float(m["by_mode"].get("FBF", 0.0))
     m["fbs_sales"] = float(m["by_mode"].get("FBS", 0.0))
+    # ---- IVA (tax reference; the P&L stays net of IVA)
+    m["iva_net"] = m["iva_out"] - m["iva_in"]
+    m["iva_doc"] = iva_by_document(S, t, inv, a, b)
     S["m"] = m
     S["sku"] = sku_table(S)
     S["returns"] = returns_table(S)
     return S
+
+
+def iva_by_document(S, t, inv, a, b):
+    """The month's IVA as the monthly return (F29) counts it — by document date, not
+    by transaction date:
+    * input IVA: Falabella's fee invoice for the period that ENDS in the month (21st of
+      last month – 20th), issued after the 20th; None when that file is not here.
+    * output IVA of Fulfillment-by-Falabella sales: the documents Falabella issues in the
+      seller's name (Liquidación), IVA estimated as total × 19/119; None without the file.
+    * output IVA of own-delivery (FBS) sales: the seller issues those documents itself;
+      the IVA of the month's FBS sale and return lines."""
+    out = {"inv_period": None, "inv_iva": None, "liq_iva": None}
+    for pa, pb in periods.billing_periods(S["month"]):
+        if a <= pb <= b:
+            pid = periods.period_id(pa, pb)
+            out["inv_period"] = pid
+            if inv is not None and pid in set(inv["_period"]):
+                out["inv_iva"] = -float(inv.loc[inv["_period"] == pid, "IVA"].sum())
+    if S["liq"] is not None:
+        out["liq_iva"] = float(round(S["liq"]["Monto línea"].sum() * IVA_RATE / (1 + IVA_RATE)))
+    fbs = t[t["_line"].isin((FC.SALES, FC.REFUND)) & (t[T_COLS["mode"]] == "FBS")]
+    out["fbs_iva"] = float(fbs[T_COLS["iva"]].sum())
+    return out
 
 
 def sku_table(S):
@@ -508,6 +539,11 @@ def sku_table(S):
     g["income"] = g[list(INCOME_LINES)].sum(axis=1)
     g["fees"] = g[list(FEE_LINES)].sum(axis=1)
     g["contrib"] = g["income"] + g["fees"]
+    iv = t.assign(_sku=sk)
+    g["iva_out"] = iv[iv["_line"].isin(INCOME_LINES)].groupby("_sku")[T_COLS["iva"]].sum() \
+        .reindex(g.index).fillna(0.0)
+    g["iva_in"] = -iv[iv["_line"].isin(FEE_LINES)].groupby("_sku")[T_COLS["iva"]].sum() \
+        .reindex(g.index).fillna(0.0)
     return g.sort_values(FC.SALES, ascending=False)
 
 
@@ -682,6 +718,8 @@ def sheet_readme(wb, fam, ctx):
                           pct(-sum(S["m"]["pl"][FC.ADS] for S in stores) / rev))))
         points.append(("贡献毛利", "经营贡献毛利（未扣商品成本）%s，占商品销售收入 %s。"
                        % (fmt(tot("contrib")), pct(tot("contrib") / rev))))
+    points.append(("IVA", "销项 IVA %s、进项 IVA %s，应缴 IVA 净额 %s（按交易日估算；F29 参考数见②最下方）。"
+                   % (fmt(tot("iva_out")), fmt(tot("iva_in")), fmt(tot("iva_net")))))
     costs = ctx.get("sku_costs")
     policies = list(ACCOUNTING_POLICIES)
     if costs is not None:
@@ -709,13 +747,14 @@ def sheet_readme(wb, fam, ctx):
         ("三、数据来源", sources),
         ("四、本期要点", points),
         ("五、各页说明", [
-            (SHEETS[1], "各店分列 + 合计。行位置每期固定，可直接跨月对比；灰底=公式，浅蓝=小计，黄底=需你录入。"),
+            (SHEETS[1], "各店分列 + 合计。行位置每期固定，可直接跨月对比；灰底=公式，浅蓝=小计，黄底=需你录入。"
+             "下方依次是费用率、备查项和 IVA 明细（按损益表行、按单据日期）。"),
             (SHEETS[2], "桥 A 订单 → 结算、桥 B 费用发票 → 交易明细、桥 C 结算净额 → 到账、桥 D 平台代开销售单据。"),
             (SHEETS[3], "本月出现的每一种交易类型：西语原名、中文、归入哪一行、笔数、不含税、IVA、含税。"),
             (SHEETS[4], "取消与退货：按状态、按原因、按配送方式，以及退货订单上的全部资金流。"),
             (SHEETS[5], "不适用：Falabella 不提供逐件退货质检报表。"),
-            (SHEETS[6], "按 SKU 的收入、费用与贡献；黄色列填单位采购成本即得 SKU 毛利。"),
-            (SHEETS[7], "本月按周的销售与费用；有往月下载时追加各月对比。"),
+            (SHEETS[6], "按 SKU 的收入、费用与贡献；黄色列填单位采购成本即得 SKU 毛利；最右两列为销项/进项 IVA。"),
+            (SHEETS[7], "本月按周的销售与费用；有往月下载时追加各月对比；最右三列为销项/进项/应缴 IVA。"),
             (SHEETS[8], "Fulfillment 库存快照：库存、近 4 周销量、可售周数、滞销与断货风险。"),
             (SHEETS[9], "校验结果、缺失文件及原因、报税提示。校验和缺失为空表示没有待办。")]),
         ("六、到账净额 ≠ 利润", [
@@ -754,7 +793,7 @@ def sheet_pl(wb, fam, ctx):
         ("广告推广", _fee_share((FC.ADS,)), sales),
         ("平台费用合计", _fee_share(FEE_ROWS), sales),
         ("经营贡献毛利率", lambda S: S["m"]["contrib"], sales)], note_col)
-    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [
+    r = fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [
         ("订单口径 GMV（含 IVA，不含已取消）", "Lista de Órdenes · Precio pagado",
          lambda S: S["m"].get("gmv_orders", 0.0),
          "本月创建的订单买家实付金额，含 IVA；与结算口径的差见③桥 A"),
@@ -770,6 +809,42 @@ def sheet_pl(wb, fam, ctx):
          "Falabella 费用发票所含 IVA；按发票日期申报，见①报税提示"),
         ("本月结算净额（含 IVA）", "Σ Monto con IVA", lambda S: S["m"]["tx_gross"],
          "＝ 经营贡献毛利 ＋ 销项 IVA − 进项 IVA；对到账见③桥 C"),
+    ], note_col)
+    iva_blocks(fam, sh, r, note_col)
+
+
+# ② IVA blocks, below the memo. Output IVA lines in P&L order (buyer shipping as its
+# two memo legs, so the totals are the memo's 销项 / 进项 IVA); input IVA positive.
+IVA_OUT_ROWS = (FC.SALES, FC.SHIP_INCOME, FC.REFUND, FC.PROMO, FC.OTHER_INCOME)
+IVA_IN_ROWS = (FC.COMMISSION, FC.SHIP_COFIN, FC.SHIP_BUYER, FC.SHIP_PROMO, FC.SHIP_REVERSE,
+               FC.FULFILMENT, FC.ADS, FC.SUBSCRIPTION, FC.PENALTY, FC.OTHER, "unregistered")
+IVA_LABELS = {FC.SHIP_INCOME: "买家支付的运费（代收）", FC.SHIP_BUYER: "转付 Falabella 的买家运费"}
+
+
+def iva_blocks(fam, sh, r, note_col):
+    iva = lambda k: (lambda S: S["m"]["pl_iva"][k])
+    label = lambda k: IVA_LABELS.get(k, pl_label(k).replace("减：", "").replace("加：", ""))
+    row_out = [("销项 IVA：%s" % label(k), "IVA", iva(k), "") for k in IVA_OUT_ROWS]
+    row_in = [("进项 IVA：%s" % label(k), "IVA", (lambda S, k=k: -S["m"]["pl_iva"][k]), "")
+              for k in IVA_IN_ROWS]
+    r = fam.memo_block(sh, r + 1, "IVA 明细 · 按损益表行（按交易日，与上表同口径；不参与上表计算）", row_out + [
+        ("＝ 销项 IVA 合计", "IVA débito fiscal", lambda S: S["m"]["iva_out"], "")] + row_in + [
+        ("＝ 进项 IVA 合计", "IVA crédito fiscal", lambda S: S["m"]["iva_in"], "退还/更正的费用冲减进项"),
+        ("本月应缴 IVA 净额（销项 − 进项）", "IVA a pagar", lambda S: S["m"]["iva_net"],
+         "按交易日估算；正数为应向 SII 缴纳，负数为留抵。申报以单据日期为准，见下一块")], note_col)
+    doc = lambda k: (lambda S: S["m"]["iva_doc"][k] or 0.0)
+    fam.memo_block(sh, r + 1, "IVA 明细 · 按单据日期（月度 IVA 申报 F29 参考）", [
+        ("进项 IVA：本月开出的 Falabella 费用发票", "Factura / Nota de crédito falabella.com",
+         doc("inv_iva"), fam.per_store(lambda S: (
+             "账期 %s 的发票 − 贷记单（取自 InvoiceReport）" if S["m"]["iva_doc"]["inv_iva"] is not None
+             else "账期 %s 的发票明细没有下载到，此格为 0") % (S["m"]["iva_doc"]["inv_period"] or "?")
+             .replace("_", " 至 "))),
+        ("销项 IVA：Falabella 代开的 FBF 销售单据（估算）", "Liquidación factura",
+         doc("liq_iva"), fam.per_store(lambda S: "Liquidación 含税合计 × 19/119" if
+                                       S["m"]["iva_doc"]["liq_iva"] is not None else
+                                       "本月没有 Liquidación 文件，此格为 0")),
+        ("销项 IVA：卖家自配送（FBS）订单，须自己开具单据", "Boleta / Factura del seller",
+         doc("fbs_iva"), "本月 FBS 订单的商品价款与退货所含 IVA（交易日≈送达日）"),
     ], note_col)
 
 
@@ -993,6 +1068,10 @@ SKU_COLS_COST = SKU_COLS[:14] + [
     RF.Col("商品成本", 14, formula="=-O{r}*(D{r}-E{r})", **_SKU_FORMULA),
     RF.Col("SKU 毛利", 14, formula="=N{r}+P{r}", **_SKU_FORMULA),
     RF.Col("成本来源", 40, font=F(9, False, K.C_GREY))]
+# tax reference columns at the right end of ⑦ (the columns before them do not move)
+SKU_IVA_COLS = [RF.Col("销项 IVA", 12, RF.MONEY), RF.Col("进项 IVA", 12, RF.MONEY)]
+SKU_COLS = SKU_COLS + SKU_IVA_COLS
+SKU_COLS_COST = SKU_COLS_COST + SKU_IVA_COLS
 
 
 def sku_items(S):
@@ -1031,7 +1110,9 @@ def sheet_sku(wb, fam, ctx):
                          "按交易明细的 SKU 汇总（不含 IVA）。广告、仓储等没有 SKU 的店铺级费用单列一行。" + (
                              "单位成本来自商品成本表（不含 IVA），商品成本 ＝ 单位成本 ×（结算件数 − 退货件数）；"
                              "“未录入成本”的 SKU 黄色格可临时填写，长期请补录到成本表。" if costs else
-                             "黄色列填单位采购成本（不含 IVA），右边两列自动算出 SKU 毛利。"), cols)
+                             "黄色列填单位采购成本（不含 IVA），后两列自动算出 SKU 毛利。") +
+                         "最右两列是 IVA 参考：销项＝收入各列所含 IVA，进项＝费用各列所含 IVA，"
+                         "不参与毛利计算。", cols)
     r = 5
     ship = list(LOGISTICS_ROWS)
     other = [FC.ADS, FC.SUBSCRIPTION, FC.PENALTY, FC.OTHER, "unregistered", FC.OTHER_INCOME]
@@ -1043,13 +1124,14 @@ def sheet_sku(wb, fam, ctx):
                      sum(x[k] for k in ship), x[FC.FULFILMENT], sum(x[k] for k in other), x["contrib"]]
             cells = fam.write_row(ws, r, cols, [S["store"], sku, x["name"], int(x["units"]), int(x["returns"])]
                                   + [float(v) for v in money] + ([None, None, None, None] if costs else
-                                                                 [0, None, None]))
+                                                                 [0, None, None])
+                                  + [float(x["iva_out"]), float(x["iva_in"])])
             if costs:
                 _cost_cells(cells, S, sku)
             r += 1
         r += 1
     ws.freeze_panes = "D5"
-    ws.auto_filter.ref = "A4:%s%d" % ("R" if costs else "Q", max(4, r - 1))
+    ws.auto_filter.ref = "A4:%s%d" % (get_column_letter(len(cols)), max(4, r - 1))
 
 
 # ----------------------------------------------------------------- ⑧ trend
@@ -1057,7 +1139,10 @@ def sheet_sku(wb, fam, ctx):
 TREND_COLS = [RF.Col("店铺", 22), RF.Col("周（起始日）", 16), RF.Col("结算件数", 10),
               RF.Col("商品销售收入", 16, RF.MONEY), RF.Col("退货退款", 14, RF.MONEY),
               RF.Col("平台费用", 16, RF.MONEY), RF.Col("贡献（未扣成本）", 16, RF.MONEY),
-              RF.Col("费用率", 10, K.PCT, border=False)]
+              RF.Col("费用率", 10, K.PCT, border=False),
+              # tax reference, as ② IVA block (transaction date)
+              RF.Col("销项 IVA", 14, RF.MONEY), RF.Col("进项 IVA", 14, RF.MONEY),
+              RF.Col("应缴 IVA 净额", 14, RF.MONEY)]
 # the earlier-months block below the weeks: same columns, no borders on the text
 HIST_COLS = [RF.Col("店铺", 22, border=False), RF.Col("月份", 16, border=False),
              RF.Col("结算件数", 10, border=False)] + TREND_COLS[3:]
@@ -1066,7 +1151,8 @@ HIST_COLS = [RF.Col("店铺", 22, border=False), RF.Col("月份", 16, border=Fal
 def sheet_trend(wb, fam, ctx):
     ws = fam.table_sheet(wb, SHEETS[7], "月度趋势（%s）" % ctx["period_cn"],
                          "本月按周（周一开始，按交易日，不含 IVA）。往月趋势需要往月的下载：同一台机器上有更早月份的"
-                         "Falabella 下载目录时，下方自动追加各月合计。", TREND_COLS)
+                         "Falabella 下载目录时，下方自动追加各月合计。最右三列是 IVA 参考（同②的 IVA 明细）。",
+                         TREND_COLS)
     r = 5
     for S in fam.stores:
         t = S["tx"]
@@ -1077,21 +1163,32 @@ def sheet_trend(wb, fam, ctx):
         for w, x in t.groupby("_wk"):
             sales = x.loc[x["_line"] == FC.SALES, T_COLS["net"]].sum()
             fees = x.loc[x["_line"].isin(FEE_ROWS), T_COLS["net"]].sum()
+            out, in_ = iva_split(x)
             fam.write_row(ws, r, TREND_COLS, [
                 S["store"], str(w), int((x["_line"] == FC.SALES).sum()), float(sales),
                 float(x.loc[x["_line"] == FC.REFUND, T_COLS["net"]].sum()), float(fees),
-                float(x[T_COLS["net"]].sum()), (-fees / sales) if sales else 0.0])
+                float(x[T_COLS["net"]].sum()), (-fees / sales) if sales else 0.0,
+                out, in_, out - in_])
             r += 1
         r += 1
     hist = ctx.get("history") or {}
     if hist:
-        r = RF.section(ws, r + 1, "往月（来自本机更早的 Falabella 下载）", 8)
+        r = RF.section(ws, r + 1, "往月（来自本机更早的 Falabella 下载）", len(TREND_COLS))
         for store, months in hist.items():
             for mon, v in sorted(months.items()):
                 fam.write_row(ws, r, HIST_COLS, [
                     store, mon, v["items"], v["sales"], v["refund"], v["fees"], v["contrib"],
-                    (-v["fees"] / v["sales"]) if v["sales"] else 0.0])
+                    (-v["fees"] / v["sales"]) if v["sales"] else 0.0,
+                    v["iva_out"], v["iva_in"], v["iva_out"] - v["iva_in"]])
                 r += 1
+
+
+def iva_split(t):
+    """(output IVA, input IVA) of transaction lines, as ② counts them: the IVA of the
+    income lines, and minus the IVA of the charge lines."""
+    out = float(t.loc[t["_line"].isin(INCOME_LINES), T_COLS["iva"]].sum())
+    in_ = -float(t.loc[t["_line"].isin(FEE_LINES), T_COLS["iva"]].sum())
+    return out, in_
 
 
 def history(stores, base):
@@ -1112,7 +1209,9 @@ def history(stores, base):
                 a, b = periods.month_bounds(mon)
                 t = t[(t["_date"] >= pd.Timestamp(a)) & (t["_date"] <= pd.Timestamp(b))]
                 ln = t[T_COLS["type"]].map(lambda n: (FC.lookup(n) or ("", "unregistered"))[1])
+                iva_out, iva_in = iva_split(t.assign(_line=ln))
                 seen[mon] = {"items": int((ln == FC.SALES).sum()),
+                             "iva_out": iva_out, "iva_in": iva_in,
                              "sales": float(t.loc[ln == FC.SALES, T_COLS["net"]].sum()),
                              "refund": float(t.loc[ln == FC.REFUND, T_COLS["net"]].sum()),
                              "fees": float(t.loc[ln.isin(FEE_ROWS), T_COLS["net"]].sum()),

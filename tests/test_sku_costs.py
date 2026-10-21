@@ -237,7 +237,8 @@ def test_fa_without_a_table_is_as_before(fa_folder, tmp_path):
     assert pl.cell(row=at, column=3).value == 0
     assert pl.cell(row=at, column=4).value.startswith("⚠ 平台数据不含此项")
     sk = wb[K.SHEET_NAMES[6]]
-    assert sk.max_column == 17 and sk.cell(row=4, column=15).value == "单位成本（录入）"
+    assert sk.max_column == 19 and sk.cell(row=4, column=15).value == "单位成本（录入）"
+    assert [sk.cell(row=4, column=j).value for j in (18, 19)] == ["销项 IVA", "进项 IVA"]
     assert sk.cell(row=sku_rows(sk)["SKU1"], column=16).value == "=-O%d*D%d" % ((sku_rows(sk)["SKU1"],) * 2)
 
 

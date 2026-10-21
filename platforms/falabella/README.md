@@ -73,6 +73,16 @@ a sister of MercadoLibre's report. The workbook states the same rules on ① (�
    memo lines and ③ bridge C walks from the contribution to the cash with IVA.
    (MercadoLibre Chile's report is gross only because MercadoLibre's files do not
    split IVA; Falabella's do, per line.)
+   **IVA reference (added 2026-10-21, adds cells only — no P&L row or column moves):**
+   below ②'s memo, "IVA 明细 · 按损益表行" lists the IVA of every income and fee row
+   (transaction date, the same lines as the P&L; buyer shipping as its two memo legs),
+   their totals (= the memo's 销项 / 进项 IVA) and 应缴 IVA 净额 = 销项 − 进项, so that
+   contribution + 应缴 IVA 净额 = the settlement with IVA. "IVA 明细 · 按单据日期" gives
+   the F29 reference by document date: input IVA of the fee invoice whose period ends in
+   the month (all its lines, from InvoiceReport; 0 with a note when not downloaded),
+   output IVA of the Liquidación documents (estimated as total × 19/119) and of FBS
+   sales and returns (the seller's own documents). ⑦ gets 销项 / 进项 IVA columns and ⑧
+   销项 / 进项 / 应缴 IVA columns, at the right end.
 3. **Shipping — principal vs agent.** For orders Falabella delivers, the shipping the
    buyer pays is passed to Falabella unchanged ("Pago de envío comprador" and the
    equal "Reversa"): the seller is an agent, so it is **not revenue** (net

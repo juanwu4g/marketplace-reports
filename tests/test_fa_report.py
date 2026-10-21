@@ -232,6 +232,55 @@ def test_bridges(folder, tmp_path):
     assert abs(m["contrib"] + m["iva_out"] - m["iva_in"] - m["tx_gross"]) < 1e-6
 
 
+def iva(g):
+    return g - net(g)
+
+
+def test_iva_reference(folder, tmp_path):
+    """The P&L stays net of IVA; the IVA blocks, SKU and trend columns only add."""
+    r, out = build(folder, tmp_path)
+    m = r["metrics"][STORE]
+    assert m["iva_out"] == 2 * iva(11900) + iva(23800) + iva(-23800) + iva(2380)
+    assert m["iva_net"] == m["iva_out"] - m["iva_in"]
+    assert abs(m["contrib"] + m["iva_net"] - m["tx_gross"]) < 1e-6
+    d = m["iva_doc"]
+    # the invoice for 21 Aug - 20 Sep is issued in September: all its lines, August's too
+    assert d["inv_period"] == "2026-08-21_2026-09-20"
+    assert d["inv_iva"] == -(iva(-1785) * 2 + iva(-2380) * 2 + iva(-3570) + iva(-5950) - 190)
+    assert d["liq_iva"] == round(35700 * 19 / 119)
+    assert d["fbs_iva"] == 0                               # every synthetic order is FBF
+    wb = load_workbook(out)
+    pl = wb[report_kit.SHEET_NAMES[1]]
+    rows = {pl.cell(row=i, column=1).value: pl.cell(row=i, column=3).value
+            for i in range(1, pl.max_row + 1)}
+    assert rows["＝ 销项 IVA 合计"] == m["iva_out"] and rows["＝ 进项 IVA 合计"] == m["iva_in"]
+    assert rows["本月应缴 IVA 净额（销项 − 进项）"] == m["iva_net"]
+    assert rows["进项 IVA：本月开出的 Falabella 费用发票"] == d["inv_iva"]
+    sku = wb[report_kit.SHEET_NAMES[6]]
+    head = [c.value for c in sku[4]]
+    assert head[-2:] == ["销项 IVA", "进项 IVA"] and head[:3] == ["店铺", "SKU", "商品"]
+    col = head.index("销项 IVA") + 1
+    assert sum(sku.cell(row=i, column=col).value or 0 for i in range(5, sku.max_row + 1)) == m["iva_out"]
+    trend = wb[report_kit.SHEET_NAMES[7]]
+    assert [c.value for c in trend[4]][-3:] == ["销项 IVA", "进项 IVA", "应缴 IVA 净额"]
+
+
+def test_iva_invoice_not_downloaded_is_zero_with_a_note(folder, tmp_path):
+    for f in os.listdir(folder):
+        if f.startswith("InvoiceReport_"):
+            os.remove(os.path.join(folder, f))
+    r, out = build(folder, tmp_path)
+    assert r["metrics"][STORE]["iva_doc"]["inv_iva"] is None
+    pl = load_workbook(out)[report_kit.SHEET_NAMES[1]]
+    for i in range(1, pl.max_row + 1):
+        if pl.cell(row=i, column=1).value == "进项 IVA：本月开出的 Falabella 费用发票":
+            assert pl.cell(row=i, column=3).value == 0
+            assert "没有下载到" in pl.cell(row=i, column=4).value
+            break
+    else:
+        raise AssertionError("row missing")
+
+
 def test_workbook_sheets_and_no_customer_data(folder, tmp_path):
     r, out = build(folder, tmp_path)
     wb = load_workbook(out)
