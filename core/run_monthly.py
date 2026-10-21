@@ -99,6 +99,13 @@ run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一
 
 以前每个国家一个计划任务，两个任务时间挨得近就会撞上这把全局锁、后到的被
 跳过（退出码 5）。一个 --region ALL 的任务从根上没有这个问题。
+
+勾选的几个：--region MX,FA-CL
+------------------------------
+窗口里按平台、国家勾出来的一串（逗号隔开，顺序不要紧，照全部国家的顺序跑）。
+和 ALL 是同一套流程（一把锁、一份日志、每段带 [区域] 前缀），只是只跑这几个。
+这里可以带 --stores：每家店归到它所在的区域；列出了店的区域只跑这几家（不出
+全店汇总），没列出店的区域跑全部店铺。--stores 里有不属于这几个区域的店：退出码 3。
 """
 import argparse
 import datetime
@@ -205,7 +212,18 @@ def region_label(region):
     from core import store_config
     if region == ALL:
         return "全部国家"
+    if "," in str(region):
+        return "、".join(region_label(u) for u in units_of(region))
     return "%s（%s）" % (store_config.region_name(region), region)
+
+
+def units_of(region):
+    """"MX,FA-CL" -> ["MX", "FA-CL"]。"""
+    return [u for u in str(region or "").split(",") if u]
+
+
+def is_multi(region):
+    return region == ALL or "," in str(region or "")
 
 
 def region_lineup():
@@ -871,14 +889,12 @@ def parse_args(argv=None):
                     help="只跑其中一步。collect = 只补取欠着的报表")
     ap.add_argument("--stores", nargs="+", default=None, metavar="NAME",
                     help="只跑这几家店。给了就不出全店汇总表（避免覆盖真正的那份）")
-    ap.add_argument("--region", type=str.upper,
-                    choices=list(store_config.REGION_NAMES)
-                    + [u for u in _markets_units() if u not in store_config.REGION_NAMES]
-                    + [ALL],
+    ap.add_argument("--region", type=lambda v: str(v).upper().replace(" ", ""),
                     default="MX",
                     help="哪个国家的店铺：MX 墨西哥（默认）/ CL 智利 / PE 秘鲁（美客多）；"
                          "别的平台写市场代码，如 FA-CL（Falabella 智利）；"
-                         "ALL = 全部依次跑（美客多墨西哥第一），同一把锁、同一份日志")
+                         "ALL = 全部依次跑（美客多墨西哥第一），同一把锁、同一份日志；"
+                         "几个一起跑用逗号隔开，如 MX,FA-CL")
     ap.add_argument("--reports-for", choices=["stores", "all"], default="stores",
                     help="和 --stores 一起用：all = 只下载这几家店，报表给全部"
                          "店铺重出（含全店汇总）。给人工处理完补跑用")
@@ -892,7 +908,18 @@ def parse_args(argv=None):
                          "（默认 %g，0 = 不限）" % MAX_HOURS)
     ap.add_argument("--dry-run", action="store_true",
                     help="只打印会执行什么")
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    known = (list(store_config.REGION_NAMES)
+             + [u for u in _markets_units() if u not in store_config.REGION_NAMES])
+    units = units_of(args.region)
+    if args.region != ALL and (not units or any(u not in known for u in units)):
+        ap.error("--region %s：认不出来。可以是 %s、ALL，或用逗号连起来的几个"
+                 % (args.region, "、".join(known)))
+    if len(units) > 1:
+        # 去重，按全部国家的顺序排（日志、汇总表的顺序和 ALL 一样）
+        order = {u: i for i, u in enumerate(known)}
+        args.region = ",".join(sorted(set(units), key=lambda u: order[u]))
+    return args
 
 
 def header(log, args, month, run_id, plan, out_dir, out_src):
@@ -1070,7 +1097,7 @@ def execute(args, plan=None):
     """跑一轮。plan 给测试用：换掉真正的子进程命令，流程本身不变。
 
     --region ALL 走 execute_all；那边的 plan 是 {区域: 计划}。"""
-    if args.region == ALL:
+    if is_multi(args.region):
         return execute_all(args, plan)
     month = args.month or prev_month()
     out_dir, out_src = resolve_out_dir(args.out_dir)
@@ -1190,16 +1217,40 @@ def region_banner(i, n, region, stores):
         i, n, region_label(region), len(stores))
 
 
+def pick_subsets(lineup, stores):
+    """勾选的几个区域带了 --stores：每家店归到它所在的区域。
+
+    返回 (问题或 None, {区域: [店]})。店不在这几个区域里（或者不在白名单）是
+    问题 (3, 一句话)，什么都不跑 —— 和单个区域时 --stores 有别国的店一样。"""
+    if not stores:
+        return None, {}
+    owner = {}
+    for it in lineup:
+        for s in it["stores"]:
+            owner[s] = it["region"]
+    stray = [s for s in stores if s not in owner]
+    if stray:
+        return (3, "--stores 里有店不在所选的区域里（或不在白名单）：%s" % "、".join(stray)), {}
+    picked = {}
+    for s in stores:
+        picked.setdefault(owner[s], [])
+        if s not in picked[owner[s]]:
+            picked[owner[s]].append(s)
+    return None, picked
+
+
 def execute_all(args, plans=None):
-    """--region ALL：全部国家依次跑，见文件头「全部国家」。
+    """--region ALL：全部国家依次跑，见文件头「全部国家」。--region MX,FA-CL：只跑
+    这几个，同一套流程（见文件头「勾选的几个」）。
 
     plans 给测试用：{区域: 计划}，换掉那个国家真正的子进程命令。没给的国家
     照常用 build_plan —— 和单独跑它时同一个函数、同样的参数。
     """
     month = args.month or prev_month()
     out_dir, out_src = resolve_out_dir(args.out_dir)
-    problem, lineup, skipped = None, [], []
-    if args.stores:
+    chosen = None if args.region == ALL else units_of(args.region)
+    problem, lineup, skipped, subsets = None, [], [], {}
+    if args.stores and chosen is None:
         problem = (3, "选了全部国家（--region ALL）就不能再指定店铺：店铺子集只在"
                       "一个国家里有意义。只跑几家店请选具体的国家。")
     else:
@@ -1208,23 +1259,33 @@ def execute_all(args, plans=None):
             lineup, skipped = region_lineup()
         except store_config.StoreConfigError as e:
             problem = (4, "config.json 有问题，定不了每个国家有哪些店铺：%s" % e)
+        if chosen is not None:
+            lineup = [it for it in lineup if it["region"] in chosen]
+            skipped = [r for r in chosen if r not in [it["region"] for it in lineup]]
+            if not problem:
+                problem, subsets = pick_subsets(lineup, args.stores)
         if not problem and not lineup:
             problem = (4, "config.json 里一个国家的店铺都没有（stores.allowed / "
-                          "batch / batches 都是空的）。")
+                          "batch / batches 都是空的）。" if chosen is None else
+                          "所选的区域（%s）在 config.json 里一家店都没有。"
+                          % region_label(args.region))
     for item in lineup:
         item["plan"] = []
-        if item["problem"]:
+        item["subset"] = subsets.get(item["region"])
+        if item["problem"] or problem:
             continue
         if plans is not None and item["region"] in plans:
             item["plan"] = plans[item["region"]]
         else:
-            item["plan"] = build_plan(args.step, month, None, out_dir,
+            item["plan"] = build_plan(args.step, month, item["subset"], out_dir,
+                                      reports_all=args.reports_for == "all",
                                       region=item["region"],
                                       all_stores=item["stores"])
 
     if args.dry_run:
         print("入口　　：%s" % runlog.ENTRANCE_ZH[args.entrance])
-        print("区域　　：全部国家，依次跑")
+        print("区域　　：%s，依次跑" % ("全部国家" if chosen is None
+                                      else "所选的 %d 个：%s" % (len(chosen), region_label(args.region))))
         print("目标月份：%s" % month)
         if problem:
             print("\n[错误] %s" % problem[1])
@@ -1232,9 +1293,10 @@ def execute_all(args, plans=None):
         print("日志目录：%s" % runlog.runs_dir(LOG_DIR))
         print("输出目录：%s（%s）" % (os.path.abspath(out_dir), out_src))
         for i, item in enumerate(lineup, 1):
-            print("\n[dry-run] 第 %d/%d 个国家：%s，%d 家店铺"
+            print("\n[dry-run] 第 %d/%d 个国家：%s，%s"
                   % (i, len(lineup), region_label(item["region"]),
-                     len(item["stores"])))
+                     "只跑 %d 家：%s" % (len(item["subset"]), "、".join(item["subset"]))
+                     if item["subset"] else "%d 家店铺" % len(item["stores"])))
             if item["problem"]:
                 print("  [错误] %s（这个国家不跑，别的国家照跑）" % item["problem"][1])
             for s in item["plan"]:
@@ -1250,7 +1312,9 @@ def execute_all(args, plans=None):
 
     regions_doc = []
     doc = {"run_id": run_id, "entrance": args.entrance, "pid": os.getpid(),
-           "region": ALL, "month": month, "step": args.step, "stores": "all",
+           "region": args.region, "month": month, "step": args.step,
+           "stores": "all" if not subsets else
+           [s for it in lineup for s in (it["subset"] or [])],
            "began": now(), "ended": None, "status": "running",
            "steps": [], "exit": None, "urgent": [], "attention": [],
            "log": paths["log"], "out_dir": os.path.abspath(out_dir),
@@ -1296,11 +1360,14 @@ def execute_all(args, plans=None):
     log.info(S, "入口　　：%s —— %s" % (runlog.ENTRANCE_ZH[e], runlog.ENTRANCE_WHAT[e]))
     log.info(S, "运行编号：%s" % run_id)
     log.info(S, "目标月份：%s" % month)
-    log.info(S, "区域　　：全部国家，依次跑：%s" % (
+    log.info(S, "区域　　：%s，依次跑：%s" % (
+        "全部国家" if chosen is None else "所选的 %d 个" % len(chosen),
         " → ".join(region_label(it["region"]) for it in lineup) or "（无）"))
     for it in lineup:
         log.info(S, "店铺　　：%s %s" % (
             region_label(it["region"]),
+            "只跑 %d 家（不出全店汇总）：%s" % (len(it["subset"]), "、".join(it["subset"]))
+            if it.get("subset") else
             "全部 %d 家：%s" % (len(it["stores"]), "、".join(it["stores"]))
             if it["stores"] else "（定不了，见下）"))
     for r in skipped:
@@ -1330,7 +1397,7 @@ def execute_all(args, plans=None):
     runlog.clear_stop(run_id, LOG_DIR)
     current = {"run_id": run_id, "pid": os.getpid(), "entrance": args.entrance,
                "log": paths["log"], "started": doc["began"], "month": month,
-               "region": ALL, "regions": [it["region"] for it in lineup],
+               "region": args.region, "regions": [it["region"] for it in lineup],
                "step": args.step}
     runlog.write_current(current, LOG_DIR)
     save()
@@ -1340,12 +1407,13 @@ def execute_all(args, plans=None):
         for i, it in enumerate(lineup, 1):
             r = it["region"]
             rlog = RegionLog(log, r)
-            rec = {"region": r, "stores": it["stores"], "status": "running",
+            rec = {"region": r, "stores": it["subset"] or it["stores"],
+                   "all_stores": not it["subset"], "status": "running",
                    "exit": None, "began": now(), "ended": None, "steps": [],
                    "urgent": [], "attention": [], "batch_summary": None,
                    "human_actions": [], "alert": None}
             regions_doc.append(rec)
-            rlog.info(S, region_banner(i, n, r, it["stores"]))
+            rlog.info(S, region_banner(i, n, r, it["subset"] or it["stores"]))
             runlog.write_current(dict(current, current_region=r,
                                       region_index=i, region_count=n), LOG_DIR)
             save(current_region=r)
@@ -1365,7 +1433,8 @@ def execute_all(args, plans=None):
 
             st = {"worst": 0, "cut": False, "aborted": False}
             try:
-                run_steps(rlog, args, it["plan"], run_id, it["stores"], rec, st, save)
+                run_steps(rlog, args, it["plan"], run_id, it["subset"] or it["stores"],
+                          rec, st, save)
             except Exception:
                 internal_error(rlog, rec, st)
             if st["aborted"]:
@@ -1394,7 +1463,7 @@ def execute_all(args, plans=None):
 
     # ---- 总结：每个国家一行
     done = [rec["region"] for rec in regions_doc]
-    log.info(E, "全部国家的结果：")
+    log.info(E, "%s的结果：" % ("全部国家" if chosen is None else "所选区域"))
     for rec in regions_doc:
         code = rec.get("exit")
         text, _ = runlog.exit_meaning(code)
@@ -1412,7 +1481,7 @@ def execute_all(args, plans=None):
     final = worst_code([rec.get("exit") for rec in regions_doc]
                        + ([2] if extra else []))
     if final == 0:
-        log.info(E, "%s 全部国家都成功。" % month)
+        log.info(E, "%s %s都成功。" % (month, "全部国家" if chosen is None else "所选区域"))
     return finish("done" if final < 2 else "failed", final)
 
 

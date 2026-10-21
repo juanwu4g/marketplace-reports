@@ -180,6 +180,35 @@ def confirm_text(step, choice, month, subset=None, latest=None, groups=None):
     return title, "\n".join(lines)
 
 
+def confirm_scope(step, groups, month, latest=None):
+    """「立即运行」按平台 / 国家 / 店铺勾选之后，起一轮之前的确认框：(标题, 正文)。
+
+    groups：scope.groups() —— [(Unit, 店, 是不是只跑部分)]。"""
+    n = sum(len(ss) for _, ss, _ in groups)
+    title = STEP_TITLES.get(step, step)
+    lines = ["范围：共 %d 家" % n]
+    for u, ss, part in groups:
+        lines.append("  · %s：%s" % (region_choice.unit_title(u.unit),
+                                    "只跑 %d 家（%s）" % (len(ss), "、".join(ss)) if part
+                                    else "全部 %d 家" % len(ss)))
+    lines += ["月份：%s" % month, "预计：%s" % estimate(step, n, len(groups))]
+    if len(groups) > 1:
+        lines.append("顺序：%s，一个跑完再跑下一个" % " → ".join(
+            region_choice.unit_title(u.unit) for u, _, _ in groups))
+    if any(part for _, _, part in groups) and step in ("both", "report"):
+        lines.append("只勾了部分店铺的，不出全店汇总表（避免覆盖真正的那份）。")
+    if latest and month != latest:
+        lines.append("")
+        lines.append("注意：%s 不是最近一个月（%s）。脚本会去那个月的账单明细页"
+                     "取数，下载目录带 _m%s 后缀。" % (month, latest,
+                                                 month.replace("-", "")))
+    if step in ("both", "download", "collect"):
+        lines += ["", "期间这台电脑会反复开关紫鸟浏览器 —— 请不要手动去点紫鸟，",
+                  "那会打断下载。"]
+    lines += ["", "这个窗口可以关掉，不影响后台继续跑。", "", "开始？"]
+    return title, "\n".join(lines)
+
+
 # ────────────────────────────────────────────────────────── 按钮
 
 def button_states(busy, has_stores, has_human, picked_human=False):
@@ -228,12 +257,6 @@ def rerun_confirm(plan, month):
 
     返回 (能不能跑, 标题, 正文)。规则在 region_choice.rerun_plan。"""
     stores, useless = plan["stores"], plan["useless"]
-    if stores and not plan["region"]:
-        return False, "重跑", (
-            "所选的店铺分属不同的国家，一轮只能补跑一个国家：\n\n%s\n\n"
-            "请只选同一个国家的店铺，分两次点。" % "\n".join(
-                "%s：%s" % (region_choice.label(r), "、".join(ss))
-                for r, ss in plan["groups"]))
     if not stores:
         return False, "重跑", ("所选的店铺都是重跑解决不了的问题：\n%s"
                               % "\n".join(useless) if useless
@@ -244,7 +267,8 @@ def rerun_confirm(plan, month):
         "会重新下载 %s 的 %s 数据（每家约 %d 分钟，共约 %s），\n"
         "下完给%s全部店铺重出报表，并重出全店汇总表。%s\n\n开始？"
         % ("、".join(stores), month, MIN_PER_STORE, run_hours(len(stores)),
-           region_choice.label(plan["region"]), note))
+           "、".join(region_choice.unit_title(u)
+                    for u in region_choice.split_units(plan["region"])) + " 的", note))
 
 
 # ────────────────────────────────────────────────────────── 状态栏

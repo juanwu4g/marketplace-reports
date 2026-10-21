@@ -865,7 +865,7 @@ def exit2_text(summary):
     只有 1 家店因为要登录而没有报表，窗口却写着"紫鸟客户端出错 / 没有一家店
     下到数据" —— 两句都不对。按各步骤的退出码说清楚是哪一步。
     """
-    if summary.get("region") == "ALL":
+    if is_multi(summary.get("region")):
         return _exit2_all(summary)
     codes = {st.get("step"): st.get("code") for st in summary.get("steps") or []
              if isinstance(st, dict)}
@@ -892,10 +892,18 @@ def _exit2_all(summary):
     return "；".join(out) or None
 
 
+def is_multi(region):
+    """一轮跑好几个区域：ALL（全部），或者窗口里勾的一串（"MX,FA-CL"）。这种一轮的
+    摘要里有 regions（每个区域一项），日志每行带 [区域] 前缀。"""
+    return region == "ALL" or "," in str(region or "")
+
+
 def region_name(code):
-    """MX -> 墨西哥；ALL -> 全部国家。"""
+    """MX -> 墨西哥；ALL -> 全部国家；"MX,FA-CL" -> 墨西哥、Falabella 智利。"""
     if code == "ALL":
         return "全部国家"
+    if "," in str(code or ""):
+        return "、".join(region_name(c) for c in str(code).split(",") if c)
     try:
         from core import store_config
         return store_config.region_name(code)
@@ -1174,7 +1182,7 @@ def live_status(st, records=(), now=None, scan=3000):
     summary = st.get("summary") or {}
     region = summary.get("region") or cur.get("region") or "MX"
     parts = []
-    if region == "ALL":
+    if is_multi(region):
         r = cur.get("current_region") or summary.get("current_region")
         idx, n = cur.get("region_index"), cur.get("region_count")
         if r:
@@ -1182,7 +1190,7 @@ def live_status(st, records=(), now=None, scan=3000):
                                        "，第 %d/%d 个国家" % (idx, n)
                                        if idx and n else ""))
         else:
-            parts.append("全部国家")
+            parts.append(region_name(region))
     else:
         parts.append("%s（%s）" % (region_name(region), region))
     if st.get("month"):
@@ -1223,9 +1231,10 @@ def human_actions_for_run(run_id, log_dir=None):
 def _region_batches(summary):
     """一轮摘要里的批次汇总：[(区域, 批次汇总路径, 是不是这个国家的全部店铺)]。
 
-    单个国家的一轮只有一项；--region ALL 的一轮每个国家一项（都是全部店铺）。"""
-    if summary.get("region") == "ALL":
-        return [(r.get("region") or "MX", r.get("batch_summary"), True)
+    单个国家的一轮只有一项；好几个区域的一轮（--region ALL 或 "MX,FA-CL"）每个区域
+    一项 —— 窗口里只勾了几家店的区域 all_stores 是 False。"""
+    if is_multi(summary.get("region")):
+        return [(r.get("region") or "MX", r.get("batch_summary"), r.get("all_stores", True))
                 for r in summary.get("regions") or [] if isinstance(r, dict)]
     return [(summary.get("region") or "MX", summary.get("batch_summary"),
              summary.get("stores") in ("all", None))]

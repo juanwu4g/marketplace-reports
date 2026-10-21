@@ -36,10 +36,22 @@ TASK_NAMES = {r: r + "月度报表" for r in REGIONS}
 OVERLAP_HOURS = 6
 
 
+def is_list(region):
+    """窗口里勾出来的一串区域："MX,FA-CL"（run_monthly --region 照收）。"""
+    return "," in str(region or "")
+
+
+def split_units(region):
+    """"MX,FA-CL" -> ["MX", "FA-CL"]；单个区域 -> [它]。"""
+    return [u for u in str(region or "").split(",") if u]
+
+
 def label(region):
-    """下拉框里的字：墨西哥 / 智利 / 全部国家。"""
+    """界面上的字：墨西哥 / 智利 / 全部国家；一串区域用顿号连起来。"""
     if region == ALL:
         return ALL_LABEL
+    if is_list(region):
+        return "、".join(label(u) for u in split_units(region))
     return store_config.region_name(region)
 
 
@@ -52,6 +64,15 @@ def visible():
     except Exception:
         pass
     return out
+
+
+def unit_title(unit):
+    """"美客多 墨西哥"、"Falabella 智利"：平台和国家都写出来（label 里美客多只写国家，
+    那是区域出现之前留下来的写法）。"""
+    try:
+        return markets.label(markets.unit_market(unit))
+    except Exception:
+        return label(unit)
 
 
 def labels():
@@ -85,6 +106,8 @@ def lineup(choice):
 
     全部国家：和 run_monthly.region_lineup 同一个顺序（墨西哥第一），一家店都
     没有的国家不出现。读不到 config 返回 [] —— 窗口照常能开。"""
+    if is_list(choice):
+        return [(u, ss) for u, ss in ((u, stores(u)) for u in split_units(choice)) if ss]
     if choice != ALL:
         return [(choice, stores(choice))]
     try:
@@ -189,22 +212,19 @@ def action_region(action):
 
 
 def action_line(action):
-    """「需要人工处理」列表里的一行。墨西哥的店和以前一样，别的国家标出来。"""
-    r = action_region(action)
-    tag = "" if r == DEFAULT else "（%s）" % label(r)
-    return "%s%s —— %s" % (action["store"], tag, action["title"])
+    """「需要人工处理」列表里的一行：店名（平台 国家） —— 要做什么。"""
+    return "%s（%s） —— %s" % (action["store"], unit_title(action_region(action)),
+                               action["title"])
 
 
 def rerun_plan(picked):
     """「处理好了：重跑」要起的那一轮。返回 dict：
 
-    region   这些店的国家（一个）；分属几个国家时为 None
+    region   这些店的区域：一个就是它，几个就是 "MX,FA-CL"（run_monthly 一轮
+             依次跑这几个，每家店归到它自己的区域）；一家都没有是 None
     stores   要重跑的店（去重、保持顺序）
     useless  重跑也没用的那几条（"店名（原因）"）
-    groups   [(区域, [店])]，给"分属几个国家"时的提示用
-
-    一轮只能跑一个国家（锁是全局的，run_monthly 也会拒收别国的店），所以选中
-    的店分属两国时不起，让人分两次点。
+    groups   [(区域, [店])]
     """
     names, useless, groups = [], [], []
     for a in picked:
@@ -219,7 +239,10 @@ def rerun_plan(picked):
                     break
             else:
                 groups.append((r, [a["store"]]))
-    return {"region": groups[0][0] if len(groups) == 1 else None,
+    order = [u for u, _ in lineup(ALL)]
+    units = sorted((r for r, _ in groups), key=lambda u: order.index(u) if u in order
+                   else len(order))
+    return {"region": ",".join(units) or None,
             "stores": names, "useless": useless, "groups": groups}
 
 
@@ -240,7 +263,8 @@ def legacy_tasks():
 
 
 def task_name(region):
-    if region == ALL:
+    # 只跑勾选的几个区域，也还是那一个任务（月度报表）：只是参数不同。
+    if region == ALL or is_list(region):
         return ALL_TASK
     return TASK_NAMES.get(region) or "%s月度报表" % region
 
@@ -260,7 +284,7 @@ def rehearsal_args(region):
 
 def args_region(args):
     """从已登记任务的参数里读出区域。旧任务没有 --region，按墨西哥算。"""
-    m = re.search(r"--region\s+([\w-]+)", args or "")
+    m = re.search(r"--region\s+([\w,-]+)", args or "")
     return m.group(1).upper() if m else DEFAULT
 
 
@@ -388,10 +412,15 @@ def schedule_overview(states, n_regions=1):
     legacy = [(r, n, states.get(n)) for r, n in legacy_tasks() if states.get(n)]
     notes = []
     if main:
-        if args_region(main.get("ARGS")) != ALL:
-            notes.append(("bad", "「%s」登记的参数（%s）跑的不是全部国家：再点一次"
-                                 "「设为每月自动运行」改过来。"
-                          % (ALL_TASK, main.get("ARGS") or "无")))
+        reg = args_region(main.get("ARGS"))
+        if reg != ALL:
+            left_out = [u for u, _ in lineup(ALL) if u not in split_units(reg)]
+            notes.append(("warn" if left_out else "good",
+                          "「%s」只跑勾选的：%s。%s以后新加的平台 / 国家不会自动包含，要回来"
+                          "勾上再点「设为每月自动运行」。"
+                          % (ALL_TASK, "、".join(unit_title(u) for u in split_units(reg)),
+                             "没有包含：%s。" % "、".join(unit_title(u) for u in left_out)
+                             if left_out else "")))
         lim = registered_limit(main)
         need = time_limit_hours(n_regions)
         if lim is not None and lim < need:
@@ -403,7 +432,8 @@ def schedule_overview(states, n_regions=1):
                                  "被跑两次，后到点的那次会撞上锁被跳过。建议点它"
                                  "旁边的「删除」。"
                           % (name, label(r), task_when(st), label(r))))
-        headline = "● 已设置：%s 自动跑全部国家" % task_when(main)
+        headline = "● 已设置：%s 自动跑%s" % (
+            task_when(main), "全部平台和国家" if reg == ALL else "勾选的平台和国家")
         kind = "bad" if any(k == "bad" for k, _ in notes) else "good"
     elif legacy:
         headline = "● 现在用的是按国家登记的旧任务：%s" % "、".join(

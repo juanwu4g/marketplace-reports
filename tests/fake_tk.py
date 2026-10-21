@@ -316,6 +316,64 @@ class PanedWindow(Widget):
         pass
 
 
+class Treeview(Widget):
+    """ttk.Treeview：只记节点（父、文字、列值、标签、展开），够窗口代码用。"""
+
+    def __init__(self, master=None, **kw):
+        Widget.__init__(self, master, **kw)
+        self.nodes = {"": {"children": []}}
+        self.focused = ""
+
+    def insert(self, parent, index, iid=None, **kw):
+        self.nodes[iid] = dict(kw, parent=parent, children=[])
+        self.nodes[parent]["children"].append(iid)
+        return iid
+
+    def item(self, iid, **kw):
+        if kw:
+            self.nodes[iid].update(kw)
+        return self.nodes[iid]
+
+    def get_children(self, iid=""):
+        return tuple(self.nodes[iid]["children"])
+
+    def delete(self, *iids):
+        for iid in iids:
+            node = self.nodes.pop(iid, None)
+            if node is None:
+                continue
+            self.delete(*node["children"])
+            sib = self.nodes.get(node["parent"])
+            if sib and iid in sib["children"]:
+                sib["children"].remove(iid)
+
+    def heading(self, *a, **k):
+        pass
+
+    def column(self, *a, **k):
+        pass
+
+    def tag_configure(self, *a, **k):
+        pass
+
+    def focus(self, iid=None):
+        if iid is None:
+            return self.focused
+        self.focused = iid
+
+    def identify_row(self, y):
+        return ""
+
+    def identify_element(self, x, y):
+        return ""
+
+    def yview(self, *a):
+        pass
+
+    def text(self, iid):
+        return self.nodes[iid].get("text", "")
+
+
 class Style(object):
     def __init__(self, *a):
         pass
@@ -335,7 +393,7 @@ for _n, _c in (("Frame", Frame), ("Label", Label), ("Button", Button),
                ("Checkbutton", Button), ("Combobox", Combobox), ("Entry", Entry),
                ("Spinbox", Entry), ("LabelFrame", Frame), ("Notebook", Notebook),
                ("PanedWindow", PanedWindow), ("Scrollbar", Scrollbar),
-               ("Style", Style)):
+               ("Style", Style), ("Treeview", Treeview)):
     setattr(ttk, _n, _c)
 
 
@@ -386,7 +444,7 @@ MODULES = {"tkinter": tk, "tkinter.ttk": ttk, "tkinter.font": font,
 def install():
     saved = dict((k, sys.modules.get(k)) for k in MODULES)
     sys.modules.update(MODULES)
-    for k in ("core.app", "core.log_view"):
+    for k in ("core.app", "core.log_view", "core.scope_picker"):
         sys.modules.pop(k, None)
     return saved
 
@@ -397,5 +455,5 @@ def uninstall(saved):
             sys.modules.pop(k, None)
         else:
             sys.modules[k] = v
-    for k in ("core.app", "core.log_view"):
+    for k in ("core.app", "core.log_view", "core.scope_picker"):
         sys.modules.pop(k, None)
