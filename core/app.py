@@ -64,7 +64,7 @@ ROOT = E.ROOT
 LOG_DIR = os.path.join(ROOT, "logs")
 TITLE = "月度报表"
 LEFT_W = 560          # 左边那一栏的宽度（像素）
-WRAP = LEFT_W - 60    # 左边说明文字的折行宽度
+WRAP = LEFT_W - 85    # 左边说明文字的折行宽度（留出分组框边距和页面滚动条）
 WHO = "月度报表窗口"     # 写进中止请求：是哪个窗口点的
 
 
@@ -91,7 +91,7 @@ def _scale_widths(root):
         k = 1.0
     if k > 1.05:
         LEFT_W = int(LEFT_W * k)
-        WRAP = LEFT_W - int(60 * k)
+        WRAP = LEFT_W - int(85 * k)
 
 
 class App(object):
@@ -246,7 +246,7 @@ class App(object):
         self.month.grid(row=0, column=1, sticky="w", padx=(S.GAP, 0))
         hint(f, "默认是上一个完整月份。当月还没过完，做月报没有意义。"
              ).grid(row=1, column=1, sticky="w", padx=(S.GAP, 0))
-        # 平台 → 国家 → 店铺：点一行勾选 / 取消，点 ▸ 展开看店铺。平台和国家从
+        # 平台 → 国家 → 店铺：点一行勾选 / 取消，点展开标记看店铺。平台和国家从
         # config / markets.py 来，加平台、加国家不用改窗口。
         self.run_picker = ScopePicker(f, with_stores=True, on_change=self._scope_changed,
                                       height=10)
@@ -262,7 +262,7 @@ class App(object):
         ttk.Label(f, textvariable=self.scope_var, style="Section.TLabel",
                   wraplength=WRAP, justify="left").grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(S.SMALL, 0))
-        hint(f, "点一行勾选或取消；点 ▸ 展开看店铺。勾上一个平台就是它下面的全部国家，"
+        hint(f, "点一行勾选或取消；点左边的展开标记（⊞）看店铺。勾上一个平台就是它下面的全部国家，"
                 "勾上一个国家就是它的全部店铺。一个国家只勾了部分店铺时，这个国家不出"
                 "全店汇总表（避免覆盖真正的那份）。"
              ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
@@ -655,7 +655,8 @@ class App(object):
 
         f = section(page, "自动跑哪些")
         self.sched_picker = ScopePicker(f, with_stores=False,
-                                        on_change=self._sched_scope_changed, height=7)
+                                        on_change=self._sched_scope_changed, height=12,
+                                        fit=True)
         self.sched_picker.pack(fill="x")
         self.sched_picker.load(self.tree, SC.from_settings(
             E.load_settings().get("sched_scope"), self.tree), self.results)

@@ -97,7 +97,7 @@ def test_last_results_per_unit_newest_wins(tmp_path):
                                         "stores": "all"})
     res = SC.last_results(d)
     assert SC.unit_status(res, "MX") == "10-15 ✔ 正常"
-    assert SC.unit_status(res, "FA-CL") == "10-19 ✔ 正常（部分店）"
+    assert SC.unit_status(res, "FA-CL") == "10-19 ✔ 正常·部分店"
     assert SC.unit_status(res, "AZ-MX") == "10-20 ✗ 出错"
     assert SC.unit_status(res, "CL") == ""
     assert SC.last_results(str(tmp_path / "none")) == {}

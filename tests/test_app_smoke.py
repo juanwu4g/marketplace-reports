@@ -88,7 +88,9 @@ def test_window_builds_with_all_countries_by_default(app):
     assert tv.get_children("") == ("p:ML",)
     assert tv.get_children("p:ML") == ("u:MX", "u:CL")
     assert tv.get_children("u:CL") == ("s:CL:Tecnohub_CL", "s:CL:Andes_CL")
-    assert tv.text("p:ML") == "☑ 美客多 MercadoLibre" and tv.text("u:MX") == "☑ 墨西哥"
+    marks = app.run_picker.marks
+    assert tv.text("p:ML") == " 美客多 MercadoLibre" and tv.text("u:MX") == " 墨西哥"
+    assert marks["p:ML"] == marks["u:MX"] == marks["s:CL:Andes_CL"] == "all"
     assert app.scope_var.get() == "已选：美客多：墨西哥 2 家、智利 2 家 —— 共 4 家"
     assert app.btn_run.cget("state") == "normal"
     assert app.stop_btn.cget("state") == "disabled"
@@ -129,8 +131,10 @@ def test_single_country_with_a_subset(app):
     assert app.spawned == []
     app.run_picker.toggle("s:CL:Andes_CL")
     tv = app.run_picker.tv
-    assert tv.text("u:CL") == "▣ 智利" and tv.text("p:ML") == "▣ 美客多 MercadoLibre"
-    assert tv.text("s:CL:Andes_CL") == "☑ Andes_CL"
+    marks = app.run_picker.marks
+    assert marks["u:CL"] == marks["p:ML"] == "some" and marks["u:MX"] == "none"
+    assert marks["s:CL:Andes_CL"] == "all" and marks["s:CL:Tecnohub_CL"] == "none"
+    assert tv.item("u:CL")["values"][0] == "1/2 家"
     fake_tk.ANSWERS[:] = [True]
     app.btn_report.invoke()
     assert "美客多 智利：只跑 1 家（Andes_CL）" in fake_tk.SHOWN[-1][2]
@@ -291,7 +295,7 @@ def test_three_platforms_are_grouped_platform_first(app3):
     tv = app3.run_picker.tv
     assert tv.get_children("") == ("p:ML", "p:FA", "p:AZ")
     assert [tv.text(i) for i in tv.get_children("")] == [
-        "☑ 美客多 MercadoLibre", "☑ Falabella", "☑ 亚马逊 Amazon"]
+        " 美客多 MercadoLibre", " Falabella", " 亚马逊 Amazon"]
     assert tv.get_children("p:FA") == ("u:FA-CL",)
     assert tv.item("u:FA-CL")["values"][0] == "2 家"
     # the schedule tab has the same tree, countries only (no store rows)

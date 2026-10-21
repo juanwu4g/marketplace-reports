@@ -374,6 +374,14 @@ class Treeview(Widget):
         return self.nodes[iid].get("text", "")
 
 
+class PhotoImage(object):
+    def __init__(self, *a, **k):
+        pass
+
+    def put(self, *a, **k):
+        pass
+
+
 class Style(object):
     def __init__(self, *a):
         pass
@@ -387,6 +395,8 @@ class Style(object):
     def lookup(self, *a):
         return "#f0f0f0"
 
+
+tk.PhotoImage = PhotoImage
 
 ttk = types.ModuleType("tkinter.ttk")
 for _n, _c in (("Frame", Frame), ("Label", Label), ("Button", Button),

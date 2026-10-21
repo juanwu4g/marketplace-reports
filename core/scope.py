@@ -206,7 +206,7 @@ def status_text(res):
     code = res.get("exit")
     word = {0: "✔ 正常", 1: "⚠ 需关注", 5: "· 被跳过", 6: "· 中止", 7: "⚠ 超时"}.get(
         code, "✗ 出错" if code is not None else "?")
-    return "%s %s%s" % (res["day"], word, "（部分店）" if res.get("partial") else "")
+    return "%s %s%s" % (res["day"], word, "·部分店" if res.get("partial") else "")
 
 
 def unit_status(results, unit):
