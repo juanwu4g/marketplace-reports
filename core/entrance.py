@@ -239,14 +239,15 @@ def human_headline(human):
     if not acts:
         return "最近一轮下载里，没有需要人去店铺里处理的事。", "good"
     stores = sorted(set(a["store"] for a in acts))
-    return ("%d 家店铺需要人去处理（%s）。脚本自己解决不了，处理完点「重跑」。"
+    # 不留空格：Tk 只在空格处折行，"1 家" 中间的空格会把 "1" 单独留在上一行。
+    return ("%d家店铺需要人去处理（%s）。脚本自己解决不了，处理完点「重跑」。"
             % (len(stores), human.get("month") or ""), "bad")
 
 
 def human_detail(picked):
     """选中的几条：每条怎么处理。"""
     if not picked:
-        return "在上面选中要处理的店铺（按住 Ctrl 可多选）。"
+        return "在上面勾选要处理的店铺（可以只勾一两家），再点下面的按钮。"
     return "\n".join("%s：%s%s" % (a["store"], a["how"],
                                   "" if a.get("rerun") else "（处理之前重跑没用）")
                      for a in picked)
@@ -260,7 +261,7 @@ def rerun_confirm(plan, month):
     if not stores:
         return False, "重跑", ("所选的店铺都是重跑解决不了的问题：\n%s"
                               % "\n".join(useless) if useless
-                              else "先在列表里选中要重跑的店铺。")
+                              else "先在列表里勾选要重跑的店铺。")
     note = ("\n\n这几项重跑也解决不了，先跳过：\n%s" % "\n".join(useless)
             if useless else "")
     return True, "重跑并重出报表", (

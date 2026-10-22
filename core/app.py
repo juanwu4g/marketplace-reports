@@ -498,29 +498,34 @@ class App(object):
         hint(page, "登录 / 验证、账号语言不对、店铺打不开、缺报表权限 —— 这些脚本自己"
                    "解决不了，放着不管每个月都会原样失败一次。"
              ).pack(anchor="w", pady=(0, S.GAP))
+        # 平台 → 国家 → 店铺，和「立即运行」同一个勾选树；右边一列写这家店要做什么。
+        # 一开始一家都不勾：处理哪几家、重跑哪几家，由人勾。
+        self.human_picker = ScopePicker(page, with_stores=True, on_change=self._show_human,
+                                        height=8, store_note=self._human_note,
+                                        last_heading="要做什么", open_units=True)
+        self.human_picker.pack(fill="x")
         row = ttk.Frame(page)
-        row.pack(fill="x")
-        self.human_lb = tk.Listbox(row, selectmode="extended", height=7,
-                                   exportselection=False, activestyle="none")
-        sb = ttk.Scrollbar(row, orient="vertical", command=self.human_lb.yview)
-        self.human_lb.configure(yscrollcommand=sb.set)
-        self.human_lb.pack(side="left", fill="x", expand=True)
-        sb.pack(side="left", fill="y")
-        self.human_lb.bind("<<ListboxSelect>>", lambda e: self._show_human())
+        row.pack(fill="x", pady=(S.SMALL, 0))
+        ttk.Button(row, text="全选", width=6,
+                   command=lambda: self.human_picker.set_all(True)).pack(side="left")
+        ttk.Button(row, text="全不选", width=7,
+                   command=lambda: self.human_picker.set_all(False)
+                   ).pack(side="left", padx=(S.SMALL, 0))
         self.human_how = tk.StringVar(value="")
         # 固定高度：说明文字随选中项变长变短时，下面的按钮不能跟着上下跳 ——
         # 实测选中一家店后按钮上移，下一下就点空了。
         tk.Label(page, textvariable=self.human_how, fg=S.HINT, justify="left",
                  anchor="nw", height=5, wraplength=WRAP, font=S.FONT_SMALL
                  ).pack(anchor="w", fill="x", pady=(S.GAP, S.GAP))
-        self.human_open = ttk.Button(page, text="① 打开所选店铺（去登录 / 处理）",
+        self.human_open = ttk.Button(page, text="① 打开勾选的店铺（去登录 / 处理）",
                                      command=self.do_open_stores)
         self.human_open.pack(anchor="w", fill="x")
-        self.human_rerun = ttk.Button(page, text="② 处理好了：重跑这些店铺并重出全部报表",
+        self.human_rerun = ttk.Button(page, text="② 处理好了：重跑勾选的店铺并重出报表",
                                       command=self.do_rerun_human)
         self.human_rerun.pack(anchor="w", fill="x", pady=(S.GAP, 0))
-        hint(page, "重跑：只重新下载选中的店，然后给它们所在的平台 / 国家的全部店铺"
-                   "重出报表（含全店汇总）。可以一次选好几个平台、国家的店。"
+        hint(page, "两个按钮都只管勾上的店：可以只勾一两家先处理、先重跑，别的留着。"
+                   "重跑＝只重新下载勾上的店，然后给它们所在的平台/国家的全部店铺"
+                   "重出报表（含全店汇总）。可以一次勾好几个平台、国家的店。"
              ).pack(anchor="w", pady=(S.GAP, 0))
 
     def _refresh_human(self, announce=True):
@@ -531,15 +536,17 @@ class App(object):
             self.human = {"month": None, "actions": []}
             self.human_how.set("读不到上一轮的结果：%s" % e)
         acts = self.human["actions"]
-        keep = set(self.human_lb.get(i) for i in self.human_lb.curselection())
-        self.human_lb.delete(0, "end")
-        for a in acts:
-            self.human_lb.insert("end", RC.action_line(a))
-        for i, a in enumerate(acts):
-            if not keep or RC.action_line(a) in keep:
-                self.human_lb.selection_set(i)
+        # 重读时保留人已经勾上的店（还在清单里的）；新来的店不勾。
+        keep = set(self.human_picker.picked_stores()) if self.human_picker.t else set()
+        tree = SC.tree(self._human_groups(acts))
+        sel = {}
+        for u in SC.units(tree):
+            mine = [st for st in u.stores if st in keep]
+            if mine:
+                sel[u.unit] = mine
+        self.human_picker.load(tree, sel)
         text, kind = E.human_headline(self.human)
-        self.human_head.set(("⚠ " if acts else "✓ ") + text)
+        self.human_head.set(("⚠" if acts else "✓") + text)
         self.human_head_lbl.configure(foreground=S.FG[kind])
         try:
             self.tabs.tab(self.tab_human.outer, text="  %s  " % E.human_title(self.human))
@@ -555,19 +562,40 @@ class App(object):
             messagebox.showwarning(
                 "需要人工处理",
                 "这一轮有 %d 家店铺需要人去处理，脚本自己解决不了：\n\n%s\n\n"
-                "在「需要人工处理」页选中店铺，点「打开所选店铺」去处理；\n"
-                "处理完点「重跑这些店铺并重出全部报表」。"
+                "在「需要人工处理」页勾选要处理的店铺（可以只勾几家），点「打开勾选的店铺」；\n"
+                "处理完点「重跑勾选的店铺并重出报表」。"
                 % (len(stores), "\n".join("· %s" % RC.action_line(a) for a in acts)))
         elif not announce:
             self.human_told = newest or None
 
+    @staticmethod
+    def _human_groups(acts):
+        """待办 -> [(区域, [店])]：平台、国家的顺序和「立即运行」一样。"""
+        order = [u for u, _ in RC.lineup(RC.ALL)]
+        groups = {}
+        for a in acts:
+            ss = groups.setdefault(RC.action_region(a), [])
+            if a["store"] not in ss:
+                ss.append(a["store"])
+        return sorted(groups.items(), key=lambda g: order.index(g[0]) if g[0] in order
+                      else len(order))
+
+    def _human_note(self, unit, store):
+        return "；".join(a["title"] for a in self.human["actions"] if a["store"] == store)
+
     def _picked_human(self):
-        acts = self.human["actions"]
-        return [acts[i] for i in self.human_lb.curselection() if i < len(acts)]
+        picked = set(self.human_picker.picked_stores())
+        return [a for a in self.human["actions"] if a["store"] in picked]
 
     def _show_human(self):
+        picked = self._picked_human()
+        n = len(set(a["store"] for a in picked))
+        self.human_open.configure(text="① 打开勾选的店铺（%s）" % (
+            "%d 家" % n if n else "先在上面勾选"))
+        self.human_rerun.configure(text="② 处理好了：重跑勾选的店铺并重出报表%s" % (
+            "（%d 家）" % n if n else ""))
         if self.human["actions"]:
-            self.human_how.set(E.human_detail(self._picked_human()))
+            self.human_how.set(E.human_detail(picked))
         elif not self.human_how.get().startswith("读不到"):
             self.human_how.set("")
         self._lock(self.busy, force=True)
@@ -579,7 +607,7 @@ class App(object):
             if a["store"] not in stores:
                 stores.append(a["store"])
         if not stores:
-            messagebox.showinfo("打开店铺", "先在列表里选中要处理的店铺。")
+            messagebox.showinfo("打开店铺", "先在列表里勾选要处理的店铺。")
             return
         if runlog.active_run():
             messagebox.showwarning("正在运行", "有一轮正在跑，等它结束再打开店铺。")
@@ -1158,7 +1186,7 @@ class App(object):
         self.busy = running
         has = bool(getattr(self, "tree", None)) and bool(
             SC.store_count(getattr(self, "sel", {}), self.tree))
-        picked = bool(self.human_lb.curselection()) if hasattr(self, "human_lb") else False
+        picked = bool(self._picked_human()) if hasattr(self, "human_picker") else False
         st = E.button_states(bool(running), has, bool(self.human["actions"]), picked)
         for name, b in (("run", self.btn_run), ("download", self.btn_download),
                         ("report", self.btn_report), ("collect", self.btn_collect),

@@ -231,7 +231,7 @@ def test_human_texts(cfg):
     assert E.human_title(h) == "需要人工处理（2）"
     assert E.human_title({"actions": []}) == "需要人工处理"
     text, kind = E.human_headline(h)
-    assert kind == "bad" and "2 家店铺" in text
+    assert kind == "bad" and "2家店铺" in text
     assert E.human_headline({"actions": []})[1] == "good"
     assert "（处理之前重跑没用）" in E.human_detail(h["actions"])
     ok, title, text = E.rerun_confirm(RC.rerun_plan(h["actions"]), "2026-09")
