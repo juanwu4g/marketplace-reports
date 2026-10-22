@@ -32,8 +32,13 @@ Chinese. Developer docs are English.
   using breaks their session. Discovery and test runs happen in the Windows test
   VM (below), whose `config.json` allowlist holds only the stores being tested.
   Always pass explicit `--stores`; never start a batch without a store list.
-- **Never commit `config.json` or anything under `downloads/` or `logs/`** —
-  credentials and customer personal data. Tests use synthetic fixtures.
+- **Never commit `config.json` or anything under `downloads/` or `logs/`** (or the
+  data folder of the new layout) — credentials and customer personal data. Tests
+  use synthetic fixtures.
+- **Folders come from `core/layout.py` only** (docs/DATA_LAYOUT.md). Old layout:
+  data under `downloads/` and `logs/` in the code folder; new layout:
+  `config.json` → `paths.data_root` (raw/, reports/, results/, work/, logs/).
+  Never join "downloads" or "logs" onto ROOT in new code.
 - **Numbers must not move silently.** `tests/test_golden.py` rebuilds real
   store-months (data outside git in `~/report-golden/`, private) cell by cell. Only
   rebaseline after the owner/finance accept a change. Accounting rule changes are
@@ -49,7 +54,7 @@ Chinese. Developer docs are English.
 ```
 # tests (Ubuntu dev box)
 .venv/bin/python -m pytest tests -q
-cd downloads && ../.venv/bin/python -m pytest tests -q
+cd pipelines && ../.venv/bin/python -m pytest tests -q   # the Mexican cleaning package
 .venv/bin/python -m pytest tests/test_golden.py -rs   # see which golden cases ran
 
 # Windows / production

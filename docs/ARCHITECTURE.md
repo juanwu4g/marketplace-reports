@@ -78,12 +78,14 @@ platforms/
       checks.py        validate(): the check records
       sheet_*.py       the ten sheets (readme, pl, bridge, fees, returns = ⑤⑥,
                        sku, trend, inventory, gaps) + sheet_common
-    transform.py       cleaning step (Mexico only; calls downloads/mx_sales)
+    transform.py       cleaning step (Mexico only; runs pipelines/mx_sales with its data folders)
     list_stores.py, open_store.py, download_history.py, pl_billing_basis.py, run_report.py
 
-downloads/             raw exports per store and run (git-ignored, contains PII)
-  mx_sales/            the Mexican cleaning package (parquet/duckdb); has its own tests
-logs/                  run logs, owed list, diagnostics (git-ignored)
+pipelines/             the Mexican cleaning package mx_sales (parquet/duckdb); own tests
+core/layout.py         where every kind of data lives (docs/DATA_LAYOUT.md)
+core/results.py        monthly results files, grades, final versions (docs/RESULTS_AND_PERIODS.md)
+downloads/, logs/      the data in the OLD layout (git-ignored, contains PII); in the
+                       new layout all data is under config.json → paths.data_root
 tests/                 the main test suite (pytest), incl. golden-file tests and the
                        platform contract (test_platform_contract.py)
 tools/                 developer tools, never run by the monthly job
@@ -97,9 +99,11 @@ experiments/           stand-alone analyses, never run by the monthly job (ml_in
                        ml_invoice_report moved to platforms/mercadolibre/bill_report in 2026-10)
 ```
 
-The `.cmd` files, `config.json`, `downloads/` and `logs/` stay at the root on
-purpose: production machines, desktop shortcuts and registered scheduled tasks
-point at them.
+The `.cmd` files and `config.json` stay at the root on purpose: production
+machines, desktop shortcuts and registered scheduled tasks point at them. Data
+(downloads, reports, results, logs) is wherever `core/layout.py` says: the old
+`downloads/` and `logs/` until a machine is moved with `tools/migrate_layout.py`,
+then the folder named in `config.json` → `paths.data_root`.
 
 ---
 
@@ -209,8 +213,8 @@ first, else the newest holding the second … (Falabella:
 `NewReportTransaction_*.xlsx`; Amazon: `<YYYY><Mon>*Transaction.csv`, then
 `run_meta.json`; default `run_meta.json`); `no_folder_reason` is the 未参与 text.
 Labels come from `core/markets.py` (`name_zh`, `name_en`) unless given. The
-workbook comes from `<package>.report_build.build`. Paths (`logs/`,
-`downloads/`, the default `--out-dir`) are read from `core.paths.ROOT` when used.
+workbook comes from `<package>.report_build.build`. Paths (logs, download
+folders, the default `--out-dir`) come from `core/layout.py` when used.
 The thin modules keep the old function names (`resolve_stores`, `batch_verdict`,
 `collect_owed`, `latest_folder`, `resolve`, `exit_code` …) as aliases.
 
@@ -220,7 +224,7 @@ The thin modules keep the old function names (`resolve_stores`, `batch_verdict`,
 
 ```
 .venv\Scripts\python -m pytest tests -q              # main suite (Windows)
-cd downloads && ..\.venv\Scripts\python -m pytest tests -q   # cleaning package
+cd pipelines && ..\.venv\Scripts\python -m pytest tests -q   # cleaning package
 ```
 
 Tests never open a store. Window code is tested against a fake tkinter
