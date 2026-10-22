@@ -156,29 +156,85 @@ def test_whole_country_plus_part_of_another(app):
     assert app.scope_var.get().endswith("共 4 家")
 
 
-def test_human_actions_tab_and_rerun(app, tmp_path):
+def _human_run(app, stores):
+    """一轮全部国家的记录：每个 (区域, 店) 都要登录。"""
     os.makedirs(runlog.runs_dir(app.logs), exist_ok=True)
-    batch = os.path.join(app.logs, "b.json")
-    with open(batch, "w", encoding="utf-8") as f:
-        json.dump({"stores": [{"store": "Andes_CL", "status": "failed",
-                               "missing": [{"form": "ventas", "cause": "PAGE_BLOCKED"}]}]}, f)
+    regions = []
+    for region, names in stores:
+        batch = os.path.join(app.logs, "b_%s.json" % region)
+        with open(batch, "w", encoding="utf-8") as f:
+            json.dump({"stores": [{"store": n, "status": "failed",
+                                   "missing": [{"form": "ventas", "cause": "PAGE_BLOCKED"}]}
+                                  for n in names]}, f)
+        regions.append({"region": region, "batch_summary": batch})
     rid = "20261014_020000_scheduled"
     runlog.write_json(runlog.run_paths(rid, app.logs)["json"],
                       {"run_id": rid, "month": MONTH, "region": "ALL", "stores": "all",
-                       "status": "done", "exit": 1,
-                       "regions": [{"region": "CL", "batch_summary": batch}]})
+                       "status": "done", "exit": 1, "regions": regions})
     open(runlog.run_paths(rid, app.logs)["log"], "w").close()
     app._refresh_human(announce=False)
-    assert app.human_lb.items == ["Andes_CL（美客多 智利） —— 要登录 / 验证"]
+
+
+def test_human_actions_tab_and_rerun(app, tmp_path):
+    _human_run(app, [("MX", ["BOCINA_SM"]), ("CL", ["Andes_CL"])])
+    tv, hp = app.human_picker.tv, app.human_picker
+    assert tv.get_children("p:ML") == ("u:MX", "u:CL")
+    assert tv.get_children("u:CL") == ("s:CL:Andes_CL",)
+    assert tv.item("s:CL:Andes_CL")["values"][1] == "要登录 / 验证"
     tab = [t for t in app.tabs.tabs_ if t[0] is app.tab_human.outer][0]
-    assert "需要人工处理（1）" in tab[1]["text"]
+    assert "需要人工处理（2）" in tab[1]["text"]
+    # nothing ticked at first: both buttons off, the hint says to tick
+    assert hp.picked_stores() == []
+    assert app.human_open.cget("state") == "disabled"
+    assert app.human_rerun.cget("state") == "disabled"
+    assert "勾选" in app.human_how.get()
+    # tick only the Chilean store: buttons act on that one
+    hp.toggle("s:CL:Andes_CL")
     assert app.human_rerun.cget("state") == "normal"
+    assert app.human_open.cget("text") == "① 打开勾选的店铺（1 家）"
+    assert app.human_rerun.cget("text").endswith("（1 家）")
     fake_tk.ANSWERS[:] = [True]
     app.human_rerun.invoke()
     assert app.spawned[-1][3:] == ["--entrance", "manual", "--region", "CL",
                                    "--month", MONTH, "--stores", "Andes_CL",
                                    "--out-dir", app._out_dir(),
                                    "--reports-for", "all"]
+    # the first re-run is under way: buttons are off until it ends
+    assert app.human_rerun.cget("state") == "disabled"
+    app.launch = None
+    app._lock(False, force=True)
+    # a refresh keeps the tick; new stores stay unticked
+    app._refresh_human(announce=False)
+    assert hp.picked_stores() == ["Andes_CL"]
+    # 全选 ticks both, across countries -> one run over both
+    hp.set_all(True)
+    fake_tk.ANSWERS[:] = [True]
+    app.human_rerun.invoke()
+    assert app.spawned[-1][3:7] == ["--entrance", "manual", "--region", "MX,CL"]
+
+
+def test_open_only_the_ticked_stores(app, monkeypatch):
+    from core import app as app_mod
+    _human_run(app, [("MX", ["BOCINA_SM", "EWTTO_SM"])])
+    opened = []
+
+    class R(object):
+        returncode = 0
+
+    monkeypatch.setattr(app_mod.subprocess, "run",
+                        lambda cmd, **k: opened.append(cmd[cmd.index("--store") + 1]) or R())
+
+    class T(object):
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+    monkeypatch.setattr(app_mod.threading, "Thread", T)
+    app.human_picker.toggle("s:MX:EWTTO_SM")
+    app.human_open.invoke()
+    app.fake_root.pump()
+    assert opened == ["EWTTO_SM"]
 
 
 def test_schedule_overview_renders(app):

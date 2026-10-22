@@ -591,10 +591,10 @@ def classify(evidence, context=None):
 # 这几种脚本自己永远解决不了 —— 不让人一眼看到，就会每个月原样失败一次。
 HUMAN = {
     "PAGE_BLOCKED": ("要登录 / 验证",
-                     "点「打开所选店铺」，在弹出的店铺窗口里按页面提示完成登录或验证",
+                     "点「打开勾选的店铺」，在弹出的店铺窗口里按页面提示完成登录或验证",
                      True),
     "LANGUAGE_WRONG": ("账号语言不对",
-                       "点「打开所选店铺」，把账号语言改回 Español", True),
+                       "点「打开勾选的店铺」，把账号语言改回 Español", True),
     "STORE_OPEN_FAILED": ("店铺打不开",
                           "确认紫鸟客户端已登录、这家店在紫鸟里能手动打开", True),
     "NO_PERMISSION": ("缺 MercadoPago 报表权限",

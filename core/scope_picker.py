@@ -36,11 +36,15 @@ def _box_images():
 
 class ScopePicker(object):
     """with_stores=False：只勾到国家一层（计划任务按整个国家跑，不挑店）。
-    fit=True：树有几行就多高（最多 height 行），不用滚 —— 国家一层的行数少。"""
+    fit=True：树有几行就多高（最多 height 行），不用滚 —— 国家一层的行数少。
+    store_note(区域, 店) -> 店那一行最右一列的字（「需要人工处理」写要做什么）；
+    last_heading 是那一列的标题；open_units=True：国家一层全部展开（店一眼都看得到）。"""
 
-    def __init__(self, parent, with_stores=True, on_change=None, height=9, fit=False):
+    def __init__(self, parent, with_stores=True, on_change=None, height=9, fit=False,
+                 store_note=None, last_heading="上次运行", open_units=False):
         self.with_stores = with_stores
         self.max_height, self.fit = height, fit
+        self.store_note, self.open_units = store_note, open_units
         self.on_change = on_change
         self.t = []
         self.on = {}                 # 区域 -> 勾着的店（set）；空 = 这个区域没勾
@@ -53,7 +57,7 @@ class ScopePicker(object):
         self.tv.heading("#0", text="平台 / 国家" + (" / 店铺" if with_stores else ""),
                         anchor="w")
         self.tv.heading("n", text="店铺", anchor="e")
-        self.tv.heading("last", text="上次运行", anchor="w")
+        self.tv.heading("last", text=last_heading, anchor="w")
         self.tv.column("#0", width=232, stretch=True)
         self.tv.column("n", width=56, anchor="e", stretch=False)
         self.tv.column("last", width=178, anchor="w", stretch=False)
@@ -92,7 +96,7 @@ class ScopePicker(object):
             for u in p.units:
                 part = 0 < len(self.on[u.unit]) < len(u.stores)
                 self.tv.insert("p:" + p.code, "end", iid="u:" + u.unit,
-                               open=part and self.with_stores)
+                               open=self.with_stores and (part or self.open_units))
                 if self.with_stores:
                     for s in u.stores:
                         self.tv.insert("u:" + u.unit, "end", iid="s:%s:%s" % (u.unit, s))
@@ -114,6 +118,10 @@ class ScopePicker(object):
                 out[u.unit] = None if len(got) == len(u.stores) else [
                     s for s in u.stores if s in got]
         return SC.normalize(out, self.t)
+
+    def picked_stores(self):
+        """勾着的店，按树的顺序。"""
+        return [s for u in SC.units(self.t) for s in u.stores if s in self.on.get(u.unit, ())]
 
     def set_selection(self, sel):
         self.load(self.t, sel)
@@ -178,8 +186,9 @@ class ScopePicker(object):
                 if self.with_stores:
                     for s in u.stores:
                         on = s in got
+                        note = self.store_note(u.unit, s) if self.store_note else ""
                         self._mark("s:%s:%s" % (u.unit, s), "all" if on else "none", s,
-                                   values=("", ""), tags=() if on else ("off",))
+                                   values=("", note), tags=() if on else ("off",))
 
     def _mark(self, iid, st, text, values, tags):
         self.marks[iid] = st
