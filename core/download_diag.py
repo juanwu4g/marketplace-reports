@@ -121,7 +121,10 @@ NOT_REGISTERED_ACTIONS = ("generar", "no-format-row", "no-panel")
 BLOCKED_URL = re.compile(
     r"/login|/lgz/|/registration|/authentication|/verification|/captcha|"
     r"/security/|chrome-error://|/gz/account-verification|about:blank|"
-    r"/ap/(signin|mfa|cvf)|validatecaptcha", re.I)
+    r"/ap/(signin|mfa|cvf)|validatecaptcha|"
+    # 单点登录（Keycloak / OpenID Connect）：2026-10 Falabella 把卖家登录搬到了
+    # access-key-corp.falabella.tech 的 Keycloak，所有店铺被踢到这个地址。
+    r"/protocol/openid-connect/|/realms/[^/]+/login-actions/", re.I)
 # 平台自己挂了，和"被挡在登录/验证页外面"不是一回事：前者谁也不用去处理，等
 # 一会儿重跑就行。2026-10-13 实测 MercadoPago 的页面标题就是
 # 「503 Service Temporarily Unavailable」，当时被归成了要人工进店验证。

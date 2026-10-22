@@ -42,3 +42,14 @@ def test_amazon_sign_in_page_is_page_blocked():
 def test_a_dead_browser_leaves_only_the_exception():
     ev = download_diag.exception_evidence(RuntimeError("boom"), step="store", driver=DeadDriver())
     assert "url" not in ev and ev["exception"] == "boom"
+
+
+def test_single_sign_on_login_page_is_page_blocked():
+    """2026-10: Falabella moved seller login to a Keycloak SSO; every store was
+    logged out and the browser landed on its OpenID Connect login page."""
+    for url in ("https://access-key-corp.falabella.tech/realms/sellers/protocol/openid-connect/auth?client_id=x",
+                "https://access-key-corp.falabella.tech/realms/sellers/login-actions/authenticate?session_code=y"):
+        ev = download_diag.exception_evidence(
+            RuntimeError("payments page never rendered"), step="store", driver=FakeDriver(url, "Sign in"))
+        assert download_diag.classify(ev, {"form": "billing"})["cause"] == "PAGE_BLOCKED"
+    assert not download_diag.BLOCKED_URL.search("https://sellercenter.falabella.com/report/transaction/statement")
