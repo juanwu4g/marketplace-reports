@@ -294,18 +294,87 @@ def sched_key(key, region):
     return key if region == DEFAULT else "%s_%s" % (key, region)
 
 
+# ────────────────────────────────────────────────────────── 每月几号（可以几天）
+#
+# 一个任务可以每月跑几天（docs/RESULTS_AND_PERIODS.md §6）：每一天都是全部店铺的
+# 完整一轮，出的都是上个月；同一个月有几个完整版本时，最新的那个是定稿。
+# gui_settings.json 里记成一个列表（sched_days…）；以前只有一个数（sched_day…），
+# 照样读得出来（当成只有一天）。
+
+MAX_DAY = 28                 # 2 月也有的日子：29–31 号有的月份没有，那个月就不跑了
+DEFAULT_DAYS = [15]
+
+
+def parse_days(text):
+    """"3, 12，26" / "3 12 26" / "15" -> [3, 12, 26]。写错了抛 ValueError（中文说明）。"""
+    parts = [p for p in re.split(r"[\s,，、;；]+", str(text or "").strip()) if p]
+    if not parts:
+        raise ValueError("至少要写一个日子，比如 15，或者 3, 12, 26")
+    days = []
+    for p in parts:
+        if not p.isdigit() or not 1 <= int(p) <= MAX_DAY:
+            raise ValueError("「%s」不是 1–%d 之间的日子。几个日子用逗号隔开，比如 3, 12, 26"
+                             % (p, MAX_DAY))
+        days.append(int(p))
+    return sorted(set(days))
+
+
+def days_text(days):
+    """[3, 12, 26] -> "3、12、26"。"""
+    return "、".join(str(d) for d in days)
+
+
+def settings_days(settings, region=ALL):
+    """gui_settings.json 里这个任务的几号：新的列表（sched_days…），没有就读旧的
+    单个数（sched_day…，再不行 sched_day），都没有是 [15]。坏值跳过。"""
+    s = settings or {}
+    for key in (sched_key("sched_days", region), "sched_days"):
+        v = s.get(key)
+        if isinstance(v, (list, tuple)):
+            try:
+                got = sorted(set(int(x) for x in v if 1 <= int(x) <= MAX_DAY))
+            except (TypeError, ValueError):
+                got = []
+            if got:
+                return got
+    for key in (sched_key("sched_day", region), "sched_day"):
+        try:
+            d = int(s.get(key))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= d <= MAX_DAY:
+            return [d]
+    return list(DEFAULT_DAYS)
+
+
+def days_settings(days, region=ALL):
+    """记进 gui_settings.json 的键值：列表，外加旧键里的第一天（旧版本的窗口读得懂）。"""
+    days = sorted(set(int(d) for d in days))
+    return {sched_key("sched_days", region): days, sched_key("sched_day", region): days[0]}
+
+
+def _days_of(st):
+    """task_state() 的结果 -> 几号的集合。"""
+    d = (st or {}).get("DAYS")
+    if d:
+        return set(int(x) for x in d)
+    return set(int(x) for x in re.findall(r"\d+", str((st or {}).get("DAY", ""))))
+
+
 def _when(st):
-    """task_state() 的结果 -> (几号, 分钟数)。读不出来返回 None。"""
+    """task_state() 的结果 -> (几号的集合, 分钟数)。读不出来返回 None。"""
     try:
         h, m = (st or {}).get("TIME", "").split(":")
-        return int(st.get("DAY")), int(h) * 60 + int(m)
+        days = _days_of(st)
+        return (days, int(h) * 60 + int(m)) if days else None
     except (ValueError, TypeError, AttributeError):
         return None
 
 
 def clash(a, b):
     """两个国家的任务会不会撞车。a、b 是 (几号, "HH:MM") 或 task_state() 的
-    结果；有一个没登记就是 None。撞车时返回一句话，否则 None。
+    结果；有一个没登记就是 None。撞车时返回一句话，否则 None。几号可以是几天
+    （[3, 12]），有一天相同就算同一天。
 
     同一天、开始时间相差不到 OVERLAP_HOURS 小时就算：两国共用一个紫鸟客户端，
     run_monthly 的锁是全局的，后起的那一轮看到锁会直接跳过（退出码 5）——
@@ -319,11 +388,12 @@ def clash(a, b):
         try:
             day, hm = x
             h, m = str(hm).split(":")
-            return int(day), int(h) * 60 + int(m)
+            days = set(int(d) for d in (day if isinstance(day, (list, tuple, set)) else [day]))
+            return days, int(h) * 60 + int(m)
         except (ValueError, TypeError):
             return None
     wa, wb = norm(a), norm(b)
-    if not wa or not wb or wa[0] != wb[0]:
+    if not wa or not wb or not (wa[0] & wb[0]):
         return None
     gap = abs(wa[1] - wb[1])
     if gap >= OVERLAP_HOURS * 60:
@@ -331,7 +401,7 @@ def clash(a, b):
     return ("两个国家都定在每月 %d 号、开始时间只差 %d 小时 %02d 分。两国共用一个"
             "紫鸟，同一时间只能跑一轮：后到点的那个会因为前一个还没跑完而被跳过"
             "（退出码 5）。请把其中一个改到别的日子，或者错开 %d 小时以上。"
-            % (wa[0], gap // 60, gap % 60, OVERLAP_HOURS))
+            % (min(wa[0] & wb[0]), gap // 60, gap % 60, OVERLAP_HOURS))
 
 
 # ────────────────────────────────────────────────────────── 计划任务总览
@@ -383,7 +453,8 @@ def task_when(st):
     """"每月 15 号 02:00"；没登记返回 "未登记"。"""
     if not st:
         return "未登记"
-    return "每月 %s 号 %s" % (st.get("DAY", "?"), st.get("TIME", "?"))
+    days = sorted(_days_of(st))
+    return "每月 %s 号 %s" % (days_text(days) if days else st.get("DAY", "?"), st.get("TIME", "?"))
 
 
 def schedule_overview(states, n_regions=1):
