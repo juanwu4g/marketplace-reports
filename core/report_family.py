@@ -169,6 +169,24 @@ def meta_missing(meta):
     return [r for r in ((meta or {}).get("missing") or []) if r.get("form")]
 
 
+def results_inputs(stores, figures):
+    """What a report runner needs to write each store's monthly results file
+    (core/results): {store: {"figures": figures(S), "meta": run_meta.json,
+    "folder": download folder, "error": None}}. figures(S) is the platform's
+    extractor; when it fails the store gets "error" (the text) and no figures —
+    the workbook is already out, a results file problem must not undo it."""
+    import traceback
+    out = {}
+    for S in stores:
+        rec = {"figures": None, "meta": S.get("meta") or {}, "folder": S.get("folder"), "error": None}
+        try:
+            rec["figures"] = figures(S)
+        except Exception as e:                 # noqa: BLE001
+            rec["error"] = "%s: %s\n%s" % (e.__class__.__name__, e, traceback.format_exc())
+        out[S["store"]] = rec
+    return out
+
+
 def failed_errors(checks):
     return [c for c in checks if not c["ok"] and not c["skipped"] and c["severity"] == "error"]
 

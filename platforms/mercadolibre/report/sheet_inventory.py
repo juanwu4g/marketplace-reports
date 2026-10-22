@@ -124,6 +124,22 @@ INV_TABLE3_COLS = (
         "可售库存", "平台30天销量", "自算30天销量", "可售天数", "不可售+待丢弃")])
 
 
+STOCK_SUM_COLS = ("in_transit", "transfer", "returned", "sellable", "unsellable", "lost", "in_review",
+                  "cancelled_u", "total_u", "aged", "good", "boost", "to_list", "discard", "avg_stock",
+                  "sales30_u", "sales30_amt")
+
+
+def stock_by_sku(ST):
+    """库存报表按 SKU 合并（平台按**刊登**出一行，同一个 SKU 可能挂在好几个刊登上），
+    带上第一行的 title / estado / runout。⑨ 表二和结果文件（report/figures.py）都用它。"""
+    agg = ST.groupby("sku", as_index=False).agg({c: "sum" for c in STOCK_SUM_COLS})
+    first = ST.drop_duplicates("sku").set_index("sku")
+    agg["title"] = agg["sku"].map(first["title"])
+    agg["estado"] = agg["sku"].map(first["estado"])
+    agg["runout"] = agg["sku"].map(first["runout"])
+    return agg
+
+
 def sheet_inventory(wb, stores, ctx):
     fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[8])
@@ -229,16 +245,7 @@ def sheet_inventory(wb, stores, ctx):
             ok = A[~A["abnormal"]] if "abnormal" in A.columns else A
             month_u = ok.groupby(ok[V_SKU].astype(str).str.strip())[V_UNITS].apply(
                 lambda x: float(pd.to_numeric(x, errors="coerce").fillna(0).sum())).to_dict()
-        # 平台按**刊登**出一行，同一个 SKU 可能挂在好几个刊登上，先按 SKU 合并
-        agg = ST.groupby("sku", as_index=False).agg(
-            {c: "sum" for c in ("in_transit", "transfer", "returned", "sellable",
-                                "unsellable", "lost", "in_review", "cancelled_u",
-                                "total_u", "aged", "good", "boost", "to_list",
-                                "discard", "avg_stock", "sales30_u", "sales30_amt")})
-        first = ST.drop_duplicates("sku").set_index("sku")
-        agg["title"] = agg["sku"].map(first["title"])
-        agg["estado"] = agg["sku"].map(first["estado"])
-        agg["runout"] = agg["sku"].map(first["runout"])
+        agg = stock_by_sku(ST)
         agg["_no_stock_row"] = False
         # 销售报表里有、库存报表里没有的 SKU 也要露面，否则漏掉的正是最该查的
         extra = sorted(set(sold) - set(agg["sku"]) - {""})

@@ -724,6 +724,21 @@ def residuals(S):
     return res
 
 
+def starts_with_store(fac, first_name, month):
+    """True when the invoice `first_name` (the earliest one with charges in the
+    month) is the month's own bill (Sept2026 for 2026-09 — on every site the bill
+    named after a month holds its first day, Chile's cut-day bills included) and
+    no earlier Facturación file exists: then nothing before its first charge can
+    be missing — the store simply had no charges yet (a store opened mid-month,
+    e.g. IDG01_PE on 2026-09-17). An earlier bill in the folder, or a first bill
+    named after a later month, keeps the gap an error."""
+    by_name = dict((f["name"], f) for f in fac)
+    f = by_name.get(first_name)
+    if not f or f.get("bill_month") != month:
+        return False
+    return not any(x.get("bill_month") and x["bill_month"] < month for x in fac)
+
+
 def validate(S):
     st, prof, m = S["store"], S["prof"], S["m"]
     out = []
@@ -739,9 +754,13 @@ def validate(S):
         rng = sorted((f["first"], f["last"], f["name"]) for f in fac if f["first"])
         relevant = [x for x in rng if x[1] >= p0 - datetime.timedelta(days=3) and x[0] <= p1]
         gaps = [(a, b) for a, b in zip(relevant, relevant[1:]) if (b[0] - a[1]).days > 3]
-        ok = bool(relevant) and relevant[0][0] <= p0 + datetime.timedelta(days=2) and \
+        new_store = bool(relevant) and starts_with_store(fac, relevant[0][2], S["month"])
+        ok = bool(relevant) and (relevant[0][0] <= p0 + datetime.timedelta(days=2) or new_store) and \
             relevant[-1][1] >= p1 - datetime.timedelta(days=2) and not gaps
         why = "；".join("%s：%s → %s" % (n, a, b) for a, b, n in rng)
+        if ok and new_store and relevant[0][0] > p0 + datetime.timedelta(days=2):
+            why += "。首笔计费 %s：%s 是本店最早的账单、就是本月那一张，此前没有账单可缺（新开的店）" % (
+                relevant[0][0], relevant[0][2])
     ck("invoice_cover", st, "账单覆盖整个月（按计费日）", ok,
        ("账单计费日覆盖 %s → %s。%s" % (p0, p1, why)) if ok else
        ("账单没有覆盖 %s → %s（缺一张账单？）。现有：%s" % (p0, p1, why)))

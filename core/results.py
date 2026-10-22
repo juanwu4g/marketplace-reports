@@ -117,21 +117,8 @@ def load(path):
 def versions(store, month, basis=None, config_path=None):
     """Every version of a store-month (one basis or all), newest built first.
     Unreadable or malformed files are left out; problems() lists them."""
-    d = layout.results_dir(store, month, config_path)
-    if not os.path.isdir(d):
-        return []
-    out = []
-    for name in os.listdir(d):
-        m = FILE_RE.match(name)
-        if not m or (basis and m.group("basis") != basis):
-            continue
-        try:
-            doc = load(os.path.join(d, name))
-        except (ValueError, IOError, OSError):
-            continue
-        if not validate(doc):
-            out.append(doc)
-    return sorted(out, key=lambda x: (x["built_at"], x["version"]), reverse=True)
+    pf, cc = layout.store_market(store)
+    return versions_at(pf, cc, store, month, basis, config_path)
 
 
 def final(store, month, basis, config_path=None):
@@ -276,3 +263,126 @@ def period_label(kind, months_):
     if kind == "annual":
         return months_[0][:4]
     return "%s_%s" % (months_[0], months_[-1])
+
+
+# ------------------------------------------------------------------ helpers for the writers
+#
+# Added for the report runners (they build the documents) and core/finalize.
+# Nothing above changes: names, format and the read side stay as they were.
+
+VERSION_RE = re.compile(r"^(?P<run>.+)__(?P<built>\d{8}_\d{6})$")
+_CODE = {}
+
+
+def version_parts(version):
+    """'<run>__<YYYYMMDD_HHMMSS>' -> (run, built stamp); (None, None) when it is not one."""
+    m = VERSION_RE.match(str(version or ""))
+    return (m.group("run"), m.group("built")) if m else (None, None)
+
+
+def code_info():
+    """{"commit", "fingerprint"} of the code that builds the report (core/runlog);
+    computed once per process — the fingerprint reads every code file."""
+    if not _CODE:
+        from core import runlog
+        try:
+            _CODE.update(commit=runlog.git_commit(), fingerprint=runlog.code_fingerprint())
+        except Exception:                     # noqa: BLE001 — a results file must not fail on this
+            _CODE.update(commit=None, fingerprint=None)
+    return dict(_CODE)
+
+
+def pl_rows(spec):
+    """Evaluate a P&L the way the workbook's formulas do.
+
+    spec: [{"key", "label", "original", "kind", "value", "formula", "name"}] in row
+    order. "d" / "in" rows carry their value; "sum" / "f" rows a formula as in
+    core/report_family.PLRow: a tuple of row names added up ("-name" subtracts) or
+    a Span(first, last) summing every row between the two (inclusive). "name" is
+    what formulas refer to (default: the key). Returns the results file's "pl":
+    [{"key", "label", "original", "kind", "value"}].
+    """
+    rows = [dict(r) for r in spec]
+    at = {}
+    for i, r in enumerate(rows):
+        at[r.get("name") or r["key"]] = i
+    vals = {}
+
+    def value(i, seen=()):
+        if i in vals:
+            return vals[i]
+        r = rows[i]
+        f = r.get("formula")
+        if r["kind"] in ("sum", "f"):
+            if not f:
+                raise ValueError("P&L row %r (%s) needs a formula" % (r["key"], r["kind"]))
+            if i in seen:
+                raise ValueError("P&L formula loop at %r" % r["key"])
+            if hasattr(f, "first") and hasattr(f, "last"):
+                v = sum(value(j, seen + (i,)) for j in range(at[f.first], at[f.last] + 1))
+            else:
+                v = 0.0
+                for name in f:
+                    neg = name.startswith("-")
+                    x = value(at[name[1:] if neg else name], seen + (i,))
+                    v += -x if neg else x
+        else:
+            v = float(r.get("value") or 0.0)
+        vals[i] = v
+        return v
+
+    return [{"key": r["key"], "label": r["label"], "original": r.get("original") or "", "kind": r["kind"],
+             "value": value(i)} for i, r in enumerate(rows)]
+
+
+def sku_cost(cost, sku):
+    """A SKU's goods cost from a core/sku_costs.Result, as ② shows 商品采购成本
+    (positive); None when there is no cost table or the SKU has no usable cost."""
+    if cost is None:
+        return None
+    ln = cost.line(sku)
+    if ln is None or getattr(ln, "unit_cost", None) is None:
+        return None
+    return float(ln.cost)
+
+
+def document(platform, market, country, currency, decimals, store, month, basis, version, built_at,
+             source_folders, workbook, grade, checks=(), missing=(), provisional=(), data_incomplete=False,
+             figures=None):
+    """A results document (schema 1) from what a report runner has in hand.
+    figures: {"pl", "memo", "fees", "returns", "sku", "inventory"} — the workbook's
+    own numbers; left out ([] / None) when the version has none (failed)."""
+    figures = figures or {}
+    run, _stamp = version_parts(version)
+    if isinstance(built_at, datetime.datetime):
+        built_at = built_at.strftime("%Y-%m-%dT%H:%M:%S")
+    return plain({
+        "schema": SCHEMA, "platform": platform, "market": market, "country": country,
+        "currency": currency, "decimals": int(decimals), "store": store, "month": month, "basis": basis,
+        "run": run or "", "built_at": built_at, "version": version,
+        "source_folders": [os.path.abspath(f) for f in source_folders or () if f],
+        "workbook": os.path.abspath(workbook) if workbook else None,
+        "code": code_info(), "grade": grade, "checks": list(checks or ()),
+        "missing": [{"form": r.get("form"), "cause": r.get("cause"), "in_report": r.get("in_report")}
+                    for r in missing or () if r and r.get("form")],
+        "flags": {"provisional": list(provisional or ()), "data_incomplete": bool(data_incomplete)},
+        "pl": list(figures.get("pl") or ()), "memo": list(figures.get("memo") or ()),
+        "fees": list(figures.get("fees") or ()), "returns": list(figures.get("returns") or ()),
+        "sku": list(figures.get("sku") or ()), "inventory": figures.get("inventory"),
+    })
+
+
+def plain(obj):
+    """obj as plain JSON values (numpy numbers, dates and the like made plain)."""
+    return json.loads(json.dumps(obj, ensure_ascii=False, default=_plain))
+
+
+def _plain(x):
+    if hasattr(x, "item"):
+        try:
+            return x.item()                   # numpy scalars
+        except (ValueError, TypeError):
+            pass
+    if hasattr(x, "isoformat"):
+        return x.isoformat()
+    return str(x)

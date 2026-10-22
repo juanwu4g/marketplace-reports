@@ -314,42 +314,54 @@ def sheet_pl(wb, fam, S, ctx):
         ("Full 仓储与操作", share(["fee_full_storage", "fee_full_ops"]), net),
         ("平台费用合计", share(C.PL_FEE_KEYS), net),
         ("经营贡献率", lambda X: X["m"]["pl"]["contrib"], net)], note_col)
+    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [row for _k, row in pl_memo(fam, S)], note_col)
+    return at
+
+
+def pl_memo(fam, S):
+    """②'s 备查项: [(key, (label, original term, value(X), note))]. The sheet and
+    the results file (figures.py) both read this list."""
+    p = S["prof"]
     vr = pct(p.vat_rate, 0)
     memo = [
-        ("营业收入所含 %s（销项，参考）" % p.vat_name, "%s débito fiscal" % p.vat_name, lambda X: X["m"]["vat_out"],
-         "＝ 营业收入 × %s/(1+%s)。仅供参考，不参与上表；B2B 发票、退货冲减的申报口径请会计确认" % (vr, vr)),
-        ("平台费用所含 %s（进项，参考）" % p.vat_name, "%s acreditable" % p.vat_name, lambda X: X["m"]["vat_in"],
-         "＝ 平台费用 × %s/(1+%s)；能否抵扣取决于平台开给本店的发票（factura / boleta）" % (vr, vr)),
+        ("vat_out", ("营业收入所含 %s（销项，参考）" % p.vat_name, "%s débito fiscal" % p.vat_name,
+                     lambda X: X["m"]["vat_out"],
+                     "＝ 营业收入 × %s/(1+%s)。仅供参考，不参与上表；B2B 发票、退货冲减的申报口径请会计确认" % (vr, vr))),
+        ("vat_in", ("平台费用所含 %s（进项，参考）" % p.vat_name, "%s acreditable" % p.vat_name,
+                    lambda X: X["m"]["vat_in"],
+                    "＝ 平台费用 × %s/(1+%s)；能否抵扣取决于平台开给本店的发票（factura / boleta）" % (vr, vr))),
     ]
     if p.withholding:
-        memo.append(("平台代扣代缴税金（IVA/ISR）——不在本基准内", "Retenciones (MercadoPago)",
-                     lambda X: X["m"]["mp_taxes"] or 0.0,
-                     fam.per_store(lambda X: (
-                         "账单不含代扣税。本行是 MercadoPago 结算流水里本月计费销售的 TAXES_AMOUNT 合计，仅作参考；"
-                         "它是预缴税款而非费用") if X["m"]["mp_taxes"] is not None else
-                         "账单不含代扣税；本店文件夹没有 MercadoPago 结算文件，无法给出参考值（显示 0）")))
+        memo.append(("withheld_taxes", (
+            "平台代扣代缴税金（IVA/ISR）——不在本基准内", "Retenciones (MercadoPago)",
+            lambda X: X["m"]["mp_taxes"] or 0.0,
+            fam.per_store(lambda X: (
+                "账单不含代扣税。本行是 MercadoPago 结算流水里本月计费销售的 TAXES_AMOUNT 合计，仅作参考；"
+                "它是预缴税款而非费用") if X["m"]["mp_taxes"] is not None else
+                "账单不含代扣税；本店文件夹没有 MercadoPago 结算文件，无法给出参考值（显示 0）"))))
     else:
-        memo.append(("平台代扣税", "Retenciones", lambda X: 0.0, "%s平台不代扣；账单无此项" % p.country_cn))
+        memo.append(("withheld_taxes", ("平台代扣税", "Retenciones", lambda X: 0.0,
+                                        "%s平台不代扣；账单无此项" % p.country_cn)))
     memo += [
-        ("期后冲销：本月计费、月后才冲销的销售额（不计入本月）", "Anulación posterior al cierre",
-         lambda X: -X["m"]["post_amount"], fam.per_store(lambda X: "%d 笔；对应佣金冲销 %s" % (
-             X["m"]["post_n"], fmtm(-X["m"]["post_commission"], p.decimals))) + "。按计费日口径属于下月，明细见⑤三-E"),
-        ("平台给的费用折扣（已含在费用净额中）", "Valor del descuento", lambda X: X["m"]["fee_discount"],
-         "佣金、运费行上的折扣；上表的费用已是折后金额"),
-        ("本期费用：从销售款中直接扣除", "Descontado de la operación = Si",
-         lambda X: -X["m"]["deducted"].get("Si", 0.0), "随每笔收款在 MercadoPago 扣掉，不进月结账单"),
-        ("本期费用：月结账单支付", "Descontado de la operación = No",
-         lambda X: -X["m"]["deducted"].get("No", 0.0), "进月结账单，由“账单付款”支付（③桥 F）"),
-        ("本期费用：冲销及其他", "Descontado de la operación = No aplica",
-         lambda X: -X["m"]["deducted"].get("No aplica", 0.0) - X["m"]["deducted"].get("（空）", 0.0),
-         "冲销行与被冲销的原行"),
-        ("本期账单行中已由账单付款结清的金额", "Reporte_Pagos_Facturas", lambda X: X["m"]["paid_in_period"],
-         "付款报表“Detalle de Pagos del mes”逐费用号对上的金额"),
-        ("本期冲销对应的 MercadoPago 实际退款（旁证）", "settlement REFUND / collection",
-         lambda X: X["m"]["mp_refund_in"], "与②冲销（估算）对照用；含运费、时间差，不替代账单口径"),
+        ("post_reversals", ("期后冲销：本月计费、月后才冲销的销售额（不计入本月）", "Anulación posterior al cierre",
+                            lambda X: -X["m"]["post_amount"], fam.per_store(lambda X: "%d 笔；对应佣金冲销 %s" % (
+                                X["m"]["post_n"], fmtm(-X["m"]["post_commission"], p.decimals)))
+                            + "。按计费日口径属于下月，明细见⑤三-E")),
+        ("fee_discount", ("平台给的费用折扣（已含在费用净额中）", "Valor del descuento",
+                          lambda X: X["m"]["fee_discount"], "佣金、运费行上的折扣；上表的费用已是折后金额")),
+        ("fees_deducted", ("本期费用：从销售款中直接扣除", "Descontado de la operación = Si",
+                           lambda X: -X["m"]["deducted"].get("Si", 0.0), "随每笔收款在 MercadoPago 扣掉，不进月结账单")),
+        ("fees_billed", ("本期费用：月结账单支付", "Descontado de la operación = No",
+                         lambda X: -X["m"]["deducted"].get("No", 0.0), "进月结账单，由“账单付款”支付（③桥 F）")),
+        ("fees_reversals_other", ("本期费用：冲销及其他", "Descontado de la operación = No aplica",
+                                  lambda X: -X["m"]["deducted"].get("No aplica", 0.0)
+                                  - X["m"]["deducted"].get("（空）", 0.0), "冲销行与被冲销的原行")),
+        ("paid_in_period", ("本期账单行中已由账单付款结清的金额", "Reporte_Pagos_Facturas",
+                            lambda X: X["m"]["paid_in_period"], "付款报表“Detalle de Pagos del mes”逐费用号对上的金额")),
+        ("mp_refund", ("本期冲销对应的 MercadoPago 实际退款（旁证）", "settlement REFUND / collection",
+                       lambda X: X["m"]["mp_refund_in"], "与②冲销（估算）对照用；含运费、时间差，不替代账单口径")),
     ]
-    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", memo, note_col)
-    return at
+    return memo
 
 
 # ------------------------------------------------------------------ ③

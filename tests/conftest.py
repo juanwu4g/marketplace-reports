@@ -22,3 +22,22 @@ def _neutral_config(tmp_path_factory, monkeypatch):
     if not p.exists():
         p.write_text(json.dumps(NEUTRAL), encoding="utf-8")
     monkeypatch.setattr(store_config, "CONFIG_PATH", str(p))
+
+
+@pytest.fixture(autouse=True)
+def _results_never_in_the_checkout(tmp_path, monkeypatch):
+    """Report runners write monthly results files (core/results). In the legacy
+    layout they go under <code folder>/downloads/data/results — for a test that
+    did not move paths.ROOT that is this checkout. Send those to the test's
+    tmp folder; a test that set its own ROOT or data_root is left alone."""
+    import os
+    from core import layout, paths
+    real = os.path.normcase(os.path.abspath(paths.ROOT))
+    original = layout.results_root
+
+    def results_root(config_path=None):
+        r = original(config_path)
+        if os.path.normcase(os.path.abspath(r)).startswith(real + os.sep):
+            return str(tmp_path / "_results")
+        return r
+    monkeypatch.setattr(layout, "results_root", results_root)

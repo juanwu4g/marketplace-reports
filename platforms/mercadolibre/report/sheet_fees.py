@@ -29,6 +29,21 @@ FEE_COLS = [
 ]
 
 
+CHAN_ORDER = {CH_SI: 0, CH_NO: 1, CH_NA: 2}
+
+
+def fee_groups(S):
+    """④ 逐科目表的行：账单（含贷记单）按 (Detalle, 结算通道) 汇总，
+    列 detalle / channel / count / sum（账单原符号），按页面上的顺序。
+    ④ 页和结果文件（report/figures.py）都用它。"""
+    FA = S["billing"]
+    g = FA.groupby([FA[F_DETALLE].astype(str), FA["channel"]])["amount"].agg(["count", "sum"]).reset_index()
+    g.columns = ["detalle", "channel", "count", "sum"]
+    g["_c"] = g["channel"].map(lambda x: CHAN_ORDER.get(x, 9))
+    return g.sort_values(["_c", "sum"], key=lambda s: s if s.name != "sum" else s.abs(),
+                         ascending=[True, False])
+
+
 def sheet_fees(wb, stores, ctx):
     fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[3])
@@ -39,14 +54,9 @@ def sheet_fees(wb, stores, ctx):
     header_row(ws, 4, [c.header for c in FEE_COLS], [c.width for c in FEE_COLS])
 
     r = 5
-    chan_order = {CH_SI: 0, CH_NO: 1, CH_NA: 2}
     for S in stores:
-        FA, gmv = S["billing"], S["m"]["ing"] or 1.0
-        g = FA.groupby([FA[F_DETALLE].astype(str), FA["channel"]])["amount"].agg(["count", "sum"]).reset_index()
-        g.columns = ["detalle", "channel", "count", "sum"]
-        g["_c"] = g["channel"].map(lambda x: chan_order.get(x, 9))
-        g = g.sort_values(["_c", "sum"], key=lambda s: s if s.name != "sum" else s.abs(),
-                          ascending=[True, False])
+        gmv = S["m"]["ing"] or 1.0
+        g = fee_groups(S)
         start = r
         for _, x in g.iterrows():
             zh, bucket, _o, is_rev, known = classify(x["detalle"])
