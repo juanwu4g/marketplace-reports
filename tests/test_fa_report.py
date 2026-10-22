@@ -169,6 +169,11 @@ def write_stock(path):
 
 @pytest.fixture
 def folder(tmp_path):
+    return make_folder(tmp_path)
+
+
+def make_folder(tmp_path):
+    """The synthetic download folder (also used by test_results_writers)."""
     d = tmp_path / "downloads" / STORE / "20261016_120000_m202609"
     d.mkdir(parents=True)
     write_tx(str(d / "NewReportTransaction_2026-10-16T05_29_08.xlsx"), TX)

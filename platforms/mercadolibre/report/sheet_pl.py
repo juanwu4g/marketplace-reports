@@ -297,28 +297,7 @@ def sheet_pl(wb, stores, ctx):
     ws.cell(row=r, column=1, value="备查项（不计入上表费用）").font = F(11, True, C_NAVY)
     r += 1
     contrib_row = R("经营贡献毛利（未扣商品成本）")
-    memo = [
-        ("平台代扣代缴税金（IVA/ISR 预扣）", "Impuestos retenidos",
-         lambda S: S["m"]["tax_ret"], None,
-         "≈ 含税售价的 %s（＝不含税价的 %s），本期实测。销售报表把它和佣金混在“Cargo por venta e impuestos”里，"
-         "是最容易算错的一项。它是预付税款而非成本 —— 详见【%s】桥 E。"
-         % (pct(agg_tax_rate(stores), 2), pct(TAX_RATE_NOMINAL_NET, 2), SHEET_NAMES[2])),
-        ("口径尾差（应为 0）", "",
-         lambda S: S["m"]["resid"], None,
-         "上表的收入与费用逐项加总后与销售报表 Total 列的差额。为 0 表示无任何未解释差额。"),
-        ("本期账单实际支付", "Pago con débito automático / Pago voluntario",
-         lambda S: S["m"]["pay_auto"], None,
-         "这张账单实际付掉的金额（自动扣款或主动付款，不含贷记单），与上表“月度账单费用小计”"
-         "的勾稽见【%s】桥 B。" % SHEET_NAMES[2]),
-        ("本期贷记单（平台退还）", "Notas de crédito",
-         lambda S: S["m"]["pay_nc"], None,
-         "针对取消/退货订单退还的佣金与运费，已在“退款与取消（净）”中抵减。"),
-        ("【敏感性】若代扣税不可抵扣时的贡献毛利", "", None, "sens",
-         "＝ 经营贡献毛利 − 代扣代缴税金。请与墨西哥会计师确认该笔预扣能否全额抵扣；"
-         "不能抵扣时利润会大幅下降，这是本报表最大的不确定项。"),
-    ]
-    if not site.WITHHOLDING:
-        memo = pl_memo_no_withholding(stores)
+    memo = [row for _key, row in pl_memo(stores)]
     tax_memo_row = r
     for label, es, fn, special, note in memo:
         ws.cell(row=r, column=1, value=label).font = F(10)
@@ -347,3 +326,44 @@ def sheet_pl(wb, stores, ctx):
         r += 1
     ws.freeze_panes = "%s5" % sh.scol(0)
     return {"contrib_row": contrib_row}
+
+
+# ② 小计 / 计算行（key 为 None 的行）在结果文件里的 key（core/results "pl"）。
+PL_FORMULA_KEYS = {
+    "营业收入合计": "revenue", "净销售收入": "net_sales", "平台交易费用小计": "order_fees_total",
+    "订单毛贡献": "order_contrib", "月度账单费用小计": "bill_fees_total",
+    "经营贡献毛利（未扣商品成本）": "contrib", "税前净利润": "profit",
+}
+
+# 备查项各行在结果文件里的 key（core/results "memo"），按行序；两套备查项各一份。
+MEMO_KEYS = ("withheld_taxes", "residual", "bill_paid", "credit_notes", "contrib_if_tax_not_deductible")
+MEMO_KEYS_NO_WITHHOLDING = ("ventas_vs_bill_commission", "residual", "bill_paid", "credit_notes",
+                            "vat_in_gmv")
+
+
+def pl_memo(stores):
+    """② 备查项：[(key, (行名, 西语, fn(S), special, 说明))]。special == "sens" 的行是
+    公式（经营贡献毛利 − 代扣税）。② 页和结果文件（report/figures.py）都读这一份。"""
+    if not site.WITHHOLDING:
+        return list(zip(MEMO_KEYS_NO_WITHHOLDING, pl_memo_no_withholding(stores)))
+    memo = [
+        ("平台代扣代缴税金（IVA/ISR 预扣）", "Impuestos retenidos",
+         lambda S: S["m"]["tax_ret"], None,
+         "≈ 含税售价的 %s（＝不含税价的 %s），本期实测。销售报表把它和佣金混在“Cargo por venta e impuestos”里，"
+         "是最容易算错的一项。它是预付税款而非成本 —— 详见【%s】桥 E。"
+         % (pct(agg_tax_rate(stores), 2), pct(TAX_RATE_NOMINAL_NET, 2), SHEET_NAMES[2])),
+        ("口径尾差（应为 0）", "",
+         lambda S: S["m"]["resid"], None,
+         "上表的收入与费用逐项加总后与销售报表 Total 列的差额。为 0 表示无任何未解释差额。"),
+        ("本期账单实际支付", "Pago con débito automático / Pago voluntario",
+         lambda S: S["m"]["pay_auto"], None,
+         "这张账单实际付掉的金额（自动扣款或主动付款，不含贷记单），与上表“月度账单费用小计”"
+         "的勾稽见【%s】桥 B。" % SHEET_NAMES[2]),
+        ("本期贷记单（平台退还）", "Notas de crédito",
+         lambda S: S["m"]["pay_nc"], None,
+         "针对取消/退货订单退还的佣金与运费，已在“退款与取消（净）”中抵减。"),
+        ("【敏感性】若代扣税不可抵扣时的贡献毛利", "", None, "sens",
+         "＝ 经营贡献毛利 − 代扣代缴税金。请与墨西哥会计师确认该笔预扣能否全额抵扣；"
+         "不能抵扣时利润会大幅下降，这是本报表最大的不确定项。"),
+    ]
+    return list(zip(MEMO_KEYS, memo))

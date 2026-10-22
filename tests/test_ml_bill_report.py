@@ -182,6 +182,11 @@ def write_pagos(path):
 
 @pytest.fixture
 def mx_folder(tmp_path):
+    return make_mx_folder(tmp_path)
+
+
+def make_mx_folder(tmp_path):
+    """The synthetic Mexican download folder (also used by test_results_writers)."""
     f = tmp_path / "STORE_MX" / "20261013_m202609"
     f.mkdir(parents=True)
     write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"), sept_rows())

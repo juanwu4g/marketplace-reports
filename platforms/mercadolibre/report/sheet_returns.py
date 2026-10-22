@@ -34,6 +34,22 @@ STATUS_COLS = [
 ]
 
 
+def status_groups(S):
+    """⑤ 上表的行：售后/异常订单按 Estado 汇总（estado / 单数 / 件数 / 原销售额 /
+    退款，退款为正数），按原销售额从高到低；本月没有售后订单返回 None。
+    ⑤ 页和结果文件（report/figures.py）都用它。"""
+    A = S["ventas"]
+    ab = A[A["abnormal"]]
+    if not len(ab):
+        return None
+    g = ab.groupby(A[V_STATUS].astype(str)).apply(
+        lambda x: pd.Series({"单数": len(x), "件数": num(x, V_UNITS).sum(),
+                             "原销售额": num(x, site.V_REVENUE).sum(),
+                             "退款": -num(x, site.V_REFUND).sum()})).reset_index()
+    g.columns = ["estado", "单数", "件数", "原销售额", "退款"]
+    return g.sort_values("原销售额", ascending=False)
+
+
 def sheet_returns_money(wb, stores, ctx):
     fam = Family(stores, money=site.MNY)
     ws = wb.create_sheet(SHEET_NAMES[4])
@@ -54,16 +70,9 @@ def sheet_returns_money(wb, stores, ctx):
 
     r = 5
     for S in stores:
-        A = S["ventas"]
-        ab = A[A["abnormal"]]
-        if not len(ab):
+        g = status_groups(S)
+        if g is None:
             continue
-        g = ab.groupby(A[V_STATUS].astype(str)).apply(
-            lambda x: pd.Series({"单数": len(x), "件数": num(x, V_UNITS).sum(),
-                                 "原销售额": num(x, site.V_REVENUE).sum(),
-                                 "退款": -num(x, site.V_REFUND).sum()})).reset_index()
-        g.columns = ["estado", "单数", "件数", "原销售额", "退款"]
-        g = g.sort_values("原销售额", ascending=False)
         start = r
         for _, x in g.iterrows():
             zh, who, inv = STATUS_ZH.get(x["estado"], (x["estado"], "待定", "待确认"))

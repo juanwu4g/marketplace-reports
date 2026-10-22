@@ -358,7 +358,7 @@ def _write_diag(out, month, pairs, rc, secs, output):
 
 
 def build(pairs, month, out, metrics_out=None, strict=False,
-          no_recalc=None, timeout=3600, echo=True, site=None):
+          no_recalc=None, timeout=3600, echo=True, site=None, results_version=None):
     """生成一份报表。pairs 是 [(店铺名, 下载目录), ...]。
 
     一份报表可以覆盖多家店 —— 汇总报表就是把 12 家一起传进来。
@@ -373,6 +373,9 @@ def build(pairs, month, out, metrics_out=None, strict=False,
         formula_errors  重算后文件里是否有公式报错
         returncode      report_build 的退出码（见 RC_*）；没跑起来或超时为 None
         diagnostic_log  没写出报表时保存的完整输出的路径，否则为 None
+
+    results_version 给了（且只有一家店）时，report_build 写完报表后写这个版本的月度
+                    结果文件（platforms/mercadolibre/results_files）
 
     "写没写出来"和"校验过没过"是两件事：checks_failed 为真时文件多半仍已写出
     （除非 --strict），所以不要用 checks_failed 判断有没有文件，看 outcome。
@@ -405,6 +408,9 @@ def build(pairs, month, out, metrics_out=None, strict=False,
     if site:
         # 国家（mx / cl / pe）。不给时 report_build 读下载目录 run_meta.json 的 site。
         cmd += ["--site", str(site).lower()]
+    if results_version and len(pairs) == 1:
+        # 单店报表写完后由 report_build 自己写月度结果文件（core/results）：数字在子进程里
+        cmd += ["--results-version", results_version]
 
     env = dict(os.environ)
     # 报表全程中文输出，管道里必须是 UTF-8，否则一句 print 就会 UnicodeEncodeError
