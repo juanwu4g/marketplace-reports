@@ -124,11 +124,13 @@ def parse_state(d):
         return None
     d = dict(d)
     xml = d.get("XML", "")
-    day = re.search(r"<Day>(\d+)</Day>", xml)
+    days = [int(x) for x in re.findall(r"<Day>(\d+)</Day>", xml)]
     at = re.search(r"<StartBoundary>[^<]*T(\d\d:\d\d)", xml)
     arg = re.search(r"<Arguments>([^<]*)</Arguments>", xml)
     d["ARGS"] = arg.group(1).strip() if arg else ""
-    d["DAY"] = day.group(1) if day else "?"
+    # DAYS: every run day of the trigger; DAY: the same as text ("15", "3,12,26")
+    d["DAYS"] = sorted(set(days))
+    d["DAY"] = ",".join(str(x) for x in d["DAYS"]) if days else "?"
     d["TIME"] = at.group(1) if at else "?"
     return d
 
@@ -163,17 +165,31 @@ def task_states(names):
     return dict((n, got.get(n)) for n in names)
 
 
+def run_days(day):
+    """task_xml 的 day -> 排好序、去了重的几号：15 -> [15]；[26, 3, 12] -> [3, 12, 26]。
+    None -> None（没有触发器）。1–31 以外的数抛 ValueError。"""
+    if day is None:
+        return None
+    days = sorted(set(int(x) for x in (day if isinstance(day, (list, tuple, set)) else [day])))
+    if not days or any(not 1 <= x <= 31 for x in days):
+        raise ValueError("每月几号要在 1–31 之间：%r" % (day,))
+    return days
+
+
 def task_xml(args=TASK_ARGS, day=None, hour=0, minute=0, time_limit=TIME_LIMIT,
              who=None):
     """生成任务 XML。
 
     day 为 None 时不带触发器 —— 试跑任务只靠手工触发，不该自己跑起来。
+    day 可以是一个数（15）或几个（[3, 12, 26]）：一个 CalendarTrigger，里面几个
+    <Day>，每个都在同一个钟点跑（docs/RESULTS_AND_PERIODS.md §6）。
     args 是传给 run_monthly.cmd 的参数，至少要有 --entrance scheduled：
     日志靠它标出"这一轮是定时任务起的"。
     """
     who = who or current_user()
     trigger = ""
-    if day is not None:
+    days = run_days(day)
+    if days:
         # StartBoundary 的日期部分只决定"从哪天起生效"，具体哪天跑由
         # DaysOfMonth 决定。取今天，避免写一个已经过去很久的日期。
         today = datetime.date.today()
@@ -181,10 +197,11 @@ def task_xml(args=TASK_ARGS, day=None, hour=0, minute=0, time_limit=TIME_LIMIT,
             "<CalendarTrigger>"
             "<StartBoundary>%04d-%02d-%02dT%02d:%02d:00</StartBoundary>"
             "<Enabled>true</Enabled>"
-            "<ScheduleByMonth><DaysOfMonth><Day>%d</Day></DaysOfMonth>"
+            "<ScheduleByMonth><DaysOfMonth>%s</DaysOfMonth>"
             "<Months>%s</Months></ScheduleByMonth>"
             "</CalendarTrigger>"
-            % (today.year, today.month, today.day, hour, minute, day, MONTHS_XML))
+            % (today.year, today.month, today.day, hour, minute,
+               "".join("<Day>%d</Day>" % x for x in days), MONTHS_XML))
     return (
         '<?xml version="1.0" encoding="UTF-16"?>'
         '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'

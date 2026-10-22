@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """「月度报表」—— 全部平台、全部国家月度报表的统一窗口。
 
-「立即运行」和「每月自动运行」两页的范围都是同一棵 平台 → 国家（→ 店铺）勾选树
+「立即运行」「每月自动运行」「期间报表」三页的范围都是同一棵 平台 → 国家（→ 店铺）勾选树
 （core/scope.py + core/scope_picker.py），从 markets.py 和 config.json 算出来：加平台、
 加国家不用改这个文件。
 
     双击 月度报表.cmd        （打开「立即运行」页；唯一的双击入口）
-    或   .venv\\Scripts\\pythonw -m core.app [--tab run|human|schedule]
+    或   .venv\\Scripts\\pythonw -m core.app [--tab run|human|schedule|period]
 
     ┌ 顶部横幅：现在在跑什么（国家 · 月份 · 步骤 · 店铺 · 已运行多久）  [中止这一轮] ┐
     ├ 左：三页                         │ 右：运行日志（任何入口起的都能看）        │
@@ -56,6 +56,8 @@ from core import scope as SC
 from core import ui_style as S
 from core import win_tasks as W
 from core.log_view import LogView, fit_to_screen
+from core import period_report as PR
+from core.period_report import choice as PC
 from core.scope_picker import ScopePicker
 # 报表输出目录的解析规则只有一份，在 run_monthly 里 —— 定时任务真正跑的是它。
 from core.run_monthly import resolve_out_dir
@@ -137,9 +139,11 @@ class App(object):
         self.tab_run = self._scrollable_tab("  立即运行  ")
         self.tab_human = self._scrollable_tab("  需要人工处理  ")
         self.tab_sched = self._scrollable_tab("  每月自动运行  ")
+        self.tab_period = self._scrollable_tab("  期间报表  ")
         self._build_run(self.tab_run)
         self._build_human(self.tab_human)
         self._build_schedule(self.tab_sched)
+        self._build_period(self.tab_period)
 
         self.view = LogView(right, log_dir=None, on_state=self._on_run_state,
                             on_tick=self._on_view_tick, who=WHO)
@@ -198,7 +202,7 @@ class App(object):
 
     def show_tab(self, name):
         tab = {"run": self.tab_run, "human": self.tab_human,
-               "schedule": self.tab_sched}.get(name, self.tab_run)
+               "schedule": self.tab_sched, "period": self.tab_period}.get(name, self.tab_run)
         try:
             self.tabs.select(tab.outer)
         except tk.TclError:
@@ -702,15 +706,15 @@ class App(object):
         f = section(page, "什么时候自动跑")
         s = E.load_settings()
         k = lambda name: RC.sched_key(name, RC.ALL)
-        self.day = tk.IntVar(value=int(s.get(k("sched_day"), s.get("sched_day", 15))))
+        # 每月几号：可以写几天（3, 12, 26）。旧设置只有一个数，照样读得出来。
+        self.days = tk.StringVar(value=", ".join(str(d) for d in RC.settings_days(s, RC.ALL)))
         self.hour = tk.IntVar(value=int(s.get(k("sched_hour"), s.get("sched_hour", 2))))
         self.minute = tk.IntVar(value=int(s.get(k("sched_minute"),
                                                 s.get("sched_minute", 0))))
         row = ttk.Frame(f)
         row.pack(anchor="w")
         ttk.Label(row, text="每月").pack(side="left")
-        ttk.Spinbox(row, from_=1, to=28, width=4, textvariable=self.day
-                    ).pack(side="left", padx=S.SMALL)
+        ttk.Entry(row, width=12, textvariable=self.days).pack(side="left", padx=S.SMALL)
         ttk.Label(row, text="号").pack(side="left")
         ttk.Spinbox(row, from_=0, to=23, width=4, format="%02.0f",
                     textvariable=self.hour).pack(side="left", padx=(S.PAD, S.SMALL))
@@ -718,7 +722,9 @@ class App(object):
         ttk.Spinbox(row, from_=0, to=59, width=4, increment=5, format="%02.0f",
                     textvariable=self.minute).pack(side="left", padx=S.SMALL)
         hint(f, "出的永远是上个月的报表（15 号跑，出上个月）。15 号上个月的账单已经"
-                "结清；选凌晨是因为跑的时候会重开紫鸟浏览器。日期最大 28。"
+                "结清；选凌晨是因为跑的时候会重开紫鸟浏览器。日期最大 28。\n"
+                "可以写几天，用逗号隔开，比如 3, 12, 26：每一天都是全部店铺完整跑一轮、出上个月的报表；"
+                "后面那次有完整版本时，以最新的完整版本为准（早出一份，账单关账后再出一份定稿）。"
              ).pack(anchor="w", pady=(S.SMALL, 0))
 
         f = section(page, "操作")
@@ -827,11 +833,20 @@ class App(object):
         for b in self.sched_buttons:
             b.configure(state="disabled" if label else "normal")
 
+    def _days(self):
+        """「什么时候自动跑」里写的几号 -> [3, 12, 26]；写错了返回 None。"""
+        try:
+            return RC.parse_days(self.days.get())
+        except ValueError:
+            return None
+
     def _save_time(self):
         k = lambda name: RC.sched_key(name, RC.ALL)
-        E.update_settings(**{k("sched_day"): self.day.get(),
-                             k("sched_hour"): self.hour.get(),
-                             k("sched_minute"): self.minute.get()})
+        kw = {k("sched_hour"): self.hour.get(), k("sched_minute"): self.minute.get()}
+        days = self._days()
+        if days:
+            kw.update(RC.days_settings(days, RC.ALL))
+        E.update_settings(**kw)
 
     def _sched_region(self):
         return SC.region_arg(self.sched_picker.selection(), self.tree)
@@ -905,7 +920,8 @@ class App(object):
         ref = main or (ov["legacy"][0][2] if ov["legacy"] else None)
         if ref:
             try:
-                self.day.set(int(ref.get("DAY")))
+                days = ref.get("DAYS") or [int(ref.get("DAY"))]
+                self.days.set(", ".join(str(d) for d in days))
                 h, m = ref.get("TIME", "02:00").split(":")
                 self.hour.set(int(h))
                 self.minute.set(int(m))
@@ -922,7 +938,12 @@ class App(object):
             messagebox.showinfo("稍等", "还在读取已登记的计划任务，几秒后再点。")
             self.refresh_schedule()
             return
-        d, h, m = self.day.get(), self.hour.get(), self.minute.get()
+        try:
+            d = RC.parse_days(self.days.get())
+        except ValueError as e:
+            messagebox.showwarning("设为每月自动运行", "「每月几号」写得不对：%s" % e)
+            return
+        h, m = self.hour.get(), self.minute.get()
         region = self._sched_region()
         if not region:
             messagebox.showwarning("设为每月自动运行", "「自动跑哪些」一个都没勾。")
@@ -930,10 +951,11 @@ class App(object):
         sel = self.sched_picker.selection()
         groups = RC.lineup(region)
         legacy = self.overview.get("legacy") or []
-        what = ("以后每月 %d 号 %02d:%02d，这台电脑会自己跑一轮：\n"
+        what = ("以后每月 %s 号 %02d:%02d，这台电脑会自己跑一轮%s：\n"
                 "下载上个月的数据并出报表 —— %s。\n%s\n"
                 "那时候电脑必须开着、已经登录、没睡着、没锁屏。\n\n"
-                % (d, h, m, SC.scope_text(sel, self.tree),
+                % (RC.days_text(d), h, m, "（每次都是全部店铺）" if len(d) > 1 else "",
+                   SC.scope_text(sel, self.tree),
                    "以后新加的平台 / 国家也会自动跑。\n" if region == RC.ALL else
                    "只跑勾上的；以后新加的平台 / 国家不会自动包含。\n"))
         q = RC.replace_question(legacy)
@@ -951,8 +973,8 @@ class App(object):
         hours = RC.time_limit_hours(len(groups))
         args = RC.task_args(region)
         self.log_op("")
-        self.log_op("正在登记「%s」：每月 %d 号 %02d:%02d（%s，时限 %d 小时）"
-                    % (RC.ALL_TASK, d, h, m, args, hours))
+        self.log_op("正在登记「%s」：每月 %s 号 %02d:%02d（%s，时限 %d 小时）"
+                    % (RC.ALL_TASK, RC.days_text(d), h, m, args, hours))
 
         def body():
             rc, out = W.install(RC.ALL_TASK, W.task_xml(
@@ -1115,6 +1137,292 @@ class App(object):
             return
         open_path(d)
 
+    # ================================================================ 期间报表
+
+    def _build_period(self, page):
+        """季度 / 全年 / 自定义的期间报表：只用各月定稿的月度结果（run_period.py）。"""
+        hint(page, "期间报表 = 把各月的定稿月度报表加起来：每个店铺每个月用最新的完整版本，"
+                   "不重新下载、不重新读平台数据，几秒钟。每个平台 + 国家一份（币种不同）。"
+             ).pack(anchor="w", pady=(0, S.GAP))
+        latest = self.months[0]
+        f = section(page, "期间")
+        self.period_kind = tk.StringVar(value="quarterly")
+        row = ttk.Frame(f)
+        row.pack(anchor="w")
+        for kind, text in PC.KINDS:
+            ttk.Radiobutton(row, text=text, value=kind, variable=self.period_kind,
+                            command=self._period_changed).pack(side="left", padx=(0, S.PAD))
+        grid = ttk.Frame(f)
+        grid.pack(anchor="w", pady=(S.SMALL, 0))
+        ttk.Label(grid, text="季度").grid(row=0, column=0, sticky="w")
+        self.period_quarter = ttk.Combobox(grid, values=PC.quarters(latest), width=10, state="readonly")
+        self.period_quarter.set(PC.quarters(latest)[0])
+        self.period_quarter.grid(row=0, column=1, sticky="w", padx=(S.GAP, S.PAD))
+        ttk.Label(grid, text="年份").grid(row=0, column=2, sticky="w")
+        self.period_year = ttk.Combobox(grid, values=PC.years(latest), width=8, state="readonly")
+        self.period_year.set(PC.years(latest)[0])
+        self.period_year.grid(row=0, column=3, sticky="w", padx=(S.GAP, 0))
+        ttk.Label(grid, text="从").grid(row=1, column=0, sticky="w", pady=(S.SMALL, 0))
+        months = E.recent_months(36)
+        self.period_from = ttk.Combobox(grid, values=months, width=10, state="readonly")
+        self.period_from.set(months[min(2, len(months) - 1)])
+        self.period_from.grid(row=1, column=1, sticky="w", padx=(S.GAP, S.PAD), pady=(S.SMALL, 0))
+        ttk.Label(grid, text="到").grid(row=1, column=2, sticky="w", pady=(S.SMALL, 0))
+        self.period_to = ttk.Combobox(grid, values=months, width=10, state="readonly")
+        self.period_to.set(months[0])
+        self.period_to.grid(row=1, column=3, sticky="w", padx=(S.GAP, 0), pady=(S.SMALL, 0))
+        for w in (self.period_quarter, self.period_year, self.period_from, self.period_to):
+            w.bind("<<ComboboxSelected>>", lambda e: self._period_changed())
+        self.period_text = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.period_text, style="Section.TLabel", wraplength=WRAP,
+                  justify="left").pack(anchor="w", pady=(S.SMALL, 0))
+        hint(f, "季度和全年也会在月报跑完时自动生成：季度最后一个月的月报跑完以后生成那个季度，"
+                "12 月的还生成全年（美客多是账单基准）。这里可以随时重新生成，或者生成任意几个月。"
+             ).pack(anchor="w", pady=(2, 0))
+
+        f = section(page, "范围")
+        self.period_picker = ScopePicker(f, with_stores=True, on_change=self._period_changed,
+                                         height=8)
+        self.period_picker.pack(fill="x")
+        self.period_picker.load(self.tree, SC.everything(self.tree), self.results)
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(S.SMALL, 0))
+        ttk.Button(row, text="全选", width=6,
+                   command=lambda: self.period_picker.set_all(True)).pack(side="left")
+        ttk.Button(row, text="全不选", width=7,
+                   command=lambda: self.period_picker.set_all(False)
+                   ).pack(side="left", padx=(S.SMALL, 0))
+        self.period_scope_var = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.period_scope_var, style="Section.TLabel",
+                  wraplength=WRAP, justify="left").pack(anchor="w", pady=(S.SMALL, 0))
+        hint(f, "全都勾上 = 每个有月度结果的店铺都算（包括 config.json 里已经去掉的店）。"
+                "只勾部分店铺 = 报表里只有这几家。").pack(anchor="w", pady=(2, 0))
+
+        f = section(page, "美客多用哪个基准")
+        self.period_basis = tk.StringVar(value="bill")
+        for basis, text in PC.BASES:
+            ttk.Radiobutton(f, text=text, value=basis, variable=self.period_basis,
+                            command=self._period_changed).pack(anchor="w")
+        hint(f, "只对美客多有效；Falabella、亚马逊只有一种基准。").pack(anchor="w", pady=(2, 0))
+
+        f = section(page, "各店各月（只看，不写文件）")
+        self.period_grid = ttk.Treeview(f, columns=(), show="tree headings", height=8,
+                                        selectmode="browse")
+        self.period_grid.heading("#0", text="平台 / 店铺", anchor="w")
+        self.period_grid.column("#0", width=190, stretch=True)
+        self.period_grid.tag_configure("market", font=S.FONT_BOLD)
+        self.period_grid.tag_configure("bad", foreground=S.FG["bad"])
+        self.period_grid.pack(fill="x")
+        self.period_grid.bind("<<TreeviewSelect>>", lambda e: self._period_reason())
+        self.period_reasons = {}
+        self.period_blocks = []
+        self.period_seq = 0
+        self.period_grid_var = tk.StringVar(value="")
+        hint(f, var=self.period_grid_var).pack(anchor="w", pady=(S.SMALL, 0))
+        ttk.Button(f, text="刷新", width=8, command=self.refresh_period
+                   ).pack(anchor="w", pady=(S.SMALL, 0))
+
+        f = section(page, "生成")
+        row = ttk.Frame(f)
+        row.pack(fill="x")
+        self.btn_period = ttk.Button(row, text="▶  生成期间报表", style="Accent.TButton",
+                                     command=self.do_period)
+        self.btn_period.pack(side="left")
+        ttk.Button(row, text="打开期间报表目录", command=self.do_open_period_dir
+                   ).pack(side="left", padx=(S.GAP, 0))
+        self.period_status = tk.StringVar(value="")
+        self.period_status_lbl = ttk.Label(f, textvariable=self.period_status, font=S.FONT_BOLD,
+                                           wraplength=WRAP, justify="left")
+        self.period_status_lbl.pack(anchor="w", pady=(S.SMALL, 0))
+        self.period_out = tk.Text(f, height=10, wrap="word", font=S.FONT_SMALL, bd=0,
+                                  background="#fbfbfc", padx=6, pady=4)
+        self.period_out.pack(fill="x", pady=(S.SMALL, 0))
+        self.period_out.configure(state="disabled")
+        hint(f, "写到「立即运行」页「报表输出到」的目录下（季度在 quarterly、全年在 annual、自定义在 custom"
+                "（旧布局在「期间报表」文件夹里））。同名文件会被替换，报表的⑩列出和上一份相比换了版本的"
+                "店铺月份。没有完整版本的店铺月份不计入合计，报表①有红字提示。").pack(anchor="w", pady=(S.SMALL, 0))
+        self.period_proc = None
+        self._period_changed()
+
+    def _period(self):
+        """The tab's period, or None (and the reason in the period line) when the
+        choice is not valid (e.g. 自定义 from > to)."""
+        try:
+            return PC.period_of(self.period_kind.get(), self.period_quarter.get(),
+                                self.period_year.get(), self.period_from.get(), self.period_to.get())
+        except ValueError as e:
+            self.period_text.set("✗ %s" % e)
+            return None
+
+    def _period_scope(self):
+        sel = self.period_picker.selection()
+        return SC.region_arg(sel, self.tree), SC.subset(sel, self.tree)
+
+    def _period_changed(self):
+        p = self._period()
+        if p:
+            self.period_text.set("期间：%s" % PR.period_cn(p))
+        self.period_scope_var.set("已选：" + SC.scope_text(self.period_picker.selection(), self.tree))
+        self.refresh_period()
+
+    def refresh_period(self):
+        """Store × month preview: ✓ grade of the final version, ✗ 无完整版本 (the
+        reason from the newest version shows under the grid when a row is picked).
+        Reads results files only; writes nothing."""
+        tv = self.period_grid
+        tv.delete(*tv.get_children(""))
+        self.period_reasons, self.period_blocks = {}, []
+        p = self._period()
+        region, stores = self._period_scope()
+        if not p or not region:
+            self.period_grid_var.set("先选期间和范围。")
+            self._period_lock()
+            return
+        # A year of thirty stores is hundreds of files: read them off the Tk thread.
+        # Only the newest request is shown (a click while one is reading wins).
+        self.period_seq += 1
+        seq, basis, box = self.period_seq, self.period_basis.get(), {}
+        self.period_grid_var.set("正在读取月度结果 …")
+        self._period_lock()
+
+        def body():
+            try:
+                box["blocks"] = PC.grid(p, region, stores, basis)
+            except Exception as e:
+                box["error"] = e
+
+        threading.Thread(target=body, daemon=True).start()
+
+        def poll():
+            if seq != self.period_seq:
+                return
+            if not box:
+                self.root.after(100, poll)
+                return
+            if "error" in box:
+                self.period_grid_var.set("读不了月度结果：%s" % box["error"])
+                self._period_lock()
+                return
+            self._show_period_grid(p, box["blocks"])
+
+        poll()
+
+    def _show_period_grid(self, p, blocks):
+        tv = self.period_grid
+        cols = ["m%d" % i for i in range(len(p.months))]
+        tv.configure(columns=cols)
+        for c, m in zip(cols, p.months):
+            tv.heading(c, text=m, anchor="w")
+            tv.column(c, width=110, anchor="w", stretch=False)
+        missing, why = 0, []
+        for b in blocks:
+            mid = "m:" + b["market"]
+            tv.insert("", "end", iid=mid, text=b["title"], values=[""] * len(cols), open=True,
+                      tags=("market",))
+            if b["error"]:
+                tv.insert(mid, "end", iid=mid + ":err", text="读不了：%s" % b["error"],
+                          values=[""] * len(cols), tags=("bad",))
+                continue
+            missing += b["missing"]
+            for store, cells in b["rows"]:
+                iid = "s:%s:%s" % (b["market"], store)
+                tv.insert(mid, "end", iid=iid, text=store, values=[t for _, _, t, _ in cells],
+                          tags=("bad",) if any(not ok for _, ok, _, _ in cells) else ())
+                self.period_reasons[iid] = ["%s %s：%s" % (store, m, r)
+                                            for m, ok, _, r in cells if not ok]
+                why += self.period_reasons[iid]
+        if not blocks:
+            self.period_grid_var.set("所选范围在这个期间还没有任何月度结果，生成不了期间报表。")
+        elif missing:
+            self.period_grid_var.set("✗ 有 %d 个店铺月份没有完整版本，不会计入合计（点一行看那家店的原因）：\n%s"
+                                     % (missing, why[0] + ("…" if len(why) > 1 else "")))
+        else:
+            self.period_grid_var.set("✓ 每个店铺每个月都有完整版本。")
+        self.period_blocks = blocks
+        self._period_lock()
+
+    def _period_reason(self):
+        iid = self.period_grid.focus()
+        lines = self.period_reasons.get(iid)
+        if lines:
+            self.period_grid_var.set("\n".join(lines))
+
+    def _period_lock(self):
+        ok = (not self.period_proc and bool(self.period_blocks)
+              and self._period() is not None and bool(self._period_scope()[0]))
+        self.btn_period.configure(state="normal" if ok else "disabled")
+
+    def _period_say(self, text):
+        self.period_out.configure(state="normal")
+        self.period_out.insert("end", text + "\n")
+        self.period_out.see("end")
+        self.period_out.configure(state="disabled")
+
+    def do_period(self):
+        """Run run_period.py for the tab's choice (a child process, like the other
+        steps); its output streams into the box under the button."""
+        p = self._period()
+        region, stores = self._period_scope()
+        if not p or not region or self.period_proc:
+            return
+        E.update_settings(out_dir=self._out_dir())
+        cmd = PC.command(E.interpreter(), ROOT, p, region, stores, self.period_basis.get(),
+                         self._out_dir())
+        self.period_out.configure(state="normal")
+        self.period_out.delete("1.0", "end")
+        self.period_out.configure(state="disabled")
+        self.period_status.set("● 正在生成 %s 的期间报表 …" % p.label)
+        self.period_status_lbl.configure(foreground=S.FG["run"])
+        try:
+            proc = subprocess.Popen(cmd, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, env=PC.child_env(), **PC.creation_flags())
+        except Exception as e:
+            self.period_status.set("✗ 启动失败：%s" % e)
+            self.period_status_lbl.configure(foreground=S.FG["bad"])
+            return
+        self.period_proc = proc
+        self._period_lock()
+        lines = queue.Queue()
+
+        def pump():
+            for raw in iter(proc.stdout.readline, b""):
+                lines.put(raw.decode("utf-8", "replace").rstrip("\r\n"))
+            lines.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+
+        def drain():
+            done = False
+            try:
+                while True:
+                    line = lines.get_nowait()
+                    if line is None:
+                        done = True
+                        break
+                    self._period_say(line)
+            except queue.Empty:
+                pass
+            if not done:
+                self.root.after(100, drain)
+                return
+            code = proc.wait()
+            self.period_proc = None
+            text, kind = PC.exit_text(code)
+            self.period_status.set(text)
+            self.period_status_lbl.configure(foreground=S.FG[kind])
+            self.refresh_period()
+
+        drain()
+
+    def do_open_period_dir(self):
+        p = self._period()
+        region, _ = self._period_scope()
+        d = PC.folder(p, region or RC.ALL, self._out_dir()) if p else None
+        if not d:
+            messagebox.showinfo("还没有期间报表", "还没有生成过期间报表。先点「生成期间报表」。")
+            return
+        open_path(d)
+
     # ================================================================ 状态
 
     def _watch(self):
@@ -1178,6 +1486,9 @@ class App(object):
             self.results = SC.last_results(LOG_DIR)
             self.run_picker.set_results(self.results)
             self.sched_picker.set_results(self.results)
+            self.period_picker.set_results(self.results)
+            if not self.period_proc:
+                self.refresh_period()          # a monthly run may have added final versions
             self.human_at = datetime.datetime.now().timestamp()
             self._refresh_human()
             if not self.sched_busy:

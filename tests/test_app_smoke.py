@@ -247,7 +247,7 @@ def test_schedule_overview_renders(app):
     var, btn = app.legacy_rows["MX月度报表"]
     assert var.get().startswith("每月 15 号 02:00") and btn.cget("state") == "normal"
     assert app.legacy_rows["CL月度报表"][0].get() == "未登记"
-    assert (app.day.get(), app.hour.get()) == (15, 2)
+    assert (app.days.get(), app.hour.get()) == ("15", 2)
     # only old tasks that exist on this machine are shown
     assert app.legacy_frames["MX月度报表"].winfo_ismapped()
     assert not app.legacy_frames["CL月度报表"].winfo_ismapped()

@@ -106,6 +106,12 @@ run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一
 和 ALL 是同一套流程（一把锁、一份日志、每段带 [区域] 前缀），只是只跑这几个。
 这里可以带 --stores：每家店归到它所在的区域；列出了店的区域只跑这几家（不出
 全店汇总），没列出店的区域跑全部店铺。--stores 里有不属于这几个区域的店：退出码 3。
+
+期间报表
+--------
+出报表的那一步跑完以后，这个月是季度的最后一个月（3、6、9、12 月）时，给这一轮的
+每个区域（再）生成那个季度的期间报表；12 月还生成全年（period_hook）。只读定稿的
+月度结果，几秒钟；出了问题写日志和「！期间报表异常_…」告警，**退出码不变**。
 """
 import argparse
 import datetime
@@ -1112,6 +1118,64 @@ def conclude(log, args, month, out_dir, region, st, rec, log_path):
     return final
 
 
+def period_hook(log, args, month, out_dir, units, plan):
+    """出完报表以后，这个月是季度的最后一个月：把这个季度的期间报表（再）生成一遍；
+    12 月还加上全年（docs/RESULTS_AND_PERIODS.md §5）。
+
+    期间报表只读各月的定稿月度结果（core/period_report），几秒钟。它出什么事都
+    **不改**这一轮的退出码、不拦别的国家：写进日志，再在这个月的告警目录里写一个
+    「！期间报表异常_…」文件。这一轮没出报表（只下载 / 补取）就什么都不做。
+    美客多自动生成的是账单基准（会计入账口径）；订单基准在窗口里按需生成。
+    返回 [结果]（测试看），出错时返回 None。"""
+    if not any(s.get("key") == "report" for s in plan or []):
+        return []
+    step = runlog.STEP_REPORT
+    try:
+        from core import markets
+        from core import period_report as PR
+        periods = PR.auto_periods(month)
+        if not periods:
+            return []
+        folder = alert_dir(out_dir, month)
+        entrance_cn = runlog.ENTRANCE_ZH.get(args.entrance, args.entrance)
+        done = []
+        for unit in units:
+            market = markets.unit_market(unit)
+            for period in periods:
+                res = PR.generate(period, market, out_dir=out_dir)
+                done.append(res)
+                lines = PR.summary_lines(res)
+                if res["status"] == PR.EMPTY:
+                    log.info(step, "期间报表 " + lines[0] + "（这个期间还没有月度结果文件）")
+                    continue
+                bad = res["status"] in (PR.ERROR, PR.INCOMPLETE)
+                for i, line in enumerate(lines):
+                    log.write(step, runlog.WARN if bad and i == 0 else runlog.INFO,
+                              ("期间报表 " if i == 0 else "") + line)
+                if bad:
+                    try:
+                        p = PR.write_alert(folder, res, month, entrance_cn)
+                        log.warn(step, "已写出期间报表告警：%s" % p)
+                    except Exception as e:                        # noqa: BLE001
+                        log.warn(step, "[警告] 期间报表告警写不进去：%s" % str(e)[:120])
+                else:
+                    gone = PR.clear_alert(folder, res)
+                    if gone:
+                        log.info(step, "期间报表已完整，删掉了旧的告警：%s" % gone)
+        return done
+    except Exception:                                             # noqa: BLE001
+        log.warn(step, "期间报表没生成（不影响这一轮的月报）：\n" + traceback.format_exc())
+        try:
+            os.makedirs(alert_dir(out_dir, month), exist_ok=True)
+            with io.open(os.path.join(alert_dir(out_dir, month), "！期间报表异常_%s.txt"
+                                      % month.replace("-", "")), "w", encoding="utf-8") as f:
+                f.write("%s 月报跑完后自动生成期间报表时出错：\n\n%s\n完整日志：%s\n"
+                        % (month, traceback.format_exc(), log.path))
+        except Exception:                                         # noqa: BLE001
+            pass
+        return None
+
+
 def execute(args, plan=None):
     """跑一轮。plan 给测试用：换掉真正的子进程命令，流程本身不变。
 
@@ -1225,6 +1289,7 @@ def execute(args, plan=None):
         # 人为中止不告警：停的人自己知道。
         return finish("aborted", 6)
     final = conclude(log, args, month, out_dir, region, st, doc, paths["log"])
+    period_hook(log, args, month, out_dir, [region], plan)     # never changes `final`
     return finish("done" if final < 2 else "failed", final)
 
 
@@ -1462,6 +1527,7 @@ def execute_all(args, plans=None):
                 save()
                 break
             final = conclude(rlog, args, month, out_dir, r, st, rec, paths["log"])
+            period_hook(rlog, args, month, out_dir, [r], it["plan"])   # never changes `final`
             rec.update(status="done" if final < 2 else "failed", exit=final,
                        ended=now(), alert=alert_path(out_dir, month, r)
                        if final and rec["urgent"] else None)

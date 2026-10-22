@@ -219,3 +219,60 @@ def year_months(year):
 def quarter_of(month):
     """'2026-09' -> '2026-Q3'."""
     return "%s-Q%d" % (month[:4], (int(month[5:7]) - 1) // 3 + 1)
+
+
+# ------------------------------------------------------------------ by results folder
+#
+# versions() / final() find a store's folder through config.json (its market).
+# A period report also has to read stores that config.json no longer lists (a
+# store closed after the quarter); these read the same files by the folder the
+# results tree itself gives (<results>/<PF>/<CC>/<store>/), with the same rule.
+
+def versions_at(platform, country, store, month, basis=None, config_path=None):
+    """versions() for a store found in the results tree under <PF>/<CC>."""
+    d = os.path.join(layout.results_root(config_path), platform, country, store, month)
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for name in os.listdir(d):
+        m = FILE_RE.match(name)
+        if not m or (basis and m.group("basis") != basis):
+            continue
+        try:
+            doc = load(os.path.join(d, name))
+        except (ValueError, IOError, OSError):
+            continue
+        if not validate(doc):
+            out.append(doc)
+    return sorted(out, key=lambda x: (x["built_at"], x["version"]), reverse=True)
+
+
+def has_files_at(platform, country, store, month, basis=None, config_path=None):
+    """Is there any results file (by its name) for this store-month and basis?
+    Cheap: lists the folder, reads nothing."""
+    d = os.path.join(layout.results_root(config_path), platform, country, store, month)
+    if not os.path.isdir(d):
+        return False
+    for name in os.listdir(d):
+        m = FILE_RE.match(name)
+        if m and (not basis or m.group("basis") == basis):
+            return True
+    return False
+
+
+def final_at(platform, country, store, month, basis, config_path=None):
+    """final() for a store found in the results tree under <PF>/<CC>."""
+    for doc in versions_at(platform, country, store, month, basis, config_path):
+        if doc["grade"]["level"] in COUNTABLE:
+            return doc
+    return None
+
+
+def period_label(kind, months_):
+    """The period's name in folders and file names: '2026-Q3', '2026',
+    '2026-07_2026-11' (kind 'quarterly' / 'annual' / 'custom')."""
+    if kind == "quarterly":
+        return quarter_of(months_[0])
+    if kind == "annual":
+        return months_[0][:4]
+    return "%s_%s" % (months_[0], months_[-1])
