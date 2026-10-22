@@ -49,6 +49,13 @@ Shop, `TM` Temu, `WM` Walmart, `AZ` Amazon, `SH` SHEIN) and registers it in
 | alert, only when a person must act | `！报表异常_<COUNTRY>_<PLATFORM>_<YYYYMM>.txt` | `！报表异常_CL_FA_202609.txt` |
 | download folder | `downloads/<store>/<YYYYMMDD_HHMMSS>[_m<YYYYMM>]/` | `…/20261016_175632_m202609/` |
 
+MercadoLibre has two bases, written side by side every month: the bill basis
+(`platforms/mercadolibre/bill_report`, the official one) adds the suffix
+`_账单基准` to both names — `<store>_<YYYY-MM>_账单基准.xlsx`,
+`<COUNTRY>_ML_全店汇总_<YYYY-MM>_账单基准.xlsx` — and the order basis keeps the
+names above. Another platform that ever needs a second basis follows the same
+rule: the main names stay, the second basis gets a suffix.
+
 Historical exceptions kept for MercadoLibre (scheduled tasks and finance's folders
 rely on them): the Mexican alert is `！报表异常_<YYYYMM>.txt` and the other
 countries' `！报表异常_<COUNTRY>_<YYYYMM>.txt`, without the platform code.

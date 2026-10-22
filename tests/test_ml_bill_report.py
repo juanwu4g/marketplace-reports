@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""experiments/ml_invoice_report — the billing-statement baseline report.
+"""platforms/mercadolibre/bill_report — the billing-statement baseline report.
 
 Synthetic download folders only (no real data): invoices with sales, reversals,
 store-level charges and an out-of-period row; a sales export with a multi-product
@@ -14,7 +14,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from core import report_kit as K
-from experiments.ml_invoice_report import build, catalog, mapping, model, readers, status
+from platforms.mercadolibre.bill_report import build, catalog, mapping, model, readers, status
 
 D = datetime.datetime
 
@@ -342,7 +342,7 @@ def test_chile_cover_passes_with_cut_day(tmp_path):
 
 def test_workbook_is_a_sister(mx_folder, tmp_path):
     res = build.run("STORE_MX", mx_folder, "2026-09", "mx", out_dir=str(tmp_path / "out"), recalc=False)
-    assert os.path.basename(res["out"]) == "STORE_MX_2026-09_账单基准报表.xlsx"
+    assert os.path.basename(res["out"]) == "STORE_MX_2026-09_账单基准.xlsx"
     wb = load_workbook(res["out"])
     assert wb.sheetnames == K.SHEET_NAMES
     labels = [c.value for c in wb[K.SHEET_NAMES[1]]["A"] if c.value]
@@ -382,18 +382,22 @@ def test_sku_cost_table(mx_folder, tmp_path):
 
 
 def test_cli_needs_a_site_for_old_folders(mx_folder, capsys):
-    from experiments.ml_invoice_report.__main__ import main
+    from platforms.mercadolibre.bill_report.__main__ import main
     assert main(["--store", "S", "--month", "2026-09", "--folder", mx_folder]) == 2
     assert "--site" in capsys.readouterr().out
 
 
 def test_independent_of_the_official_report():
-    here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "experiments",
-                        "ml_invoice_report")
+    """The bill basis is computed on its own: nothing from the order-based report
+    (platforms/mercadolibre/report*, financial_report, pl_billing_basis) or the
+    experiments, so neither basis can leak into the other."""
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "platforms",
+                        "mercadolibre", "bill_report")
     for name in os.listdir(here):
         if name.endswith(".py"):
             src = open(os.path.join(here, name), encoding="utf-8").read()
-            assert not re.search(r"^\s*(from|import)\s+platforms", src, re.M), name
+            for m in re.finditer(r"^\s*(?:from|import)\s+(platforms\S*|experiments\S*)", src, re.M):
+                assert m.group(1).startswith("platforms.mercadolibre.bill_report"), (name, m.group(1))
             assert "ml_invoice_basis" not in src, name
 
 
@@ -406,3 +410,81 @@ def test_status_rules():
     assert status.classify_reversal(1.0, ev, 2)[2] == "推定"
     assert status.classify_reversal(1.0, ev, 12)[0] == status.UNPROVEN
     assert status.classify_reversal(0.4, ev, 2)[0] == status.PARTIAL
+
+
+# ------------------------------------------------------------------ combined workbook and the runner
+
+def two_stores(mx_folder, tmp_path):
+    """The synthetic store twice, under two names (a second folder copied from the first)."""
+    other = tmp_path / "STORE_MX2" / "20261013_m202609"
+    shutil.copytree(mx_folder, str(other))
+    return [("STORE_MX", mx_folder), ("STORE_MX2", str(other))]
+
+
+def test_combined_is_the_sum_of_the_stores(mx_folder, tmp_path):
+    stores = two_stores(mx_folder, tmp_path)
+    prepared = [build.prepare(n, f, "2026-09", "mx") for n, f in stores]
+    res = build.write_combined(prepared, "2026-09", "MX", out_dir=str(tmp_path / "out"), recalc=False)
+    assert os.path.basename(res["out"]) == "MX_ML_全店汇总_2026-09_账单基准.xlsx"
+    wb = load_workbook(res["out"])
+    assert wb.sheetnames == K.SHEET_NAMES
+    pl = wb[K.SHEET_NAMES[1]]
+    header = [c.value for c in pl[5]]
+    assert header[2:5] == ["STORE_MX", "STORE_MX2", "合计"]
+    net = [r for r in pl.iter_rows(values_only=True) if r[0] == "商品销售额（本期计费的销售）"][0]
+    one = prepared[0][0]["m"]["pl"]["gmv_billed"]
+    assert net[2] == pytest.approx(one) and net[3] == pytest.approx(one) and net[4] == pytest.approx(2 * one)
+    # the long lists carry a 店铺 column
+    sku = wb[K.SHEET_NAMES[6]]
+    assert sku.cell(row=5, column=1).value == "店铺"
+    assert {r[0] for r in sku.iter_rows(min_row=6, values_only=True) if r[0] in ("STORE_MX", "STORE_MX2")} == \
+        {"STORE_MX", "STORE_MX2"}
+
+
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="LibreOffice not installed")
+def test_combined_recalculates_with_zero_residuals(mx_folder, tmp_path):
+    prepared = [build.prepare(n, f, "2026-09", "mx") for n, f in two_stores(mx_folder, tmp_path)]
+    res = build.write_combined(prepared, "2026-09", "MX", out_dir=str(tmp_path / "out"), recalc=True)
+    n_f, n_err, n_none, bad = res["scan"]
+    assert n_err == 0, bad
+    wb = load_workbook(res["out"], data_only=True)
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            if row and isinstance(row[0], str) and row[0].startswith("残差"):
+                assert all(abs(v) < 0.01 for v in row[1:] if isinstance(v, (int, float))), (ws.title, row)
+
+
+def test_open_bill_makes_the_report_provisional(tmp_path):
+    f = tmp_path / "OPEN"
+    f.mkdir()
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"), sept_rows())
+    p = str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx")
+    wb = load_workbook(p)
+    wb.active["A2"] = "Este reporte podría tener cambios hasta el cierre del período de facturación."
+    wb.save(p)
+    S, checks = build.prepare("OPEN", str(f), "2026-09", "mx")
+    ck = dict((c["key"], c) for c in checks)
+    assert not ck["invoice_open"]["ok"] and ck["invoice_open"]["severity"] == "warn"
+    assert S["provisional"] == ["Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"]
+    res = build.write_store(S, checks, out_dir=str(tmp_path / "out"), recalc=False)
+    texts = [c.value for row in load_workbook(res["out"])[K.SHEET_NAMES[0]].iter_rows() for c in row
+             if isinstance(c.value, str)]
+    assert any(t.startswith("暂定") or "；暂定" in t for t in texts)
+
+
+def test_runner_bases_and_outcomes(mx_folder, tmp_path, monkeypatch):
+    from platforms.mercadolibre import run_reports as RR
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"reports": {"ml_basis": ["bill"]}}', encoding="utf-8")
+    assert RR.configured_bases(str(cfg)) == ["bill"]
+    assert RR.configured_bases(str(tmp_path / "missing.json")) == ["bill", "order"]
+    assert RR.bases_from_arg("both", str(cfg)) == ["bill", "order"]
+    assert RR.bases_from_arg(None, str(cfg)) == ["bill"]
+    monkeypatch.setattr("core.sku_costs.load_configured", lambda *a: None)
+    stores = two_stores(mx_folder, tmp_path) + [("BROKEN", str(tmp_path / "nowhere"))]
+    res = RR.bill_reports(stores, "2026-09", "MX", str(tmp_path / "out"))
+    by = dict((r["label"], r) for r in res)
+    assert by["BROKEN 账单基准"]["outcome"] == "crashed"          # one store failing does not stop the rest
+    assert by["STORE_MX 账单基准"]["outcome"] in ("ok", "checks_failed")
+    assert os.path.exists(by["全店汇总 账单基准"]["out"])
+    assert os.path.basename(by["STORE_MX2 账单基准"]["out"]) == "STORE_MX2_2026-09_账单基准.xlsx"

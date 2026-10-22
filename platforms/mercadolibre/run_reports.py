@@ -8,6 +8,14 @@
     python -m platforms.mercadolibre.run_reports --no-per-store         # 只出汇总
     python -m platforms.mercadolibre.run_reports --dry-run              # 只列出会用哪个下载目录
     python -m platforms.mercadolibre.run_reports --region CL            # 智利店铺（默认 MX 墨西哥）；秘鲁 --region PE
+    python -m platforms.mercadolibre.run_reports --basis bill           # 只出账单基准（默认两种都出）
+
+两种基准（--basis，默认 both；config.json → reports.ml_basis 可改默认）
+-------------------------------------------------------------------------
+* 账单基准（bill，会计入账口径）：platforms/mercadolibre/bill_report，文件名加
+  `_账单基准` 后缀 —— `<店>_<月>_账单基准.xlsx`、`MX_ML_全店汇总_<月>_账单基准.xlsx`。
+* 订单基准（order，经营分析参考）：本文件一直出的那份，文件名不变。
+两者独立计算、互不引用；一种出错不影响另一种。账单基准先出、先列。
 
 店铺清单来自 config.json 的白名单，和下载流程同一个来源，不在这里另写一份。
 每家店用它**最近一个文件齐全**的下载目录 —— 不是无脑取最新，因为一次
@@ -44,6 +52,8 @@ from platforms.mercadolibre import financial_report
 
 from core.paths import ROOT
 OUT_DIR = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+BASES = ("bill", "order")                 # 账单基准是会计入账口径，先出、先列
+BASIS_CN = {"bill": "账单基准", "order": "订单基准"}
 
 
 def prev_month(today=None):
@@ -94,6 +104,94 @@ def latest_folder(store, month, base=None):
     """这家店做 month 月报表要用的下载目录（和 resolve() 同一条规则：
     financial_report.latest_run），没有返回 None。tools/sku_cost_template 用它。"""
     return financial_report.latest_run(store, base=base, month=month)[0]
+
+
+def configured_bases(config_path=None):
+    """config.json → reports.ml_basis（["bill", "order"] 的子集），没写就两种都出。"""
+    import io
+    import json
+    path = config_path or store_config.CONFIG_PATH
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            node = (json.load(fh).get("reports") or {}).get("ml_basis")
+    except (IOError, OSError, ValueError, AttributeError):
+        node = None
+    if isinstance(node, str):
+        node = [node]
+    picked = [b for b in BASES if isinstance(node, list) and b in node]
+    return picked or list(BASES)
+
+
+def bases_from_arg(arg, config_path=None):
+    if arg in BASES:
+        return [arg]
+    if arg == "both":
+        return list(BASES)
+    return configured_bases(config_path)
+
+
+def bill_reports(usable, month, region, out_dir, per_store=True, combined=True):
+    """账单基准：每店一份 + 全店汇总一份。每家店只读一次数据，单店和汇总共用。
+    返回结果列表（outcome / label / out / checks / seconds），和订单基准的同一种。"""
+    from core import sku_costs as SC
+    from platforms.mercadolibre.bill_report import build as BB
+    site = region.lower()
+    results, prepared = [], []
+    try:
+        table = SC.load_configured()
+    except Exception as e:                    # 成本表读不出来：照常出报表，成本行留空
+        print("  [警告] 商品成本表读不出来，本次账单基准报表不填成本：%s" % e)
+        table = None
+    print("\n" + "=" * 62)
+    print("账单基准报表（会计入账口径）—— %d 家店铺" % len(usable))
+    print("=" * 62)
+    for name, folder in usable:
+        print("\n" + "-" * 62)
+        print("单店报表：%s" % name)
+        print("-" * 62)
+        print("  [账单基准] 读取 %s" % folder)
+        meta_site = BB.site_of(folder)
+        if meta_site and meta_site != site:
+            r = {"label": "%s 账单基准" % name, "outcome": "skipped", "checks": [], "out": "", "seconds": 0,
+                 "skipped": "下载目录记的站点是 %s，不是 %s" % (meta_site, site)}
+            print("    [跳过] %s" % r["skipped"])
+            results.append(r)
+            continue
+        def prep(name=name, folder=folder):
+            S, checks = BB.prepare(name, folder, month, site, table)
+            return {"S": S, "checks": checks}
+        got = BB.guarded("%s 账单基准" % name, prep)
+        if got.get("crashed"):
+            print("    [错误] 读取或计算出错：%s" % got["output"])
+            results.append(got)
+            continue
+        S, checks = got["S"], got["checks"]
+        prepared.append((S, checks))
+        if per_store:
+            r = BB.guarded("%s 账单基准" % name, BB.write_store, S, checks, out_dir, table)
+            _print_bill(r)
+            results.append(r)
+    if combined and prepared:
+        print("\n" + "-" * 62)
+        print("汇总报表：%d 家店铺（账单基准）" % len(prepared))
+        print("-" * 62)
+        r = BB.guarded("全店汇总 账单基准", BB.write_combined, prepared, month, region, out_dir, table,
+                       order_combined=combined_name(month, region))
+        _print_bill(r)
+        results.append(r)
+    return results
+
+
+def _print_bill(r):
+    if r.get("crashed"):
+        print("    [错误] 生成报表时出错：%s" % r["output"])
+        return
+    for c in r.get("checks") or []:
+        if not (c["ok"] or c["skipped"]) and c["severity"] == "error":
+            print("    ✗  %-12s %s：%s" % (c["store"], c["name"], c["detail"]))
+    if r.get("scan") is not None and r["scan"][1]:
+        print("    [警告] 重算后有 %d 个公式报错：%s" % (r["scan"][1], "；".join(r["scan"][3][:5])))
+    print("    [输出] %s" % r["out"])
 
 
 def summarize_checks(checks):
@@ -182,7 +280,11 @@ def main():
                          "就不写出那份报表（退出码 2）")
     ap.add_argument("--dry-run", action="store_true",
                     help="只列出会用哪个下载目录，不生成报表")
+    ap.add_argument("--basis", choices=["both", "bill", "order"], default=None,
+                    help="出哪种基准：both 两种（默认；config.json reports.ml_basis 可改）/ "
+                         "bill 只出账单基准（会计入账口径）/ order 只出订单基准")
     args = ap.parse_args()
+    bases = bases_from_arg(args.basis)
 
     month = args.month or prev_month()
     names = store_names(args.stores, args.region)
@@ -197,6 +299,7 @@ def main():
           % ("" if args.region == "MX"
              else store_config.region_name(args.region) + " ",
              month, len(names)))
+    print("报表基准：%s" % "、".join(BASIS_CN[b] for b in bases))
     print("=" * 62)
     usable, unusable = resolve(names, month=month)
 
@@ -215,9 +318,16 @@ def main():
         print("       但本次无法自动检查公式是否报错。")
 
     results = []
+    if "bill" in bases:
+        results += bill_reports(usable, month, args.region, args.out_dir,
+                                per_store=not args.no_per_store, combined=not args.no_combined)
+        if "order" in bases:
+            print("\n" + "=" * 62)
+            print("订单基准报表（经营分析参考）—— %d 家店铺" % len(usable))
+            print("=" * 62)
 
     # ---- 单店报表：一家出问题不影响其余 ----
-    if not args.no_per_store:
+    if "order" in bases and not args.no_per_store:
         for name, folder in usable:
             out = os.path.join(args.out_dir, "%s_%s.xlsx" % (name, month))
             print("\n" + "-" * 62)
@@ -228,11 +338,11 @@ def main():
                 site=args.region.lower(),   # 国家传给报表：币种、账单周期、税务口径
                 metrics_out=(os.path.join(args.out_dir, "%s_%s_指标.json"
                                           % (name, month)) if args.metrics else None))
-            r["label"] = name
+            r["label"] = name + (" 订单基准" if len(bases) > 1 else "")
             results.append(r)
 
     # ---- 汇总报表：12 家店传进同一次调用 ----
-    if not args.no_combined:
+    if "order" in bases and not args.no_combined:
         out = os.path.join(args.out_dir, combined_name(month, args.region))
         print("\n" + "-" * 62)
         print("汇总报表：%d 家店铺" % len(usable))
@@ -242,7 +352,7 @@ def main():
             site=args.region.lower(),       # 一份汇总只属于一个国家，见 report_build --site
             metrics_out=(os.path.join(args.out_dir, "全店_%s_指标.json" % month)
                          if args.metrics else None))
-        r["label"] = "全店汇总"
+        r["label"] = "全店汇总" + (" 订单基准" if len(bases) > 1 else "")
         results.append(r)
 
     # ---- 汇总 ----

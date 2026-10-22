@@ -300,7 +300,7 @@ def test_run_reports_picks_the_region_and_names_the_files(
                         lambda names, month=None: ([(n, "/d/" + n) for n in names], []))
     monkeypatch.setattr(run_reports.financial_report, "has_libreoffice", lambda: True)
     monkeypatch.setattr(run_reports.financial_report, "build", build)
-    argv = ["run_reports.py", "--month", "2026-08", "--out-dir", str(tmp_path)]
+    argv = ["run_reports.py", "--month", "2026-08", "--basis", "order", "--out-dir", str(tmp_path)]
     if region != "MX":
         argv += ["--region", region]
     monkeypatch.setattr(sys, "argv", argv)
@@ -475,3 +475,27 @@ def test_rerun_plan_derives_region_from_the_store(cfg):
     assert p["region"] == "MX,CL" and len(p["groups"]) == 2
     assert region_choice.action_line(a("Andes_CL")) == "Andes_CL（美客多 智利） —— 要登录"
     assert region_choice.action_line(a("BOCINA_SM")) == "BOCINA_SM（美客多 墨西哥） —— 要登录"
+
+
+def test_run_reports_both_bases_bill_first(monkeypatch, tmp_path, cfg):
+    calls = []
+    monkeypatch.setattr(run_reports, "resolve",
+                        lambda names, month=None: ([(n, "/d/" + n) for n in names], []))
+    monkeypatch.setattr(run_reports.financial_report, "has_libreoffice", lambda: True)
+
+    def build(pairs, month, out, **kw):
+        calls.append(("order", os.path.basename(out)))
+        return {"ok": True, "skipped": None, "returncode": 0, "seconds": 1, "wrote": True, "stale": False,
+                "checks": [], "checks_failed": False, "data_incomplete": False, "formula_errors": False,
+                "output": "", "out": out}
+
+    def bill(usable, month, region, out_dir, per_store=True, combined=True):
+        calls.append(("bill", len(usable), per_store, combined))
+        return [{"label": "全店汇总 账单基准", "outcome": "ok", "checks": [], "out": "x.xlsx", "seconds": 1}]
+    monkeypatch.setattr(run_reports.financial_report, "build", build)
+    monkeypatch.setattr(run_reports, "bill_reports", bill)
+    monkeypatch.setattr(run_reports, "configured_bases", lambda config_path=None: ["bill", "order"])
+    monkeypatch.setattr(sys, "argv", ["run_reports.py", "--month", "2026-08", "--out-dir", str(tmp_path)])
+    assert run_reports.main() == 0
+    assert calls[0][0] == "bill" and [c[0] for c in calls[1:]] == ["order"] * (len(calls) - 1)
+    assert calls[-1] == ("order", "MX_ML_全店汇总_2026-08.xlsx")

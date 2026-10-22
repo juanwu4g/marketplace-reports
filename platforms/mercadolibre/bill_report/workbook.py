@@ -13,9 +13,9 @@ from core import report_family as RF
 from core import report_kit as K
 from core import sku_costs as SC
 from core.report_kit import F, fill, wrap
-from experiments.ml_invoice_report import catalog as C
-from experiments.ml_invoice_report import mapping as M
-from experiments.ml_invoice_report import status as ST
+from platforms.mercadolibre.bill_report import catalog as C
+from platforms.mercadolibre.bill_report import mapping as M
+from platforms.mercadolibre.bill_report import status as ST
 
 SHEETS = K.SHEET_NAMES
 PL_SHEET = SHEETS[1]
@@ -132,7 +132,8 @@ def resid_row(fam, ws, r, ncols, label, cells, label_col=1):
 
 # ------------------------------------------------------------------ ①
 
-def sheet_readme(wb, fam, S, ctx):
+def readme_sections(S, ctx):
+    """①'s sections for one store; the combined workbook reuses the policy ones."""
     p, m, pl = S["prof"], S["m"], S["m"]["pl"]
     dec = p.decimals
     fac = [f for f in S["inv_facts"] if f["doc"] == "FAC"]
@@ -167,7 +168,7 @@ def sheet_readme(wb, fam, S, ctx):
                      "账单的每一行（含贷记单）只计一次（按 Número del cargo），本月计费日的行合起来就是“账本”；"
                      "② 的平台费用 ＝ 账本，销售额也取自账单的销售行。其他文件只用来找 SKU、判断状态、把店铺级"
                      "费用落到 SKU，不提供金额。"),
-            ("实验性质", "这是实验报表，与每月正式报表（按订单）完全独立地计算，不引用、不比较它的数字。"),
+            ("两份报表的关系", "每月与订单基准报表（%s_%s.xlsx）一起生成，两者各自独立计算、互不引用。会计入账以本报表（账单基准）为准；订单基准报表作经营分析参考。" % (S["store"], ctx["month"])),
             ("店铺 / 国家 / 币种", "%s ／ %s ／ %s（%s）" % (S["store"], p.country_cn, p.currency, p.currency_cn)),
             ("下载文件夹", S["folder"]),
         ]),
@@ -258,28 +259,51 @@ def sheet_readme(wb, fam, S, ctx):
             ("账单还会变", "下载之后平台还可能对本月的销售开出冲销（期后）；本月已截止的账单行不会再变。"),
         ]),
     ]
+    return sections
+
+
+# indices of readme_sections() that hold policy text, the same for every store
+POLICY_SECTIONS = (4, 5, 7)
+
+
+def sheet_readme(wb, fam, S, ctx):
+    sections = readme_sections(S, ctx)
     bad = RF.failed_errors(ctx["checks"])
-    warning = ("本期有 %d 项 error 级校验未通过（见⑩）：相关数字在修好之前不能信。" % len(bad)) if bad else None
+    parts = [x for x in (("本期有 %d 项 error 级校验未通过（见⑩）：相关数字在修好之前不能信" % len(bad)) if bad else "",
+                         provisional_text([S])) if x]
+    warning = "；".join(parts) + "。" if parts else None
     fam.readme_sheet(wb, SHEETS[0], "账单基准财务报表 · %s · %s" % (ctx["period_cn"], S["store"]),
-                     "实验报表（与正式报表独立）　生成于 %s　基准：MercadoLibre 账单 ＋ 贷记单（计费日）" % ctx["built"],
+                     "账单基准（会计入账口径）　生成于 %s　基准：MercadoLibre 账单 ＋ 贷记单（计费日）" % ctx["built"],
                      sections, warning=warning)
+
+
+def provisional_text(Ss):
+    """The 暂定 banner when a bill the month uses has not closed yet, else ""."""
+    open_ = ["%s %s" % (S["store"], "、".join(S["provisional"])) if len(Ss) > 1 else "、".join(S["provisional"])
+             for S in Ss if S.get("provisional")]
+    if not open_:
+        return ""
+    return ("暂定：%s 尚未关账，本月落在其中的费用以后还可能变 —— 关账后在窗口点「只出报表」重出" % "；".join(open_))
 
 
 # ------------------------------------------------------------------ ②
 
 def sheet_pl(wb, fam, S, ctx):
+    """② for one store or several (fam.stores; S is the first, for country facts)."""
     p = S["prof"]
-    pl = S["m"]["pl"]
     rows = pl_rows(S)
     sh, r, at, note_col = fam.pl_sheet(
         wb, SHEETS[1], rows, value=lambda X, key: X["m"]["pl"][key],
         title="合并损益表（%s · 账单基准）" % ctx["period_cn"],
         subtitle="口径：计费日在 %s → %s 的全部账单行（含贷记单）；金额含 %s，按 MercadoLibre 账单原值。单位：%s。"
                  "灰底=公式行，浅蓝=小计，黄底=需你录入。行位置每期固定。" % (S["p0"], S["p1"], p.vat_name, p.currency))
-    cost = S.get("cost")
-    if cost is not None:
-        sh.ws.cell(row=at["cogs"], column=sh.c0).value = cost.cogs
-        sh.ws.cell(row=at["cogs"], column=note_col).value = SC.pl_note(cost)
+    costs = [X.get("cost") for X in fam.stores]
+    if any(c is not None for c in costs):
+        for i, cost in enumerate(costs):
+            if cost is not None:
+                sh.ws.cell(row=at["cogs"], column=sh.c0 + i).value = cost.cogs
+        sh.ws.cell(row=at["cogs"], column=note_col).value = fam.per_store(
+            lambda X: SC.pl_note(X["cost"]) if X.get("cost") is not None else "未配置成本")
     net = lambda X: X["m"]["pl"]["net_gmv"]
     share = lambda keys: (lambda X: -sum(X["m"]["pl"][k] for k in keys))
     r = fam.ratio_block(sh, r + 1, "费用率（占净商品销售额）", [
@@ -290,7 +314,6 @@ def sheet_pl(wb, fam, S, ctx):
         ("Full 仓储与操作", share(["fee_full_storage", "fee_full_ops"]), net),
         ("平台费用合计", share(C.PL_FEE_KEYS), net),
         ("经营贡献率", lambda X: X["m"]["pl"]["contrib"], net)], note_col)
-    m = S["m"]
     vr = pct(p.vat_rate, 0)
     memo = [
         ("营业收入所含 %s（销项，参考）" % p.vat_name, "%s débito fiscal" % p.vat_name, lambda X: X["m"]["vat_out"],
@@ -301,15 +324,16 @@ def sheet_pl(wb, fam, S, ctx):
     if p.withholding:
         memo.append(("平台代扣代缴税金（IVA/ISR）——不在本基准内", "Retenciones (MercadoPago)",
                      lambda X: X["m"]["mp_taxes"] or 0.0,
-                     ("账单不含代扣税。本行是 MercadoPago 结算流水里本月计费销售的 TAXES_AMOUNT 合计，仅作参考；"
-                      "它是预缴税款而非费用") if m["mp_taxes"] is not None else
-                     "账单不含代扣税；本店文件夹没有 MercadoPago 结算文件，无法给出参考值（显示 0）"))
+                     fam.per_store(lambda X: (
+                         "账单不含代扣税。本行是 MercadoPago 结算流水里本月计费销售的 TAXES_AMOUNT 合计，仅作参考；"
+                         "它是预缴税款而非费用") if X["m"]["mp_taxes"] is not None else
+                         "账单不含代扣税；本店文件夹没有 MercadoPago 结算文件，无法给出参考值（显示 0）")))
     else:
         memo.append(("平台代扣税", "Retenciones", lambda X: 0.0, "%s平台不代扣；账单无此项" % p.country_cn))
     memo += [
         ("期后冲销：本月计费、月后才冲销的销售额（不计入本月）", "Anulación posterior al cierre",
-         lambda X: -X["m"]["post_amount"], "%d 笔；对应佣金冲销 %s。按计费日口径属于下月，明细见⑤三-E" % (
-             m["post_n"], fmtm(-m["post_commission"], p.decimals))),
+         lambda X: -X["m"]["post_amount"], fam.per_store(lambda X: "%d 笔；对应佣金冲销 %s" % (
+             X["m"]["post_n"], fmtm(-X["m"]["post_commission"], p.decimals))) + "。按计费日口径属于下月，明细见⑤三-E"),
         ("平台给的费用折扣（已含在费用净额中）", "Valor del descuento", lambda X: X["m"]["fee_discount"],
          "佣金、运费行上的折扣；上表的费用已是折后金额"),
         ("本期费用：从销售款中直接扣除", "Descontado de la operación = Si",
@@ -657,11 +681,8 @@ QC_COLS = [RF.Col("订单号", 19), RF.Col("SKU", 18), RF.Col("商品", 34, font
            RF.Col("MercadoPago 实际退款", 14, RF.MONEY), RF.Col("计入本期？", 12)]
 
 
-def sheet_qc(wb, fam, S, ctx):
-    p = S["prof"]
-    ws = fam.table_sheet(wb, SHEETS[5], "退货质检明细（%s · 账单基准）" % ctx["period_cn"],
-                         "每笔有退货迹象的销售一行：本期有退货处理费、本期被归为退货退款的冲销、或本月计费且在月后退货的。"
-                         "审核与质检来自销售报表与 Returns 文件，退货处理费与冲销来自账单。单位：%s" % p.currency, QC_COLS)
+def qc_rows(S):
+    """⑥'s rows for one store, in display order."""
     rev_in = {}
     for e in S["revs"]:
         if e["in_period"]:
@@ -695,9 +716,20 @@ def sheet_qc(wb, fam, S, ctx):
     nos = -S["P"].loc[(S["P"]["line"] == "fee_return") & (S["P"]["sale_no"] == ""), "amount"].sum()
     if nos:
         rows.append(["（无订单号）", "", "", "", "", "", "", "", "", "", "", "", "", "", float(nos), 0.0, 0.0, "是"])
+    return sorted(rows, key=lambda x: (x[-1] != "是", x[3], x[0]))
+
+
+QC_SUBTITLE = ("每笔有退货迹象的销售一行：本期有退货处理费、本期被归为退货退款的冲销、或本月计费且在月后退货的。"
+               "审核与质检来自销售报表与 Returns 文件，退货处理费与冲销来自账单。单位：%s")
+
+
+def sheet_qc(wb, fam, S, ctx):
+    p = S["prof"]
+    ws = fam.table_sheet(wb, SHEETS[5], "退货质检明细（%s · 账单基准）" % ctx["period_cn"],
+                         QC_SUBTITLE % p.currency, QC_COLS)
     r = 5
     first = r
-    for vals in sorted(rows, key=lambda x: (x[-1] != "是", x[3], x[0])):
+    for vals in qc_rows(S):
         fam.write_row(ws, r, QC_COLS, vals)
         r += 1
     write_cells(ws, r, 1, ["合计"], font=BOLD, fill_color=K.C_TOTAL)
@@ -753,23 +785,10 @@ MAP_COLS = [RF.Col("订单号（Número de venta）", 19), RF.Col("包裹号", 1
             RF.Col("备注", 40, font=GREY9), RF.Col("状态分类", 14), RF.Col("本行用途", 16, font=GREY9)]
 
 
-def sheet_sku(wb, fam, S, ctx):
-    p = S["prof"]
-    cost = S.get("cost")
-    cols = sku_cols(cost is not None)
-    ws = wb.create_sheet(SHEETS[6])
-    K.title_rows(ws, "SKU 盈利分析（%s · 账单基准）" % ctx["period_cn"],
-                 "表一：每个 SKU 一行。直接费用按订单/明细归属；“分摊”列是店铺级费用按净商品销售额占比分摊（政策见①五），"
-                 "两者分开列。单位：%s" % p.currency,
-                 "表二（下方）：每笔销售 → SKU 的映射，含级别与可信度。")
-    RF.set_widths(ws, [c.width for c in cols])
-    r = 4
-    r = section_head(ws, r, "表一　SKU 盈利", len(cols))
-    K.header_cells(ws, r, [c.header for c in cols])
-    ws.row_dimensions[r].height = 42
-    r += 1
-    first = r
+def sku_rows(S, cost):
+    """⑦ 表一 for one store: [(SKU, values)] in display order (formula columns None)."""
     sk = S["sku"]
+    out = []
 
     def sort_key(k):
         return (k.startswith("（"), k.startswith(M.UNMAPPED_PREFIX), -sk[k]["net_gmv"], k)
@@ -789,6 +808,27 @@ def sheet_sku(wb, fam, S, ctx):
             line = cost.line(k)
             vals += [line.unit_cost if line is not None and line.unit_cost is not None else 0.0,
                      (line.cost_units if line is not None else 0), None, None, SC.status_text(line)]
+        out.append((k, vals))
+    return out
+
+
+def sheet_sku(wb, fam, S, ctx):
+    p = S["prof"]
+    cost = S.get("cost")
+    cols = sku_cols(cost is not None)
+    ws = wb.create_sheet(SHEETS[6])
+    K.title_rows(ws, "SKU 盈利分析（%s · 账单基准）" % ctx["period_cn"],
+                 "表一：每个 SKU 一行。直接费用按订单/明细归属；“分摊”列是店铺级费用按净商品销售额占比分摊（政策见①五），"
+                 "两者分开列。单位：%s" % p.currency,
+                 "表二（下方）：每笔销售 → SKU 的映射，含级别与可信度。")
+    RF.set_widths(ws, [c.width for c in cols])
+    r = 4
+    r = section_head(ws, r, "表一　SKU 盈利", len(cols))
+    K.header_cells(ws, r, [c.header for c in cols])
+    ws.row_dimensions[r].height = 42
+    r += 1
+    first = r
+    for k, vals in sku_rows(S, cost):
         cells = fam.write_row(ws, r, cols, vals)
         if cost is not None and (cost.line(k) is None or cost.line(k).unit_cost is None):
             cells[28].fill = fill(K.C_INPUT)
@@ -839,6 +879,14 @@ def sheet_sku(wb, fam, S, ctx):
     K.header_cells(ws, r, [c.header for c in MAP_COLS])
     ws.row_dimensions[r].height = 30
     r += 1
+    for vals, unmapped in map_rows(S):
+        fam.write_row(ws, r, MAP_COLS, vals, fill_color=K.C_BAD if unmapped else None)
+        r += 1
+    ws.freeze_panes = "B6"
+
+
+def map_rows(S):
+    """⑦ 表二 for one store: (values, unmapped?)."""
     listed = set()
     rows = []
     for ev in S["cohort"]:
@@ -848,15 +896,13 @@ def sheet_sku(wb, fam, S, ctx):
         if e["in_period"] and e["sale_no"] not in listed and e["sale_no"] in S["sales"]:
             rows.append((S["sales"][e["sale_no"]], "仅本期冲销（上月销售）"))
             listed.add(e["sale_no"])
+    out = []
     for s, use in rows:
         mp = S["map"][s["sale_no"]]
-        fam.write_row(ws, r, MAP_COLS, [
-            s["sale_no"], s["pack_no"], s["pago"], s["listing"], s["title"], s["qty"], s["total"],
-            str(s["charge_date"] or ""), s["sku"], M.TIER_CN[mp.tier], M.CONFIDENCE[mp.tier], mp.source, mp.note,
-            ST.CLASS_CN[S["status"][s["sale_no"]]["cls"]], use],
-            fill_color=K.C_BAD if mp.tier == M.NONE else None)
-        r += 1
-    ws.freeze_panes = "B6"
+        out.append(([s["sale_no"], s["pack_no"], s["pago"], s["listing"], s["title"], s["qty"], s["total"],
+                     str(s["charge_date"] or ""), s["sku"], M.TIER_CN[mp.tier], M.CONFIDENCE[mp.tier], mp.source,
+                     mp.note, ST.CLASS_CN[S["status"][s["sale_no"]]["cls"]], use], mp.tier == M.NONE))
+    return out
 
 
 def _col_idx(letters):
@@ -930,13 +976,12 @@ def sheet_trend(wb, fam, S, ctx):
 
 # ------------------------------------------------------------------ ⑨
 
-def sheet_inventory(wb, fam, S, ctx):
-    p = S["prof"]
-    if not p.has_full:
-        RF.not_applicable_sheet(wb, SHEETS[8], "库存与动销分析",
-                                "不适用：%s没有 Full 仓，平台不提供库存报表（库存页 404）。本月净销量见⑦。" % p.country_cn)
-        return
-    cols = [RF.Col("SKU", 20), RF.Col("商品", 40, font=TEXT9), RF.Col("可售（Buena calidad）", 11, K.INT),
+INV_SUBTITLE = ("库存是下载时的快照（%s），不是月末余额；对账列来自 conciliation（%s）。只看数量，不进损益。"
+                "判断：可售 > 120 天 = 积压；< 14 天 = 补货；有销量无库存 = 断货。")
+
+
+def inventory_cols(S):
+    return [RF.Col("SKU", 20), RF.Col("商品", 40, font=TEXT9), RF.Col("可售（Buena calidad）", 11, K.INT),
             RF.Col("待促销（Para impulsar）", 11, K.INT), RF.Col("未上架（Para poner）", 11, K.INT),
             RF.Col("待处理（Para evitar descarte）", 11, K.INT),
             RF.Col("库存合计（快照）", 11, K.INT, formula="=SUM(C{r}:F{r})", fill=K.C_CALC),
@@ -945,10 +990,47 @@ def sheet_inventory(wb, fam, S, ctx):
             RF.Col("可售天数", 9, K.INT, formula="=IF(J{r}<=0,IF(G{r}>0,999,0),G{r}/J{r})", fill=K.C_CALC),
             RF.Col("对账期初", 9, K.INT), RF.Col("入库", 8, K.INT), RF.Col("售出", 8, K.INT),
             RF.Col("买家退回", 8, K.INT), RF.Col("对账期末", 9, K.INT), RF.Col("判断", 14)]
+
+
+def sheet_inventory(wb, fam, S, ctx):
+    p = S["prof"]
+    if not p.has_full:
+        RF.not_applicable_sheet(wb, SHEETS[8], "库存与动销分析",
+                                "不适用：%s没有 Full 仓，平台不提供库存报表（库存页 404）。本月净销量见⑦。" % p.country_cn)
+        return
+    cols = inventory_cols(S)
     ws = fam.table_sheet(wb, SHEETS[8], "库存与动销分析（Full 快照 vs %s 账单净销量）" % ctx["period_cn"],
-                         "库存是下载时的快照（%s），不是月末余额；对账列来自 conciliation（%s）。只看数量，不进损益。"
-                         "判断：可售 > 120 天 = 积压；< 14 天 = 补货；有销量无库存 = 断货。" % (
-                             S["stock_snapshot"] or "无快照文件", S["conciliation_range"] or "无对账文件"), cols)
+                         INV_SUBTITLE % (S["stock_snapshot"] or "无快照文件", S["conciliation_range"] or "无对账文件"),
+                         cols)
+    r = 5
+    first = r
+    for vals, flag in inventory_rows(S):
+        fam.write_row(ws, r, cols, vals, fill_color=K.C_WARN if flag else None)
+        r += 1
+    write_cells(ws, r, 1, ["合计"], font=BOLD, fill_color=K.C_TOTAL)
+    for j in (3, 4, 5, 6, 7, 8, 9):
+        L_ = get_column_letter(j)
+        write_cells(ws, r, j, ["=SUM(%s%d:%s%d)" % (L_, first, L_, r - 1)], fmt=K.INT, font=BOLD,
+                    fill_color=K.C_TOTAL)
+    tot = r
+    r += 1
+    unm = unmapped_net_units(S)
+    ws.cell(row=r, column=1, value="⑦ 净件数合计（不含未匹配 %s 件）" % fmtm(unm, 0)).font = BOLD
+    c = ws.cell(row=r, column=9, value="=%s!F%d-(%.6f)" % (q(SHEETS[6]), ctx["sku_total_row"], unm))
+    c.number_format = K.INT
+    r += 1
+    resid_row(fam, ws, r, len(cols), "残差（应为 0）", {9: "=ROUND(I%d-I%d,6)" % (tot, r - 1)})
+    ws.freeze_panes = "B5"
+
+
+def unmapped_net_units(S):
+    """⑦'s net units that are not a real SKU (unmapped sales, pseudo rows)."""
+    skus = [k for k in S["sku"] if not k.startswith("（") and not k.startswith(M.UNMAPPED_PREFIX)]
+    return S["m"]["sku_sum"]["units"] - S["m"]["sku_sum"]["units_rev"] - sum(S["sku"][k]["units_net"] for k in skus)
+
+
+def inventory_rows(S):
+    """⑨'s rows for one store (formula columns None): [(values, flagged?)]."""
     stock = S["stock"]
     by = {}
     if stock is not None and len(stock):
@@ -964,8 +1046,7 @@ def sheet_inventory(wb, fam, S, ctx):
                 x[k] += r_[k]
     skus = [k for k in S["sku"] if not k.startswith("（") and not k.startswith(M.UNMAPPED_PREFIX)]
     allk = sorted(set(skus) | set(by) | set(conc), key=lambda k: (-S["sku"][k]["units_net"] if k in S["sku"] else 0, k))
-    r = 5
-    first = r
+    out = []
     for k in allk:
         x = by.get(k, {})
         c = conc.get(k, {})
@@ -976,28 +1057,13 @@ def sheet_inventory(wb, fam, S, ctx):
         cover = (stock_total / daily) if daily > 0 else (999 if stock_total > 0 else 0)
         verdict = ("断货" if stock_total <= 0 and units > 0 else "积压" if cover > 120 else
                    "补货" if cover < 14 and units > 0 else "无库存无销量" if stock_total <= 0 else "正常")
-        fam.write_row(ws, r, cols, [
+        out.append(([
             k, x.get("title") or S["sku_titles"].get(k, ""), x.get("Buena calidad", 0.0),
             x.get("Para impulsar ventas", 0.0), x.get("Para poner en venta", 0.0),
             x.get("Para evitar descarte", 0.0), None, x.get("sold30", 0.0), units, None, None,
             c.get("start", 0.0), c.get("in", 0.0), c.get("sold", 0.0), c.get("returned", 0.0), c.get("end", 0.0),
-            verdict], fill_color=K.C_WARN if verdict in ("积压", "补货", "断货") else None)
-        r += 1
-    write_cells(ws, r, 1, ["合计"], font=BOLD, fill_color=K.C_TOTAL)
-    for j in (3, 4, 5, 6, 7, 8, 9):
-        L_ = get_column_letter(j)
-        write_cells(ws, r, j, ["=SUM(%s%d:%s%d)" % (L_, first, L_, r - 1)], fmt=K.INT, font=BOLD,
-                    fill_color=K.C_TOTAL)
-    tot = r
-    r += 1
-    mapped_net = sum(S["sku"][k]["units_net"] for k in skus)
-    unm = S["m"]["sku_sum"]["units"] - S["m"]["sku_sum"]["units_rev"] - mapped_net
-    ws.cell(row=r, column=1, value="⑦ 净件数合计（不含未匹配 %s 件）" % fmtm(unm, 0)).font = BOLD
-    c = ws.cell(row=r, column=9, value="=%s!F%d-(%.6f)" % (q(SHEETS[6]), ctx["sku_total_row"], unm))
-    c.number_format = K.INT
-    r += 1
-    resid_row(fam, ws, r, len(cols), "残差（应为 0）", {9: "=ROUND(I%d-I%d,6)" % (tot, r - 1)})
-    ws.freeze_panes = "B5"
+            verdict], verdict in ("积压", "补货", "断货")))
+    return out
 
 
 # ------------------------------------------------------------------ ⑩
