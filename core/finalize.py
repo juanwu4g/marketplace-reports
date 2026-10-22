@@ -36,6 +36,7 @@ Legacy layout: nothing here touches files; results files and grades are written 
 the runners, workbooks stay flat as before. run() only reports the finals.
 """
 import collections
+import datetime
 import io
 import os
 import re
@@ -47,6 +48,7 @@ from core import results
 
 VERSIONS = "_versions"
 NOTES = "版本说明.txt"
+RETIRED = "_旧文件"             # <out_dir>/_versions/_旧文件/: files moved out of the month folder
 DRAFT = "_未定稿"
 RUN_NAME_RE = re.compile(r"^\d{8}_\d{6}.*_m\d{6}$")
 
@@ -150,6 +152,25 @@ def _remove_file(path, log, what):
         return False
 
 
+def retire(unit, path, log, why):
+    """Move a file out of the month folder into _versions/_旧文件/ (never delete:
+    it may be a report sent before the month had a final version, e.g. one the
+    layout migration brought in). The month folder holds finals and _未定稿 only."""
+    if not os.path.isfile(path):
+        return False
+    d = os.path.join(unit.out_dir, VERSIONS, RETIRED)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = os.path.join(d, "%s_%s" % (stamp, os.path.basename(path)))
+    try:
+        os.makedirs(d, exist_ok=True)
+        os.replace(path, dst)
+        log("移出月份文件夹（%s）：%s → %s" % (why, os.path.basename(path), dst), keep=True)
+        return True
+    except OSError as e:
+        log("[未能移动] %s：%s" % (path, e))
+        return False
+
+
 def remove_version_workbook(unit, doc, log):
     """A non-final version's store workbook, only inside <out_dir>/_versions/<version>/;
     the version folder goes once it is empty."""
@@ -239,6 +260,7 @@ def publish_store(unit, store, st, log):
                 log("[注意] %s 的最终版本 %s 的工作簿不在了：%s" % (store, s["final"]["version"], src))
         elif s["chosen"]:
             _copy(s["chosen"]["workbook"], draft, log)
+            retire(unit, dst, log, "不是最终版本")
 
 
 def other_months_folders(store, month, config_path=None):
@@ -302,7 +324,10 @@ def build_summaries(unit, states, build_combined, log):
         r["stores_final"] = [s for s, st in states if st[b]["final"] is not None]
         r["stores_draft"] = [s for s, st in states if st[b]["versions"] and st[b]["final"] is None]
         if r.get("outcome") in ("ok", "checks_failed", "formula_errors", "data_incomplete") and os.path.isfile(dst):
-            _remove_file(other, log, "旧的汇总表" if complete else "已定稿的旧汇总表")
+            if complete:
+                _remove_file(other, log, "旧的未定稿汇总表")
+            else:
+                retire(unit, other, log, "不是由最终版本汇总的")
             log("汇总表%s：%s（%d 家店%s）" % ("" if complete else "（未定稿）", dst, len(pairs),
                                           "" if complete else "，未定稿：%s" % "、".join(r["stores_draft"])),
                 keep=True)

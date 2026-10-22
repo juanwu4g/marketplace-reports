@@ -317,3 +317,24 @@ def test_drop_pending_covers_every_platform_list(tmp_path, monkeypatch):
     assert FZ.drop_pending([gone], lambda text, keep=False: lines.append(text)) == 3
     for name in ("pending.json", "pending_FA.json", "pending_AZ.json"):
         assert [e["range"] for e in pending_store.load(str(tmp_path / name))] == ["b"]
+
+
+def test_month_folder_keeps_only_finals_and_drafts(v2):
+    """A plain-named file in the month folder for a store-basis without a final
+    (e.g. an old report the layout migration brought in) is moved to
+    _versions/_旧文件, never deleted; so is a plain-named summary when the new
+    summary is a draft."""
+    u = unit()
+    os.makedirs(u.out_dir, exist_ok=True)
+    old_store = os.path.join(u.out_dir, name("S1", MONTH, "bill"))
+    old_summary = os.path.join(u.out_dir, cname(MONTH, "bill"))
+    for p in (old_store, old_summary):
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write("sent in September")
+    make("S1", "20261003_000000_m202609", "20261003_040000", R.GAPS)
+    FZ.run(u, ["S1"], build_combined=Builder(), say=lambda *a: None)
+    assert not os.path.exists(old_store) and not os.path.exists(old_summary)
+    assert os.path.isfile(os.path.join(u.out_dir, FZ.draft_name(name("S1", MONTH, "bill"))))
+    retired = os.listdir(os.path.join(u.out_dir, FZ.VERSIONS, FZ.RETIRED))
+    assert sorted(f.split("_", 2)[2] for f in retired) == sorted([name("S1", MONTH, "bill"), cname(MONTH, "bill")])
+    assert all(read(os.path.join(u.out_dir, FZ.VERSIONS, FZ.RETIRED, f)) == "sent in September" for f in retired)
