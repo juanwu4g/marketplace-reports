@@ -197,21 +197,29 @@ def remove_run_folder(store, month, path, log, config_path=None):
 
 
 def drop_pending(folders, log, config_path=None):
-    """Drop logs/pending.json entries whose run folder was deleted."""
+    """Drop the owed-report entries whose run folder was deleted, in every
+    platform's list: logs/pending.json (MercadoLibre) and logs/pending_<code>.json
+    (core/platform_batch)."""
     if not folders:
         return 0
     from core import pending_store
-    path = os.path.join(layout.logs_dir(config_path), "pending.json")
-    if not os.path.isfile(path):
+    logs = layout.logs_dir(config_path)
+    if not os.path.isdir(logs):
         return 0
     gone = set(os.path.normcase(os.path.abspath(f)) for f in folders)
-    entries = pending_store.load(path)
-    keep = [e for e in entries if not (e.get("out_dir")
-                                       and os.path.normcase(os.path.abspath(e["out_dir"])) in gone)]
-    if len(keep) != len(entries):
-        pending_store.save(keep, path)
-        log("logs/pending.json：去掉 %d 条指向已删除目录的待取报表" % (len(entries) - len(keep)), keep=True)
-    return len(entries) - len(keep)
+    dropped = 0
+    for name in sorted(os.listdir(logs)):
+        if not (name.startswith("pending") and name.endswith(".json")) or name == pending_store.EXPIRED_NAME:
+            continue
+        path = os.path.join(logs, name)
+        entries = pending_store.load(path)
+        keep = [e for e in entries if not (e.get("out_dir")
+                                           and os.path.normcase(os.path.abspath(e["out_dir"])) in gone)]
+        if len(keep) != len(entries):
+            pending_store.save(keep, path)
+            log("logs/%s：去掉 %d 条指向已删除目录的待取报表" % (name, len(entries) - len(keep)), keep=True)
+            dropped += len(entries) - len(keep)
+    return dropped
 
 
 # ------------------------------------------------------------------ the steps

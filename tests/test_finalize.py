@@ -303,3 +303,17 @@ def test_mercadolibre_bill_basis_runner_in_the_new_layout(v2, tmp_path, monkeypa
     final = "STORE_MX_2026-09_账单基准%s.xlsx" % ("" if ok else "_未定稿")
     summary = "MX_ML_全店汇总_2026-09_账单基准%s.xlsx" % ("" if ok else "_未定稿")
     assert sorted(os.listdir(md)) == sorted(["_versions", final, summary, FZ.NOTES])
+
+
+def test_drop_pending_covers_every_platform_list(tmp_path, monkeypatch):
+    from core import finalize as FZ
+    monkeypatch.setattr(layout, "logs_dir", lambda config_path=None: str(tmp_path))
+    gone = str(tmp_path / "raw" / "run_gone")
+    for name in ("pending.json", "pending_FA.json", "pending_AZ.json"):
+        pending_store.save([{"store": "S", "report": "r", "range": "a", "out_dir": gone},
+                            {"store": "S", "report": "r", "range": "b", "out_dir": str(tmp_path / "kept")}],
+                           str(tmp_path / name))
+    lines = []
+    assert FZ.drop_pending([gone], lambda text, keep=False: lines.append(text)) == 3
+    for name in ("pending.json", "pending_FA.json", "pending_AZ.json"):
+        assert [e["range"] for e in pending_store.load(str(tmp_path / name))] == ["b"]
