@@ -88,7 +88,7 @@ def reports(monkeypatch, tmp_path):
     monkeypatch.setattr(run_reports.financial_report, "build", build)
 
     def run(*argv):
-        monkeypatch.setattr(sys, "argv", ["run_reports.py", "--month", "2026-08",
+        monkeypatch.setattr(sys, "argv", ["run_reports.py", "--month", "2026-08", "--basis", "order",
                                           "--out-dir", str(tmp_path / "out")] + list(argv))
         return run_reports.main()
 

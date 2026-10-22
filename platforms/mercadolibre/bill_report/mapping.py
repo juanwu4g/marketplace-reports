@@ -22,7 +22,7 @@ import collections
 import difflib
 import re
 
-from experiments.ml_invoice_report.readers import listing_digits
+from platforms.mercadolibre.bill_report.readers import listing_digits
 
 T1, T1B, T2U, T2M, T3, NONE = "T1", "T1b", "T2", "T2*", "T3", "—"
 TIER_CN = {

@@ -205,6 +205,17 @@ INV_NUM_COLS = ("amount", "pct", "fixed_fee", "fee_gross", "fee_discount", "qty"
                 "sale_total", "buyer_ship")
 
 
+# The note MercadoLibre puts on top of a bill whose period has not closed yet:
+# "Este reporte podría tener cambios hasta el cierre del período de facturación".
+BILL_OPEN_RE = re.compile(r"podr[ií]a tener cambios hasta el cierre", re.I)
+
+
+def bill_open(raw, header_row):
+    """True when the rows above the header carry the "not closed yet" note."""
+    top = raw.iloc[:max(header_row, 1)].values.ravel()
+    return any(isinstance(v, str) and BILL_OPEN_RE.search(v) for v in top)
+
+
 def read_invoice(path):
     """One Facturación or Notas de crédito file -> (rows, facts)."""
     raw = read_raw(path)
@@ -239,7 +250,7 @@ def read_invoice(path):
     facts = {"name": name, "doc": out["doc"].iloc[0] if len(out) else ("NC" if "Notas" in name else "FAC"),
              "bill_month": file_month(name), "updated": updated_at(raw), "rows": len(out),
              "header_row": i + 1, "first": min(dates) if dates else None,
-             "last": max(dates) if dates else None, "columns": known}
+             "last": max(dates) if dates else None, "columns": known, "open": bill_open(raw, i)}
     return out.reset_index(drop=True), facts
 
 

@@ -94,7 +94,7 @@ tools/                 developer tools, never run by the monthly job
                        (reads download folders only; merges, never deletes rows)
 docs/                  this file, the SOP, the form template, the report family
 experiments/           stand-alone analyses, never run by the monthly job (ml_invoice_basis: ML P&L on the invoice basis + stability;
-                       ml_invoice_report: a ten-sheet ML report whose baseline is the billing statement)
+                       ml_invoice_report moved to platforms/mercadolibre/bill_report in 2026-10)
 ```
 
 The `.cmd` files, `config.json`, `downloads/` and `logs/` stay at the root on

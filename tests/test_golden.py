@@ -19,6 +19,15 @@ regenerate that baseline deliberately:
     python tests/test_golden.py --rebaseline cl/DAB_CL
 
 The build date is the only cell that changes with the day; it is pinned.
+
+MercadoLibre's bill basis (platforms/mercadolibre/bill_report) has its own
+baselines next to the order-based ones, built from the same folders:
+
+        mx/BOCINA_TA02.bill.baseline.json        store workbook, bill basis
+        cl.bill-combined.baseline.json           a country's 全店汇总, bill basis
+
+    python tests/test_golden.py --rebaseline-bill mx/BOCINA_TA02
+    python tests/test_golden.py --rebaseline-bill-combined cl
 """
 import datetime
 import json
@@ -48,6 +57,12 @@ CASES = {
     "cl/Tecnohub_CL": ("Tecnohub_CL (个人店)", "cl", "2026-09"),
     "pe/IDG_PE": ("IDG_PE", "pe", "2026-09"),
 }
+
+
+# bill basis: the MercadoLibre cases above, and a country's combined workbook
+BILL_CASES = ("mx/BOCINA_TA02", "cl/DAB_CL", "cl/Tecnohub_CL", "pe/IDG_PE")
+BILL_COMBINED = {"cl": ("cl/DAB_CL", "cl/Tecnohub_CL")}
+BILL_DATE = BUILD_DATE + " 00:00"
 
 
 def dump(path):
@@ -89,6 +104,23 @@ def build(case, out):
     return rc
 
 
+def build_bill(case, out_dir):
+    from platforms.mercadolibre.bill_report import build as BB
+    store, site, month = CASES[case]
+    return BB.run(store, os.path.join(ROOT, case), month, site, out_dir=out_dir, recalc=False,
+                  build_date=BILL_DATE)["out"]
+
+
+def build_bill_combined(region, out_dir):
+    from platforms.mercadolibre.bill_report import build as BB
+    prepared = []
+    for case in BILL_COMBINED[region]:
+        store, site, month = CASES[case]
+        prepared.append(BB.prepare(store, os.path.join(ROOT, case), month, site))
+    return BB.write_combined(prepared, month, region.upper(), out_dir=out_dir, recalc=False,
+                             build_date=BILL_DATE)["out"]
+
+
 def diff(want, got):
     out = []
     for key in sorted(set(want) | set(got)):
@@ -116,9 +148,45 @@ def test_golden_workbook_identical(case, tmp_path):
     assert not d, "%s changed in %d cells, first ones:\n%s" % (case, len(d), "\n".join(d[:20]))
 
 
+def check_against(baseline, out, what):
+    with open(baseline, encoding="utf-8") as fh:
+        want = json.load(fh)
+    d = diff(want, dump(out))
+    assert not d, "%s changed in %d cells, first ones:\n%s" % (what, len(d), "\n".join(d[:20]))
+
+
+@pytest.mark.parametrize("case", BILL_CASES)
+def test_golden_bill_workbook_identical(case, tmp_path):
+    folder, baseline = os.path.join(ROOT, case), os.path.join(ROOT, case + ".bill.baseline.json")
+    if not (os.path.isdir(folder) and os.path.isfile(baseline)):
+        pytest.skip("no golden bill-basis data for %s under %s" % (case, ROOT))
+    check_against(baseline, build_bill(case, str(tmp_path)), case + " (bill basis)")
+
+
+@pytest.mark.parametrize("region", sorted(BILL_COMBINED))
+def test_golden_bill_combined_identical(region, tmp_path):
+    baseline = os.path.join(ROOT, region + ".bill-combined.baseline.json")
+    if not (all(os.path.isdir(os.path.join(ROOT, c)) for c in BILL_COMBINED[region])
+            and os.path.isfile(baseline)):
+        pytest.skip("no golden bill-basis combined data for %s under %s" % (region, ROOT))
+    check_against(baseline, build_bill_combined(region, str(tmp_path)), region + " combined (bill basis)")
+
+
+def _write_baseline(path, out):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(dump(out), fh, ensure_ascii=False)
+    print("baseline written:", path)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--rebaseline" and sys.argv[2] in CASES:
-        import tempfile
+    import tempfile
+    if len(sys.argv) == 3 and sys.argv[1] == "--rebaseline-bill" and sys.argv[2] in BILL_CASES:
+        _write_baseline(os.path.join(ROOT, sys.argv[2] + ".bill.baseline.json"),
+                        build_bill(sys.argv[2], tempfile.mkdtemp()))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--rebaseline-bill-combined" and sys.argv[2] in BILL_COMBINED:
+        _write_baseline(os.path.join(ROOT, sys.argv[2] + ".bill-combined.baseline.json"),
+                        build_bill_combined(sys.argv[2], tempfile.mkdtemp()))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--rebaseline" and sys.argv[2] in CASES:
         case = sys.argv[2]
         out = os.path.join(tempfile.mkdtemp(), "golden.xlsx")
         print("build ->", build(case, out))
@@ -126,4 +194,7 @@ if __name__ == "__main__":
             json.dump(dump(out), fh, ensure_ascii=False)
         print("baseline written for", case)
     else:
-        print("usage: python tests/test_golden.py --rebaseline <%s>" % "|".join(sorted(CASES)))
+        print("usage: python tests/test_golden.py --rebaseline <%s>\n"
+              "       python tests/test_golden.py --rebaseline-bill <%s>\n"
+              "       python tests/test_golden.py --rebaseline-bill-combined <%s>"
+              % ("|".join(sorted(CASES)), "|".join(BILL_CASES), "|".join(sorted(BILL_COMBINED))))

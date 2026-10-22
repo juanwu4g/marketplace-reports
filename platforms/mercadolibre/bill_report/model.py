@@ -28,11 +28,11 @@ import re
 import pandas as pd
 
 from core import report_kit as K
-from experiments.ml_invoice_report import catalog as C
-from experiments.ml_invoice_report import mapping as M
-from experiments.ml_invoice_report import profile as P
-from experiments.ml_invoice_report import readers as R
-from experiments.ml_invoice_report import status as ST
+from platforms.mercadolibre.bill_report import catalog as C
+from platforms.mercadolibre.bill_report import mapping as M
+from platforms.mercadolibre.bill_report import profile as P
+from platforms.mercadolibre.bill_report import readers as R
+from platforms.mercadolibre.bill_report import status as ST
 
 STORE_LEVEL = "（店铺级，无销售可分摊）"
 NO_SALE_NO = "（无订单号的随单费用）"
@@ -753,6 +753,12 @@ def validate(S):
         ck("invoice_closed", st, "覆盖月末的账单已在月后更新", closed,
            "%s 平台更新于 %s（月末 %s）" % (last_fac["name"], last_fac["updated"] or "?", p1),
            severity="warn")
+    used = set(S["P"]["file"]) if "P" in S else set()
+    open_ = [f["name"] for f in fac if f.get("open") and f["name"] in used]
+    S["provisional"] = open_
+    ck("invoice_open", st, "本月用到的账单都已关账", not open_,
+       ("%s 尚未关账（平台注明“podría tener cambios hasta el cierre”）：本月落在它里面的费用以后还可能变，"
+        "报表为暂定，关账后请重出" % "、".join(open_)) if open_ else "是", severity="warn")
     months = set(f["bill_month"] for f in fac)
     nc_months = set(f["bill_month"] for f in ncs)
     miss_nc = sorted(months - nc_months)

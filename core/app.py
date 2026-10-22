@@ -300,7 +300,10 @@ class App(object):
                                       command=lambda: self.do_start("collect"))
         for b in (self.btn_download, self.btn_report, self.btn_collect):
             b.pack(side="left", padx=(0, S.GAP))
-        hint(f, "只出报表：用已下载的数据重出，约 1 分钟，不开浏览器，可以随便重跑。\n"
+        hint(f, "美客多每家店出两份报表：<店>_<月>_账单基准.xlsx（以账单为准，会计入账用）和 "
+                "<店>_<月>.xlsx（以订单为准，经营分析参考）；全店汇总表也各一份。\n"
+                "只出报表：用已下载的数据重出，约 1 分钟，不开浏览器，可以随便重跑。"
+                "报表写着“暂定”（智利账单还没关账）时，等关账后点它重出。\n"
                 "补取欠的报表：MercadoPago 有些报表要生成几十分钟；只打开确实欠着报表"
                 "的店，不重新下载，和上面勾的店铺无关。"
              ).pack(anchor="w", pady=(S.SMALL, 0))

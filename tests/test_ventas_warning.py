@@ -108,7 +108,7 @@ def test_run_summary_marks_generated_report_as_incomplete(monkeypatch, capsys, t
     monkeypatch.setattr(run_reports.financial_report, "build", lambda *args, **kwargs: {
         "ok": True, "wrote": True, "out": str(tmp_path / "report.xlsx"), "seconds": 1,
         "data_incomplete": True, "checks": [check], "returncode": 0})
-    monkeypatch.setattr("sys.argv", ["run_reports.py", "--month", "2026-08",
+    monkeypatch.setattr("sys.argv", ["run_reports.py", "--month", "2026-08", "--basis", "order",
                                     "--no-combined", "--out-dir", str(tmp_path)])
 
     assert run_reports.main() == 1

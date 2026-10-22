@@ -1,7 +1,28 @@
-# Experiment: MercadoLibre report on the billing-statement baseline
+# MercadoLibre report on the billing-statement baseline (账单基准)
 
-**Audience:** developers and finance. Not part of the monthly run: nothing in
-`core/`, `platforms/`, the runner, the window or the scheduled tasks imports it.
+**Audience:** developers and finance.
+
+Part of the monthly run since 2026-10 (owner and accountant: the bill basis is the
+**official** one, the order-based report stays as the management view). Every
+month `platforms/mercadolibre/run_reports.py` writes both bases for every ML
+country (MX, CL, PE), bill basis first:
+
+| | store | country summary |
+|---|---|---|
+| bill basis (this package) | `<store>_<YYYY-MM>_账单基准.xlsx` | `<CC>_ML_全店汇总_<YYYY-MM>_账单基准.xlsx` |
+| order basis (unchanged) | `<store>_<YYYY-MM>.xlsx` | `<CC>_ML_全店汇总_<YYYY-MM>.xlsx` |
+
+`run_reports --basis bill|order|both` (default both; `config.json` →
+`reports.ml_basis: ["bill", "order"]` changes the default). The two bases never
+import each other; one failing does not stop the other. `combined.py` builds the
+country summary from the same per-store data (`build.prepare`) as the store
+workbooks, so its store columns equal the store workbooks. A bill the month uses
+that MercadoLibre still marks "podría tener cambios hasta el cierre" (Chile's
+cut-day bills) makes the workbook **暂定** (banner on ①, warn check
+`invoice_open`): regenerate with the window's 「只出报表」 after it closes.
+Golden cases: `tests/test_golden.py` (`*.bill.baseline.json`, `cl.bill-combined…`).
+
+Originally built as an experiment (`experiments/ml_invoice_report/`, 2026-10-21).
 
 A MercadoLibre financial workbook built **only** from the billing statement —
 `Reporte_Facturacion_MercadoLibre_<Mon><YYYY>.xlsx` and
@@ -13,7 +34,7 @@ independently of the official order-based report and of the earlier
 never shows their numbers.
 
 ```
-python -m experiments.ml_invoice_report --store <name> --month 2026-09 --folder <download folder> \
+python -m platforms.mercadolibre.bill_report --store <name> --month 2026-09 --folder <download folder> \
        [--site mx|cl|pe] [--out-dir DIR] [--sku-costs FILE] [--no-recalc]
 ```
 

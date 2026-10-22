@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""python -m experiments.ml_invoice_report --store <name> --month 2026-09 --folder <download folder>
+"""python -m platforms.mercadolibre.bill_report --store <name> --month 2026-09 --folder <download folder>
        [--site mx|cl|pe] [--out-dir DIR] [--sku-costs FILE] [--no-recalc]
 
-Reads the folder read-only, writes <store>_<YYYY-MM>_账单基准报表.xlsx. The site
+Reads the folder read-only, writes <store>_<YYYY-MM>_账单基准.xlsx. The site
 comes from the folder's run_meta.json ("site"); older Mexican folders have none —
 pass --site mx. Exit code: 0 ok, 1 error-level checks failed, 2 cannot run.
 """
@@ -11,17 +11,17 @@ import os
 import sys
 
 from core import report_family as RF
-from experiments.ml_invoice_report import build
+from platforms.mercadolibre.bill_report import build
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="python -m experiments.ml_invoice_report",
-                                 description="MercadoLibre：以账单为基准的财务报表（实验）")
+    ap = argparse.ArgumentParser(prog="python -m platforms.mercadolibre.bill_report",
+                                 description="MercadoLibre：以账单为基准的财务报表")
     ap.add_argument("--store", required=True)
     ap.add_argument("--month", required=True, help="YYYY-MM（按计费日的会计月）")
     ap.add_argument("--folder", required=True, help="该店该月的下载文件夹")
     ap.add_argument("--site", choices=("mx", "cl", "pe"), help="国家；不填则读 run_meta.json 的 site")
-    ap.add_argument("--out-dir", help="输出目录（默认 downloads/data/reports/experiments/）")
+    ap.add_argument("--out-dir", help="输出目录（默认 downloads/data/reports/financial/）")
     ap.add_argument("--sku-costs", help="SKU 成本表（.xlsx/.csv，可选；格式见 docs/REPORT_FAMILY.md §7）")
     ap.add_argument("--no-recalc", action="store_true", help="不用 LibreOffice 重算")
     a = ap.parse_args(argv)
