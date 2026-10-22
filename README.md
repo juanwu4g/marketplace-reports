@@ -465,7 +465,7 @@ run_monthly.cmd --month 2026-07      # 补做某个月
 run_monthly.cmd --step report        # 只重出报表，不重新下载
 run_monthly.cmd --step download      # 只下载
 run_monthly.cmd --step collect       # 只补取欠着的报表
-run_monthly.cmd --stores A B         # 只跑这几家（不出全店汇总）
+run_monthly.cmd --stores A B         # 只跑这几家（旧布局不出全店汇总；新布局按各店最终版本照样出）
 run_monthly.cmd --region ALL         # 全部国家依次跑（墨西哥第一）
 run_monthly.cmd --dry-run            # 只打印会执行什么
 ```
@@ -596,6 +596,10 @@ MercadoPago 的报表经常当晚生成不完）**不告警**：这是常态，�
 
 > ⚠️ **财务手填的单位采购成本，每次出报表都会重置。** 同一个月别反复重出报表覆盖
 > 财务已经填好的那份 —— 要重出就先改 `--out-dir` 指到别处。
+
+**一个月跑几次**：「每月自动运行」页的「每月几号」可以写几天，用逗号隔开，例如 `3, 12, 26`。
+每一天都是全部店铺完整跑一轮，出的都是上个月的报表；同一个月有几个完整版本时，以最新的完整版本为准
+（比如月初先出一份，智利账单关账后再出一份定稿，见 3.10）。改完点「设为每月自动运行」才生效；任务名字不变。
 
 ### 3.6 多国家（区域）
 
@@ -795,6 +799,99 @@ Ajuste 是上个月的 ISR**，本月的 ISR 以预扣税证明为准。文件�
 
 ---
 
+### 3.10 月度版本与定稿：哪一份是最终的
+
+每出一次月度报表，每家店每个基准就多一个**版本**（版本号 = 下载目录名 + 出报表的时间）。
+每个版本有一个等级，系统自动定稿，**不需要人挑**：
+
+| 等级 | 意思 | 能定稿？ |
+|---|---|---|
+| 完整 | 报表要读的文件都下到了，error 级校验都过了 | ✓ |
+| 完整·有提醒 | 同上，但有不影响金额的问题（例如缺库存报表、MercadoPago 权限不够、SKU 映射不全） | ✓ |
+| 暂定 | 都齐了，但这个月用到的账单还没关账（智利各店切期日不同） | ✗ |
+| 有缺口 | 缺了报表要读的文件，或有影响金额的校验没过，或销售报表导出不完整 | ✗ |
+| 失败 | 报表没生成 | ✗ |
+
+**定稿规则：能定稿的版本里，最新生成的那个就是最终版本。** 新布局下（见 3.12）：
+
+- `reports\monthly\<年月>\<平台-国家>\` 里只放最终版本（文件名和以前一样）；还没有最终版本
+  的店铺放它最新版本的一份，文件名带 `_未定稿`；全店汇总按各店的最终版本汇总，有店铺未定稿时也带 `_未定稿`。
+- 同一目录下的 `版本说明.txt` 写着每家店每个基准的最终版本、等级，以及其他版本为什么不是最终的。
+- 所有版本都在 `_versions\` 里；一个店铺月份有了最终版本以后，**其他版本的工作簿、结果文件和没被
+  用到的下载目录会自动删掉**。还没有最终版本的月份什么都不删。被换下来的旧文件（例如搬家时带过来的
+  旧报表）不删，移到 `_versions\_旧文件\`。
+- 等级判断的细节见 `docs/RESULTS_AND_PERIODS.md` §3。
+
+### 3.11 期间报表：季度、全年、任意几个月
+
+窗口第四页「期间报表」：
+
+- 期间报表 = 把各月的定稿月度报表加起来：每家店每个月用最新的「完整」版本，不重新下载，几秒钟。
+  每个平台 + 国家一份（币种不同不能相加）。
+- 选期间：季度 / 全年 / 自定义（从哪个月到哪个月）；选范围（和「立即运行」同一棵勾选树）；
+  美客多选账单基准（默认，会计入账）或订单基准。
+- 「各店各月」表只看不写：✓ 表示那个月有完整版本，✗ 无完整版本（点那一行看原因）。✗ 的月份不会计入合计。
+- 点「生成期间报表」；下面会显示进度和结果。点「打开期间报表目录」找文件。
+- 文件在报表目录下：季度在 `quarterly\2026-Q3\…`，全年在 `annual\2026\…`，自定义在
+  `custom\2026-07_2026-11\…`（旧布局在「期间报表」文件夹里）。文件名如 `MX_ML_2026-Q3_账单基准.xlsx`、`CL_FA_2026-Q3.xlsx`。
+- 报表①写着每家店每个月用的是哪个版本；有红色横幅 = 有店铺月份没有完整版本。⑩列出缺的、月度报表带过来的
+  提醒，以及和上一次生成相比换了版本的店铺月份。
+- **自动生成**：季度最后一个月（3、6、9、12 月）的月报跑完后，会自动生成那个季度；12 月的还会生成全年
+  （美客多自动出的是账单基准）。有店铺月份没有完整版本时，会在那个月的报表目录里留一个
+  `！期间报表异常_….txt`；那个月的报表重出、有了完整版本后再生成一次，提示文件会自动消失。
+
+命令行：
+
+```
+python run_period.py --quarter 2026-Q3 --region ALL
+python run_period.py --year 2026 --region MX
+python run_period.py --from 2026-07 --to 2026-11 --region CL --basis order
+python run_period.py --quarter 2026-Q3 --region ALL --preview      # 只看各店各月，不写文件
+```
+
+以前的月份（这个功能上线之前出的月报）没有结果文件，期间报表会把它们算作“无完整版本”。只要那个月的
+账单还在下载目录里，可以补出结果文件（不开浏览器）：
+
+```
+python -m tools.backfill_results --from 2026-07 --to 2026-09 --region ALL           # 先预览
+python -m tools.backfill_results --from 2026-07 --to 2026-09 --region ALL --apply   # 真的补
+```
+
+### 3.12 数据目录：代码和数据分开放（新布局）
+
+代码在 `D:\marketplace-reports`（更新时 `update.cmd` 只动这里），数据放在另一个目录，
+在 `config.json` 里写明：
+
+```json
+"paths": {"data_root": "D:/marketplace-data"}
+```
+
+```
+D:\marketplace-data\
+├── reports\        打开看的报表：monthly\<年月>\<平台-国家>\、quarterly\、annual\、custom\
+├── raw\            下载的原始文件：<平台>\<国家>\<店铺>\<年月>\<下载时间>\
+├── results\        每个月度版本的结果文件（期间报表读它）
+├── work\           清洗的中间文件
+└── logs\           运行日志
+```
+
+没写 `data_root` 时一切照旧（数据在代码目录的 `downloads\`、`logs\` 下）。**搬家**（一次性，
+在两次月度运行之间做，先在「每月自动运行」页暂停计划任务）：
+
+```
+cd /d D:\marketplace-reports
+.venv\Scripts\python -m tools.migrate_layout plan --data-root D:\marketplace-data    # 预览，什么都不写
+.venv\Scripts\python -m tools.migrate_layout copy --data-root D:\marketplace-data    # 复制 + 逐个校验 + 切换 config.json
+```
+
+`copy` 不动旧目录。用新布局跑过一次、确认没问题后再删旧文件（命令会在 copy 结束时打印出来）：
+
+```
+.venv\Scripts\python -m tools.migrate_layout remove-old --manifest "D:\marketplace-data\logs\migration\manifest_….json"
+```
+
+想退回旧布局（还没 remove-old 时）：`.venv\Scripts\python -m tools.migrate_layout undo`。
+
 ## 4. 财务报表：十张子表
 
 每家店一个 `.xlsx`，十张子表。**从左到右是一条推理链**：先给结论，再证明结论，
@@ -953,16 +1050,32 @@ Total 与实际到账差 ≤0.02，而部分冲销的单**每一笔**都正好�
 
 ## 7. 输出在哪
 
+**新布局**（`config.json` 写了 `paths.data_root`，见 3.12；下面 `<数据>` 指那个目录）：
+
+```
+<数据>/reports/monthly/<年月>/<平台-国家>/   这个月的最终报表（单店、全店汇总，美客多两种基准）、版本说明.txt、_versions/
+<数据>/reports/monthly/<年月>/！报表异常_*.txt     需要人处理时才有
+<数据>/reports/quarterly|annual|custom/…           期间报表（见 3.11）
+<数据>/raw/<平台>/<国家>/<店铺>/<年月>/<下载时间>/  原始报表 + REPORT.md + run_meta.json + _diag/
+<数据>/results/<平台>/<国家>/<店铺>/<年月>/        每个月度版本的结果文件
+<数据>/work/mx_sales/                              清洗后的 Parquet、mx_sales.duckdb
+<数据>/logs/                                       运行日志、pending.json、report_diag/ 等（同下）
+```
+
+**旧布局**（没写 `data_root`）：
+
 ```
 downloads/<店名>/<时间戳>/                   原始报表 + REPORT.md（本次下载说明，含「未下载 —— 原因」）
 downloads/<店名>/<时间戳>/run_meta.json      这一趟应下哪些、缺了哪些、各是为什么（给报表端读）
 downloads/<店名>/<时间戳>/_diag/             没下到的报表的现场证据：截图 + 同名 .json
 downloads/data/processed/                    清洗后的 Parquet
 downloads/data/mx_sales.duckdb               可直接 SQL 查询的视图
+downloads/data/results/                      每个月度版本的结果文件
 downloads/data/reports/financial/
-    <店名>_<年月>.xlsx                        单店财务报表（10 张子表）
+    <店名>_<年月>.xlsx                        单店财务报表（10 张子表），美客多另有 _账单基准 一份
     MX_ML_全店汇总_<年月>.xlsx                 全店汇总
     <店名>_<年月>_指标.json                    月度指标（加 --metrics 才有）
+    期间报表/…                                 季度 / 全年 / 自定义期间报表
 logs/runs/<开始时间>_<入口>.log / .json      每一轮的运行日志和摘要（窗口右边看的就是它）
 logs/current.json                            正在跑的那一轮；跑完即删
 logs/batch_<时间戳>.json                     下载批次汇总：每店状态、缺的报表和原因、清洗状态
@@ -971,8 +1084,7 @@ logs/pending_expired.json                    超过 7 天仍没取回、已不�
 logs/report_diag/                            只有报表**没写出来**时才有：那次生成的完整输出
 ```
 
-> 报表输出目录里旧版留下的 `diagnostics\` 文件夹不再产生新文件，可以直接删。
-> 以前每出一份报表（包括成功的）都往里丢一个日志，从不清理。
+清洗管线的代码在 `pipelines/`（以前在 `downloads/` 里）；手动清洗：`python -m platforms.mercadolibre.transform build`。
 
 **以上全部不进 git** —— 里面有买家姓名、地址、RFC/CFDI 税务信息等个人信息。
 
