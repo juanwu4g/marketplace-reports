@@ -200,6 +200,14 @@ def report_dir(out_dir, month, unit):
     return layout.monthly_dir(month, markets.unit_market(unit), override=out_dir)
 
 
+def summary_from_finals():
+    """New layout: the 全店汇总 is rebuilt from every store's final version
+    (core/finalize), so a run of a few stores still leaves a whole summary and
+    need not skip it. Old layout: a few stores' summary would overwrite the
+    whole one, so a subset run passes --no-combined (as always)."""
+    return layout.mode() == layout.V2
+
+
 def alert_dir(out_dir, month):
     """Where the 「！报表异常」 file goes: out_dir (legacy) or the month folder."""
     if layout.mode() == layout.LEGACY:
@@ -422,7 +430,7 @@ def build_plan(step, month, stores, out_dir, py=None, reports_all=False,
     co = batch + ["--collect-only", "--month", month] + dsub
     rsub = [] if reports_all else sub
     rp = ([py, "-u", "-m", PLATFORM_PKG + ".run_reports", "--month", month]
-          + reg + rsub + (["--no-combined"] if rsub else [])
+          + reg + rsub + (["--no-combined"] if rsub and not summary_from_finals() else [])
           + ["--out-dir", report_dir(out_dir, month, region)])
     plan = []
     if step in ("both", "download"):
@@ -455,7 +463,8 @@ def _build_plan_market(step, month, stores, out_dir, py, reports_all, unit, all_
     co = batch + ["--collect-only", "--month", month] + mk + ["--stores"] + listed
     rsub = [] if reports_all or not stores else ["--stores"] + list(stores)
     rp = ([py, "-u", "-m", pkg + ".run_reports", "--month", month] + mk + rsub
-          + (["--no-combined"] if rsub else []) + ["--out-dir", report_dir(out_dir, month, unit)])
+          + (["--no-combined"] if rsub and not summary_from_finals() else [])
+          + ["--out-dir", report_dir(out_dir, month, unit)])
     plan = []
     if step in ("both", "download"):
         plan.append({"key": "download", "label": "下载 %s 的数据" % month, "cmd": dl})

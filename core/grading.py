@@ -16,6 +16,9 @@ Levels, first match wins:
   complete_warn  none of the above, but a non-blocking check failed
   complete       nothing failed
 
+A missing form listed in NON_BLOCKING_FORMS (stock forms; MercadoPago forms for
+the ML bill basis) makes complete_warn instead of gaps, with the reason.
+
 Blocking = an error-level check that failed, except the ones in NON_BLOCKING:
 the error-level checks whose failure does not make the money figures wrong, each
 with the reason. That list is policy — add to it only with a written reason and
@@ -41,6 +44,22 @@ NON_BLOCKING = {
         "不是报表数字错（DAB_CL 2026-09：1 单 9,750 CLP）",
 }
 
+# Forms whose absence leaves the money figures (②) right: (platform or "*",
+# basis or "*", form or form prefix ending in "/") -> why. A version missing only
+# these is complete_warn, not gaps. Policy set by the main agent on 2026-10-22,
+# because otherwise some stores could never have a final version (evidence:
+# EWTTO_SM has no MercadoPago report permission; DAB_CL's stock/devoluciones
+# control is not on its page; DAB_CL-Fala's stock file did not land):
+NON_BLOCKING_FORMS = {
+    ("*", "*", "stock"):
+        "库存类报表只用于⑨库存与动销、⑥退货质检和⑦里 Full 仓储费按 SKU 的拆分，②的金额不用它",
+    ("*", "*", "stock/"):
+        "库存类报表只用于⑨库存与动销、⑥退货质检和⑦里 Full 仓储费按 SKU 的拆分，②的金额不用它",
+    ("ML", "bill", "mercadopago/"):
+        "账单基准的金额全部来自账单；MercadoPago 报表只用来判断取消/退货状态、补 SKU 映射和备查项，"
+        "缺了②不变（订单基准不在此列：它用结算流水修正部分退款）",
+}
+
 # Causes of a missing form that are not a gap: there was nothing to download
 # (core/download_diag.NO_ATTENTION: NO_DATA = the period has no data,
 # NOT_AVAILABLE = the platform does not offer it — a billing period not begun,
@@ -59,6 +78,17 @@ CAUSE_CN = {
 
 def non_blocking_reason(platform, basis, key):
     return NON_BLOCKING.get((platform, basis, key))
+
+
+def non_blocking_form(platform, basis, form):
+    """Why a missing `form` does not make the money figures wrong, or None."""
+    form = str(form or "")
+    for (pf, bs, f), why in NON_BLOCKING_FORMS.items():
+        if pf not in ("*", platform) or bs not in ("*", basis):
+            continue
+        if form == f or (f.endswith("/") and form.startswith(f)):
+            return why
+    return None
 
 
 def form_gaps(missing):
@@ -94,9 +124,13 @@ def grade(platform, basis, wrote, checks=(), missing=(), data_incomplete=False, 
     failed = _failed(checks)
     blocking = [c for c in failed if not non_blocking_reason(platform, basis, c.get("key"))]
     soft = [c for c in failed if non_blocking_reason(platform, basis, c.get("key"))]
-    gaps = []
+    gaps, soft_forms = [], []
     for rec in form_gaps(missing):
-        gaps.append("缺下载：%s（%s）" % (rec["form"], CAUSE_CN.get(rec.get("cause"), rec.get("cause") or "原因不明")))
+        what = "%s（%s）" % (rec["form"], CAUSE_CN.get(rec.get("cause"), rec.get("cause") or "原因不明"))
+        if non_blocking_form(platform, basis, rec["form"]):
+            soft_forms.append("缺下载（不影响金额）：%s" % what)
+        else:
+            gaps.append("缺下载：%s" % what)
     for c in blocking:
         gaps.append("校验未过：%s" % (c.get("name") or c.get("key")))
     if data_incomplete:
@@ -108,7 +142,7 @@ def grade(platform, basis, wrote, checks=(), missing=(), data_incomplete=False, 
     if provisional:
         return {"level": results.PROVISIONAL,
                 "reasons": ["账单尚未关账：%s（关账后重出）" % "、".join(provisional)]}
-    if soft:
+    if soft or soft_forms:
         return {"level": results.COMPLETE_WARN,
-                "reasons": ["提醒（不影响金额）：%s" % (c.get("name") or c.get("key")) for c in soft]}
+                "reasons": soft_forms + ["提醒（不影响金额）：%s" % (c.get("name") or c.get("key")) for c in soft]}
     return {"level": results.COMPLETE, "reasons": []}

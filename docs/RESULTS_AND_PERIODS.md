@@ -51,6 +51,14 @@ file: a period report adds up stores.
 | `sku` | `[{"sku","title","units","units_returned","net_sales","fees","contribution","cost"}]` | ⑦, money in ② sign, `cost` null when unknown |
 | `inventory` | `null` or `{"as_of", "rows": [{"sku","title","stock","sold_30d"}]}` | ⑨ snapshot |
 
+pl keys: data rows keep their row key; computed rows have keys too (all bases:
+`contrib`, `profit`). `sku.cost` is positive (as ②'s 商品采购成本). Falabella
+inventory adds `"sold_window_days": 28`. Writers: `platforms/mercadolibre/
+results_files.py` (both ML bases), `core/platform_reports.py` (Falabella,
+Amazon); `tools/backfill_results.py` builds them for months reported before them
+(dry-run by default, `--apply`; the legacy layout writes those workbooks to
+`<reports>/_backfill/<month>/` so the reports sent at the time stay as they are).
+
 Rules for writers: the figures are the workbook's own (same objects that
 filled the sheets), so a results file and its workbook never disagree; a writer
 that cannot fill an optional field leaves it as an empty list / null, never
@@ -74,6 +82,18 @@ Blocking = error-level checks, except the ones listed in
 wrong (e.g. SKU-mapping coverage: the totals are right, only ⑦'s attribution is
 less precise). That list is policy: every entry is documented there.
 
+Missing forms: a record counts when the report reads the form (run_meta
+"in_report", or `core/download_diag.affects_report` when absent) and its cause is
+not NO_DATA or NOT_AVAILABLE (nothing to download). A missing form listed in
+`core/grading.NON_BLOCKING_FORMS` makes `complete_warn`, not `gaps`: stock forms
+(every platform; ⑥ ⑦ ⑨ only) and MercadoPago forms for the ML bill basis (status
+evidence, SKU mapping and memo only). Without that list some stores could never
+have a final version (EWTTO_SM has no MercadoPago report permission). Formula
+errors after recalculation are gaps. `complete_warn` also comes from error-level
+checks listed in `NON_BLOCKING` (keyed by platform, basis, check); warn-level
+checks never change the grade. A build that wrote no workbook leaves a results
+file with grade `failed` and no figures.
+
 `reasons` are short Chinese sentences, shown in 版本说明.txt and the period
 report's ①/⑩.
 
@@ -93,10 +113,16 @@ stores and month of that step.
   * `<monthly_dir>/版本说明.txt` lists, per store and basis: the final version,
     its grade, and why each other version is not final; and what was cleaned;
   * clean-up, for a store-month that has a final version for every basis it
-    produces: delete the other versions' `_versions/<version>/` folders, their
+    produces: delete the other versions' workbooks in `_versions/<version>/`
+    (the folder is shared by every store of that run and goes once empty), their
     results files, and the store-month's raw run folders that no final version
-    uses; drop `logs/pending.json` entries for deleted folders. Months without a
-    final are never cleaned.
+    uses; drop `logs/pending.json` entries for deleted folders. A raw run folder
+    is kept when a final uses it, when any version of the store's other months
+    reads it, or when it is newer than every final and has no version yet.
+    Months without a final are never cleaned.
+  * a run of a few stores still rebuilds the whole 全店汇总 from every store's
+    final, so `run_monthly` does not pass `--no-combined` for store subsets in
+    the new layout (it still does in the old one).
 * **Legacy layout:** results files and grades are written; workbooks stay flat as
   before; no copies, no `_versions`, no clean-up.
 
@@ -127,7 +153,14 @@ stores and month of that step.
 * Every total equals the sum of the final monthly results to the cent (tests).
 * Automatic: after the scheduled/manual monthly run, when the month just
   reported is the last of a quarter, that quarter is (re)generated for the units
-  of the run; when it is December, the year too.
+  of the run; when it is December, the year too. MercadoLibre automatically gets
+  the bill basis (official); the order basis is generated on demand. A market
+  with no results at all for the period is only logged; an incomplete one writes
+  `！期间报表异常_<CC>_<PF>_<period>[_基准].txt` in the month's alert folder,
+  which a later complete generation removes. The monthly run's exit code never
+  changes because of a period report.
+* The workbook records each store-month's version in a hidden sheet `_版本记录`,
+  which the next generation reads to list changed versions.
 * Changed versions: the period workbook records each store-month's version; a
   regeneration lists those that changed since the previous file of that name.
 

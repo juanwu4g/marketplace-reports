@@ -141,3 +141,15 @@ def test_cleaning_pipeline_is_told_where_the_data_is(v2):
     assert env["MX_SALES_RAW_DIR"] == os.path.join(str(v2), "raw", "ML", "MX")
     assert env["MX_SALES_WAREHOUSE"] == os.path.join(str(v2), "work", "mx_sales", "mx_sales.duckdb")
     assert transform.PIPELINE_ROOT.endswith("pipelines")
+
+
+def test_subset_run_keeps_the_summary_only_in_v2(v2):
+    from core import run_monthly as RM
+    cmd = RM.build_plan("report", "2026-09", ["BOCINA_TA02"], str(v2 / "reports"), py="py")[0]["cmd"]
+    assert "--no-combined" not in cmd and "--stores" in cmd
+
+
+def test_subset_run_skips_the_summary_in_legacy(legacy):
+    from core import run_monthly as RM
+    cmd = RM.build_plan("report", "2026-09", ["BOCINA_TA02"], "/out", py="py")[0]["cmd"]
+    assert "--no-combined" in cmd

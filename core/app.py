@@ -267,8 +267,8 @@ class App(object):
                   wraplength=WRAP, justify="left").grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(S.SMALL, 0))
         hint(f, "点一行勾选或取消；点左边的展开标记（⊞）看店铺。勾上一个平台就是它下面的全部国家，"
-                "勾上一个国家就是它的全部店铺。一个国家只勾了部分店铺时，这个国家不出"
-                "全店汇总表（避免覆盖真正的那份）。"
+                "勾上一个国家就是它的全部店铺。一个国家只勾了部分店铺时：新数据布局下全店汇总表"
+                "照样按各店的最终版本重出；旧布局下这个国家不出全店汇总表（避免覆盖真正的那份）。"
              ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         f = section(page, "报表输出到")

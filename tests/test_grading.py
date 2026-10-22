@@ -57,8 +57,11 @@ def test_missing_forms():
     def m(form, cause, in_report=None):
         return {"form": form, "cause": cause, "in_report": in_report}
     # the report reads it and it was not downloaded
+    g = G.grade("FA", "main", True, [], [m("billing", "DOWNLOAD_NOT_LANDED", True)])
+    assert g["level"] == R.GAPS and g["reasons"] == ["缺下载：billing（文件没有落盘）"]
+    # ... unless ② does not use it (NON_BLOCKING_FORMS)
     g = G.grade("FA", "main", True, [], [m("stock", "DOWNLOAD_NOT_LANDED", True)])
-    assert g["level"] == R.GAPS and g["reasons"] == ["缺下载：stock（文件没有落盘）"]
+    assert g["level"] == R.COMPLETE_WARN and g["reasons"] == ["缺下载（不影响金额）：stock（文件没有落盘）"]
     # nothing to download: no data, or the platform does not offer it (yet)
     assert level("FA", "main", True, [], [m("order/x", "NO_DATA", True)]) == R.COMPLETE
     assert level("FA", "main", True, [], [m("billing1/2026-09-21_2026-10-20", "NOT_AVAILABLE", True)]) == R.COMPLETE
@@ -116,3 +119,20 @@ def test_version_parts_and_document():
     assert doc["missing"] == [{"form": "a", "cause": "UNKNOWN", "in_report": None}]
     assert doc["pl"] == [] and doc["inventory"] is None and set(doc["code"]) == {"commit", "fingerprint"}
     assert doc["flags"] == {"provisional": [], "data_incomplete": False}
+
+
+def test_forms_that_do_not_change_the_money_figures():
+    from core import grading as G
+    stock = [{"form": "stock/devoluciones", "cause": "UI_NOT_FOUND", "in_report": True}]
+    mp = [{"form": "mercadopago/settlement", "cause": "NO_PERMISSION", "in_report": True}]
+    fa_stock = [{"form": "stock", "cause": "DOWNLOAD_NOT_LANDED", "in_report": True}]
+    g = G.grade("ML", "bill", True, missing=stock + mp)
+    assert g["level"] == "complete_warn" and all("不影响金额" in r for r in g["reasons"])
+    assert G.grade("FA", "main", True, missing=fa_stock)["level"] == "complete_warn"
+    # the order basis needs MercadoPago (settlement corrects partial refunds)
+    assert G.grade("ML", "order", True, missing=mp)["level"] == "gaps"
+    # a form ② reads is still a gap
+    assert G.grade("ML", "bill", True, missing=[{"form": "billing/2026-09/BILL_ML", "cause": "UI_NOT_FOUND",
+                                                  "in_report": True}])["level"] == "gaps"
+    # open bill still outranks a non-blocking form
+    assert G.grade("ML", "bill", True, missing=stock, provisional=["Oct"])["level"] == "provisional"
