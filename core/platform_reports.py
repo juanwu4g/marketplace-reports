@@ -20,7 +20,7 @@ What a platform declares (the hooks)
     periods           module with parse_month(month), previous_month(date)
     folder_markers    month -> file names / glob patterns, tried in order: a
                       store's folder is the newest of the month
-                      (downloads/<store>/<stamp>_m<YYYYMM>/) holding the first;
+                      (core/layout.run_folders_for_month) holding the first;
                       if none does, the newest holding the second; …
                       Default ("run_meta.json",): the newest finished run.
     no_folder_reason  the 未参与 reason when no folder qualifies ("%s" = month)
@@ -61,11 +61,13 @@ DEFAULT_NO_FOLDER = "没有 %s 的下载目录"
 
 
 def downloads_dir():
-    return os.path.join(paths.ROOT, "downloads")
+    from core import layout
+    return layout.raw_root()
 
 
 def default_out_dir():
-    return os.path.join(paths.ROOT, "downloads", "data", "reports", "financial")
+    from core import layout
+    return layout.reports_root()
 
 
 def _holds(folder, marker):
@@ -131,9 +133,9 @@ class ReportRunner(object):
     # ------------------------------------------------------------ download folders
 
     def latest_folder(self, store, month, base=None):
+        from core import layout
         y, m = self.periods.parse_month(month)
-        hits = sorted(glob.glob(os.path.join(base or downloads_dir(), store,
-                                             "*_m%04d%02d" % (y, m))))
+        hits = sorted(p for _n, p in layout.run_folders_for_month(store, "%04d-%02d" % (y, m), base=base))
         for marker in self.folder_markers(month):
             for d in reversed(hits):
                 if _holds(d, marker):

@@ -12,7 +12,7 @@ reads) is shared: core/platform_reports.py. This module only says what is
 Falabella's own.
 
 Falabella's own: each store uses its newest download folder **for that month**
-(downloads/<store>/<stamp>_m<YYYYMM>/) that holds a Transacciones file
+(core/layout.run_folders_for_month) that holds a Transacciones file
 (NewReportTransaction_*.xlsx); without one the store is left out.
 """
 from core import console  # noqa: F401  中文输出编码保护

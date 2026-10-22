@@ -26,12 +26,13 @@ from core.paths import ROOT
 # report_build 按文件路径起（它就在本文件旁边）；它用到的 core/ 与 report/ 模块由它
 # 自己把项目根目录加进 sys.path 后导入。
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_build.py")
-DOWNLOADS = os.path.join(ROOT, "downloads")
+from core import layout
+DOWNLOADS = layout.raw_root()
 
 # 没写出报表时的现场记录放这里，不放报表输出目录：那是财务每个月要打开的文件
 # 夹，以前每出一份报表（包括成功的）就往里面的 diagnostics/ 丢一个日志，从不
 # 清理，一年下来几百个。logs/ 本来就是放运行记录的地方（.gitignore 已排除）。
-DIAG_DIR = os.path.join(ROOT, "logs", "report_diag")
+DIAG_DIR = os.path.join(layout.logs_dir(), "report_diag")
 
 # report_build.py 的退出码。照抄自那边的 EXIT_*（本文件刻意不 import 它，见文
 # 件头），两边要一起改。
@@ -235,19 +236,17 @@ def latest_run(store, base=None, month=None):
             want = (int(month[:4]), int(month[5:7]))
         except Exception:
             want = None
-    base = base or DOWNLOADS
-    d = os.path.join(base, store)
-    if not os.path.isdir(d):
+    found = layout.run_folders(store, base=base)
+    if not found and not os.path.isdir(os.path.join(base, store) if base else layout.store_dir(store)):
         return None, "没有下载目录"
-    runs = sorted((x for x in os.listdir(d)
-                   if os.path.isdir(os.path.join(d, x)) and x[:2] == "20"),
-                  reverse=True)
-    if not runs:
+    if not found:
         return None, "目录下没有任何运行记录"
+    runs = [r for r, _ in found]
+    where = dict(found)
     usable = []
     skipped = []
     for r in runs:
-        folder = os.path.join(d, r)
+        folder = where[r]
         ok, missing = _usable(folder)
         if ok:
             usable.append((r, folder))
@@ -283,7 +282,7 @@ def latest_run(store, base=None, month=None):
                      "这份报表的收入和费用都会缺失，仅供参考" % wm)
         return folder, note
     return None, "%d 个目录都缺文件（最新的缺：%s）" % (
-        len(runs), "、".join(_usable(os.path.join(d, runs[0]))[1]))
+        len(runs), "、".join(_usable(where[runs[0]])[1]))
 
 
 def classify(r):

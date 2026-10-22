@@ -122,7 +122,8 @@ class BatchRunner(object):
 
     @property
     def log_dir(self):
-        return os.path.join(paths.ROOT, "logs")
+        from core import layout
+        return layout.logs_dir()
 
     @property
     def pending_path(self):

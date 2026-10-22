@@ -61,7 +61,7 @@ from core.scope_picker import ScopePicker
 from core.run_monthly import resolve_out_dir
 
 ROOT = E.ROOT
-LOG_DIR = os.path.join(ROOT, "logs")
+LOG_DIR = runlog.LOG_DIR
 TITLE = "月度报表"
 LEFT_W = 560          # 左边那一栏的宽度（像素）
 WRAP = LEFT_W - 85    # 左边说明文字的折行宽度（留出分组框边距和页面滚动条）

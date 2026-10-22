@@ -51,7 +51,8 @@ from core.store_config import StoreConfigError, StoreNotAllowed
 from platforms.mercadolibre import financial_report
 
 from core.paths import ROOT
-OUT_DIR = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+from core import layout
+OUT_DIR = layout.reports_root()
 BASES = ("bill", "order")                 # 账单基准是会计入账口径，先出、先列
 BASIS_CN = {"bill": "账单基准", "order": "订单基准"}
 

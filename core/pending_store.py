@@ -24,8 +24,9 @@ import json
 import os
 import time
 
-from core.paths import ROOT
-LOG_DIR = os.path.join(ROOT, "logs")
+from core import layout
+from core.paths import ROOT  # noqa: F401
+LOG_DIR = layout.logs_dir()
 PATH = os.path.join(LOG_DIR, "pending.json")
 EXPIRED_NAME = "pending_expired.json"
 

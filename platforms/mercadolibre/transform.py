@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Hand the freshly downloaded files to the cleaning pipeline in `downloads/`.
+Hand the freshly downloaded files to the cleaning pipeline in `pipelines/`.
 
-`downloads/mx_sales` is a separate project (its own README, its own pyproject,
+`pipelines/mx_sales` is a separate project (its own README, its own pyproject,
 its own tests) that cleans the raw exports into Parquet and DuckDB views. This
 module is the seam between the two: it runs that project's CLI and reports what
 happened. It deliberately knows nothing about how the pipeline works.
@@ -25,14 +25,35 @@ import subprocess
 import sys
 import time
 
+from core import layout
 from core.paths import ROOT
 
 # The pipeline's project root: `python -m mx_sales` is run from here, so the
-# package resolves without needing to be pip-installed.
-PIPELINE_ROOT = os.path.join(ROOT, "downloads")
+# package resolves without needing to be pip-installed. Its DATA folders are not
+# here: data_env() tells it where they are (core/layout.mx_sales_paths), in the
+# old layout as much as in the new one.
+PIPELINE_ROOT = os.path.join(ROOT, "pipelines")
 PIPELINE_PKG = os.path.join(PIPELINE_ROOT, "mx_sales")
 
-# build 打印的那一行机器可读结果（见 downloads/mx_sales/__main__.py 的
+
+def data_env():
+    """The pipeline's MX_SALES_* settings: the raw tree it walks and where its
+    Parquet, DuckDB and workbooks go."""
+    p = layout.mx_sales_paths()
+    return {"MX_SALES_RAW_DIR": p["raw"], "MX_SALES_PROCESSED_DIR": p["processed"],
+            "MX_SALES_WAREHOUSE": p["warehouse"]}
+
+
+def raw_root():
+    """The folder the pipeline's relative file paths are relative to."""
+    return layout.mx_sales_paths()["raw"]
+
+
+def reports_dir():
+    """Where per-store accounting workbooks (validate --excel) go."""
+    return layout.mx_sales_paths()["reports"]
+
+# build 打印的那一行机器可读结果（见 pipelines/mx_sales/__main__.py 的
 # BUILD_RESULT_MARKER，两边必须一致）。给程序看的，不回显给人。
 BUILD_RESULT_MARKER = "[BUILD_RESULT_JSON] "
 
@@ -92,7 +113,7 @@ def _invoke(subcmd, label, timeout, echo, current_runs=None):
              "failed_older": [], "older_only": False}
     if not available():
         return dict({"ok": True, "partial": False,
-                     "skipped": "downloads/ 下没有 mx_sales 包",
+                     "skipped": "pipelines/ 下没有 mx_sales 包",
                      "returncode": None, "seconds": 0, "output": ""}, **extra)
 
     # sys.executable, so the transform runs in the same venv as the downloader.
@@ -102,6 +123,7 @@ def _invoke(subcmd, label, timeout, echo, current_runs=None):
     # The pipeline prints Spanish report names; without this a pipe on Windows
     # raises UnicodeEncodeError and the whole step fails for a print statement.
     env["PYTHONIOENCODING"] = "utf-8"
+    env.update(data_env())
 
     print("\n>>> %s：%s" % (label, " ".join(cmd[1:])))
     print("    工作目录：%s" % PIPELINE_ROOT)
@@ -123,7 +145,7 @@ def _invoke(subcmd, label, timeout, echo, current_runs=None):
     secs = int(time.time() - began)
     if echo and out.strip():
         _echo(out)
-    # build 的退出码是三档的（见 downloads/mx_sales/__main__.py 的说明）：
+    # build 的退出码是三档的（见 pipelines/mx_sales/__main__.py 的说明）：
     # 0 全部成功 / 1 部分文件失败但其余已写入 / 2 什么都没产出。以前这里只分
     # 零与非零，于是 55 个文件里坏 1 个也被一路报成"清洗失败"，读的人会以为
     # 整批数据都没清洗。validate 的 1 是别的意思，所以只认 build。
@@ -178,7 +200,7 @@ def build(args=(), timeout=3600, echo=True, current_runs=None):
         failed_older     别的目录里的 —— 老问题，每次重扫都会再撞上
         older_only       True 表示失败的**全是**老文件；此时 ok=True、partial=False
 
-    每一项是 {"report", "file"（相对 downloads/ 的路径）, "error", "current"}。
+    每一项是 {"report", "file"（相对清洗管线 raw 根目录的路径）, "error", "current"}。
     另有 files_ok / files_failed 两个计数。
 
     不给（默认 None）就和以前完全一样：所有失败都算本次的，ok / partial /
@@ -199,7 +221,7 @@ def build(args=(), timeout=3600, echo=True, current_runs=None):
 def validate(export, excel_out, timeout=1800, echo=True):
     """Apply the accounting rules to ONE ventas export and write its workbook.
 
-    `export` must be the path RELATIVE TO downloads/, e.g.
+    `export` must be the path RELATIVE TO raw_root(), e.g.
     "UNIT_TA04/20260903_164329/20260903_Ventas_MX_...xlsx". The pipeline's
     matcher also accepts a bare filename, but that matches any file of that name
     anywhere in the tree - fine for ventas exports, whose names carry a timestamp
@@ -217,3 +239,18 @@ def validate(export, excel_out, timeout=1800, echo=True):
         os.makedirs(parent)
     return _invoke(["validate", export, "--excel", excel_out],
                    "对账簿", timeout, echo)
+
+
+def main(argv=None):
+    """`python -m platforms.mercadolibre.transform build [...]`: run the cleaning
+    pipeline by hand with the same data folders the monthly run uses."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] != "build":
+        print("用法：python -m platforms.mercadolibre.transform build [mx_sales build 的参数]")
+        return 2
+    r = build(argv[1:])
+    return 0 if r.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

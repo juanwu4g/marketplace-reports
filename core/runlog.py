@@ -44,8 +44,9 @@ import subprocess
 import sys
 import time
 
+from core import layout
 from core.paths import ROOT
-LOG_DIR = os.path.join(ROOT, "logs")
+LOG_DIR = layout.logs_dir()
 
 ENTRANCES = ("manual", "scheduled", "cli")
 ENTRANCE_ZH = {"manual": "手动", "scheduled": "定时", "cli": "命令行"}

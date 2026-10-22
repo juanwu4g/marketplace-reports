@@ -42,6 +42,7 @@ from platforms.mercadolibre import meli_forms as mf
 from platforms.mercadolibre import mercadopago as mp
 from platforms.mercadolibre import run_downloads          # 复用 run_folder / collect_pending
 
+from core import layout
 from core.paths import ROOT
 
 
@@ -203,7 +204,7 @@ def probe_limits(driver):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", default="EWTTO_SM")
-    ap.add_argument("--out", default=None, help="输出目录；默认 downloads/<店>/<时间戳>_history")
+    ap.add_argument("--out", default=None, help="输出目录；默认这家店的下载目录下的 <时间戳>_history（见 core/layout）")
     ap.add_argument("--probe-only", action="store_true", help="只探查上限，不下载")
     ap.add_argument("--sales-period", default="Último año",
                     help='销售时间范围标签，默认 "Último año"')
@@ -220,8 +221,7 @@ def main():
 
     store = store_config.require_allowed(args.store)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.abspath(args.out or os.path.join(
-        ROOT, "downloads", store, stamp + "_history"))
+    out_dir = os.path.abspath(args.out or layout.run_folder(store, stamp + "_history"))
 
     print("=" * 66)
     print("历史数据补采 —— %s" % store)

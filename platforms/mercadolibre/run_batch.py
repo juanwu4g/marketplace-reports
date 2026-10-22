@@ -69,8 +69,9 @@ from platforms.mercadolibre import meli_forms
 from platforms.mercadolibre import run_report
 from core import download_diag
 
+from core import layout
 from core.paths import ROOT
-LOG_DIR = os.path.join(ROOT, "logs")
+LOG_DIR = layout.logs_dir()
 NEWLINE = chr(10)
 
 
@@ -92,7 +93,7 @@ def resolve_stores(args):
     return names
 
 
-# 清洗（downloads/mx_sales）读的是 "Ventas MX" 表，只认墨西哥的导出。
+# 清洗（pipelines/mx_sales）读的是 "Ventas MX" 表，只认墨西哥的导出。
 REGION_SKIP_NOTE = "清洗目前只支持墨西哥，其他国家的店铺跳过这一步；不影响报表"
 
 
@@ -138,13 +139,13 @@ def write_summary(path, stamp, rows, transform_result=None, extra=None):
 
 
 def rel_to_downloads(out_dir, name):
-    """A downloaded file as a path relative to downloads/.
+    """A downloaded file as a path relative to the cleaning pipeline's raw root.
 
     That is what the cleaner's matcher wants. A bare filename also matches, but
     against every copy of that name in the tree.
     """
     return os.path.relpath(os.path.join(out_dir, os.path.basename(name)),
-                           transform.PIPELINE_ROOT).replace(chr(92), "/")
+                           transform.raw_root()).replace(chr(92), "/")
 
 
 def make_workbook(row, stamp, args):
@@ -162,7 +163,7 @@ def make_workbook(row, stamp, args):
     """
     if row.get("workbook") or not row.get("ventas"):
         return
-    out = os.path.join(transform.PIPELINE_ROOT, "data", "reports",
+    out = os.path.join(transform.reports_dir(),
                        "%s_%s.xlsx" % (row["store"], stamp))
     res = transform.validate(row["ventas"][0], out)
     if res["ok"]:
@@ -603,10 +604,10 @@ def main():
                          "later run")
     ap.add_argument("--workbooks", action="store_true",
                     help="after cleaning, also write one accounting workbook per "
-                         "store into downloads/data/reports/. With this the run "
+                         "store into the cleaning pipeline's reports folder. With this the run "
                          "goes download -> clean -> report with no human input.")
     ap.add_argument("--no-transform", action="store_true",
-                    help="skip the cleaning pipeline in downloads/mx_sales, "
+                    help="skip the cleaning pipeline in pipelines/mx_sales, "
                          "which otherwise runs once after every store is done")
     ap.add_argument("--stop-on-error", action="store_true",
                     help="abort the batch on the first store that fails "
@@ -679,7 +680,7 @@ def main():
                                              close_when_done=True,
                                              defer_slow=True)
             run_downloads.print_summary(result)
-            # Keep the ventas export's path RELATIVE TO downloads/, which is
+            # Keep the ventas export's path RELATIVE TO the pipeline's raw root, which is
             # what the cleaner's matcher wants. A bare filename would also match,
             # but against every copy in the tree.
             row["ventas"] = [rel_to_downloads(result["out_dir"], f)
@@ -772,7 +773,7 @@ def main():
                   "不影响本次结果" % len(tr["failed_older"]))
     elif transform.available():
         print("\n>>> 已跳过清洗（--no-transform），之后可手动执行：")
-        print("    cd downloads && python -m mx_sales build")
+        print("    python -m platforms.mercadolibre.transform build")
 
     # ---- catch up a store whose ventas only arrived in the late pass -----
     # Workbooks are normally written the moment their store finishes. This is

@@ -10,6 +10,7 @@ import traceback
 from core import report_family as RF
 from core import report_kit as K
 from core import sku_costs as SC
+from core import layout
 from core.paths import ROOT
 from platforms.mercadolibre.bill_report import combined as CB
 from platforms.mercadolibre.bill_report import model as MD
@@ -17,7 +18,7 @@ from platforms.mercadolibre.bill_report import workbook as WB
 from platforms.mercadolibre.bill_report import mapping as M
 
 PLATFORM = "ML"
-DEFAULT_OUT = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+DEFAULT_OUT = layout.reports_root()
 SUFFIX = "_账单基准"
 
 

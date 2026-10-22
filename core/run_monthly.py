@@ -124,6 +124,7 @@ import time
 import traceback
 
 from core import console  # noqa: F401  中文输出编码保护
+from core import layout
 from core import runlog
 # 见上：故意的前置 import，用来在下载之前就验证报表侧能不能加载。
 from platforms.mercadolibre.run_reports import prev_month, OUT_DIR
@@ -133,7 +134,7 @@ from core.paths import ROOT
 # 目前只有一个平台。第二个平台接进来时，这里换成"按店铺所属平台选包"——
 # 见 docs/ARCHITECTURE.md 的 "Extension points"。
 PLATFORM_PKG = "platforms.mercadolibre"
-LOG_DIR = os.path.join(ROOT, "logs")
+LOG_DIR = layout.logs_dir()
 LOCK = os.path.join(LOG_DIR, "monthly.lock")
 
 # 锁超过这个时长就认为是上次被强杀留下的残骸，直接接管。计划任务的超时是
@@ -181,13 +182,30 @@ def resolve_out_dir(cli=None):
             return str(d).strip(), "主界面里选的，存在 gui_settings.json"
     except Exception:
         pass
-    return OUT_DIR, "默认"
+    return layout.reports_root(), "默认"
+
+
+def report_dir(out_dir, month, unit):
+    """A unit's monthly reports: out_dir itself in the legacy layout (flat, as
+    always); reports/monthly/<month>/<PF>-<CC>/ under it in the new one."""
+    if layout.mode() == layout.LEGACY:
+        return out_dir
+    from core import markets
+    return layout.monthly_dir(month, markets.unit_market(unit), override=out_dir)
+
+
+def alert_dir(out_dir, month):
+    """Where the 「！报表异常」 file goes: out_dir (legacy) or the month folder."""
+    if layout.mode() == layout.LEGACY:
+        return out_dir
+    return layout.alert_dir(month, override=out_dir)
 
 
 def config():
     """读 config.json 里的 monthly 段。读不到就当没配，不影响主流程。"""
     try:
-        with io.open(os.path.join(ROOT, "config.json"), encoding="utf-8") as f:
+        from core import store_config
+        with io.open(store_config.CONFIG_PATH, encoding="utf-8") as f:
             return json.load(f).get("monthly") or {}
     except Exception:
         return {}
@@ -399,7 +417,7 @@ def build_plan(step, month, stores, out_dir, py=None, reports_all=False,
     rsub = [] if reports_all else sub
     rp = ([py, "-u", "-m", PLATFORM_PKG + ".run_reports", "--month", month]
           + reg + rsub + (["--no-combined"] if rsub else [])
-          + ["--out-dir", out_dir])
+          + ["--out-dir", report_dir(out_dir, month, region)])
     plan = []
     if step in ("both", "download"):
         plan.append({"key": "download", "label": "下载 %s 的数据" % month,
@@ -431,7 +449,7 @@ def _build_plan_market(step, month, stores, out_dir, py, reports_all, unit, all_
     co = batch + ["--collect-only", "--month", month] + mk + ["--stores"] + listed
     rsub = [] if reports_all or not stores else ["--stores"] + list(stores)
     rp = ([py, "-u", "-m", pkg + ".run_reports", "--month", month] + mk + rsub
-          + (["--no-combined"] if rsub else []) + ["--out-dir", out_dir])
+          + (["--no-combined"] if rsub else []) + ["--out-dir", report_dir(out_dir, month, unit)])
     plan = []
     if step in ("both", "download"):
         plan.append({"key": "download", "label": "下载 %s 的数据" % month, "cmd": dl})
@@ -817,7 +835,7 @@ def _cause_text(code):
 
 
 def alert_path(out_dir, month, region="MX"):
-    return os.path.join(os.path.abspath(out_dir), alert_name(month, region))
+    return os.path.join(os.path.abspath(alert_dir(out_dir, month)), alert_name(month, region))
 
 
 def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
@@ -850,6 +868,7 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
              "也可以双击 月度报表.cmd，在窗口右边的「运行日志」里挑这一轮来看。",
              "处理办法见 README.md 第 12 节《出问题先做这三步》。"]
     text = "\n".join(body)
+    out_dir = alert_dir(out_dir, month)
     try:
         if not os.path.isdir(out_dir):
             os.makedirs(out_dir)
