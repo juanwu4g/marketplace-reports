@@ -324,21 +324,32 @@ def _reset_default_out_dir(say):
     """A window setting that names the OLD default report folder would now mean
     "reports root" — drop it so the new default applies. Any other folder is
     kept (it is where the user wants reports) and named in the output."""
+    old_default = os.path.join(paths.ROOT, "downloads", "data", "reports", "financial")
+    if _drop_out_dir_if(old_default, "旧的默认目录", say) is False:
+        from core import entrance
+        out = read_json(entrance.SETTINGS).get("out_dir")
+        say("注意：窗口里「报表输出到」是 %s —— 新布局里它是报表的根目录，monthly\\ quarterly\\ annual\\ "
+            "会建在它下面；那里原有的旧报表没有搬。" % out)
+
+
+def _drop_out_dir_if(default, what, say):
+    """Remove the window's out_dir setting when it equals `default` (the window
+    saves the folder it shows, even an untouched default, which would pin the
+    other layout's folder). Returns True when removed, False when another folder
+    is set, None when nothing is set."""
     from core import entrance
     p = entrance.SETTINGS
     doc = read_json(p)
     out = doc.get("out_dir")
     if not out:
-        return
-    old_default = os.path.join(paths.ROOT, "downloads", "data", "reports", "financial")
-    if os.path.normcase(os.path.abspath(out)) == os.path.normcase(os.path.abspath(old_default)):
-        del doc["out_dir"]
-        with io.open(p, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh, ensure_ascii=False, indent=2)
-        say("窗口里「报表输出到」原来是旧的默认目录，已清掉，改用新的报表目录。")
-    else:
-        say("注意：窗口里「报表输出到」是 %s —— 新布局里它是报表的根目录，monthly\\ quarterly\\ annual\\ "
-            "会建在它下面；那里原有的旧报表没有搬。" % out)
+        return None
+    if os.path.normcase(os.path.abspath(out)) != os.path.normcase(os.path.abspath(default)):
+        return False
+    del doc["out_dir"]
+    with io.open(p, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=2)
+    say("窗口里「报表输出到」原来是%s，已清掉，改用当前布局的默认报表目录。" % what)
+    return True
 
 
 def undo(say=print):
@@ -349,12 +360,14 @@ def undo(say=print):
         say("config.json 本来就是旧布局，不用改。")
         return
     shutil.copy2(cfg_path, "%s.bak_undo_%s" % (cfg_path, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
+    new_default = os.path.join(cfg["paths"]["data_root"], "reports")
     del cfg["paths"]["data_root"]
     if not cfg["paths"]:
         del cfg["paths"]
     with io.open(cfg_path, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
     say("config.json 已切回旧布局。新目录里的文件没有动。")
+    _drop_out_dir_if(new_default, "新布局的默认报表目录", say)
 
 
 # ------------------------------------------------------------------ remove the old files

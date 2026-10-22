@@ -125,3 +125,13 @@ def test_refusals(machine):
     assert ML.main(["plan", "--data-root", str(machine / "data")]) == 2             # a run is active
     os.remove(str(root / "logs" / "monthly.lock"))
     assert ML.main(["remove-old", "--manifest", "x.json"]) == 2                     # still legacy
+
+
+def test_undo_drops_the_new_default_report_folder_setting(machine):
+    root, data = machine / "code", machine / "data"
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    # the window saved the folder it showed (the new default)
+    write(str(root / "gui_settings.json"), json.dumps({"out_dir": str(data / "reports"), "region": "MX"}))
+    ML.undo()
+    assert "out_dir" not in json.load(open(str(root / "gui_settings.json"), encoding="utf-8"))
+    assert layout.reports_root() == str(root / "downloads" / "data" / "reports" / "financial")
