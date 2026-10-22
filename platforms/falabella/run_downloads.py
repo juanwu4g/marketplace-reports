@@ -208,6 +208,13 @@ def write_report(out_dir, result):
         L.append("⚠ 开始时界面语言是 %s，脚本已在页面最下方把它改回 %s。有人在用这家店时改了语言；"
                  "反复出现的话，请提醒用这家店的人保持西班牙语。" % (sw.get("from"), sw.get("to")))
         L.append("")
+    auto = result["flags"].get("auto_login")
+    if auto == "ok":
+        L.append("ℹ 店铺开始时没登录，脚本用紫鸟已填好的账号自动登录了（只点了 Continuar 和 Iniciar sesión）。")
+        L.append("")
+    elif auto:
+        L.append("⚠ 店铺没登录，自动登录没成功：%s。请打开这家店手动登录后重跑。" % auto.split(": ", 1)[-1])
+        L.append("")
     if result["flags"].get("seller"):
         L.append("卖家：%s %s（界面 %s）" % (result["flags"].get("seller"),
                                       result["flags"].get("seller_name") or "",
