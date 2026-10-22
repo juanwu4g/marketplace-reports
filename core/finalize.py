@@ -233,6 +233,19 @@ def publish_store(unit, store, st, log):
             _copy(s["chosen"]["workbook"], draft, log)
 
 
+def other_months_folders(store, month, config_path=None):
+    """Download folders any version of the store's other months reads. A report
+    may read a run folder named for another month (MercadoLibre takes the newest
+    folder holding the month's bill), so cleaning one month never deletes them."""
+    out = set()
+    for m in results.months(store, config_path):
+        if m == month:
+            continue
+        for v in results.versions(store, m, config_path=config_path):
+            out |= set(os.path.normcase(os.path.abspath(f)) for f in v.get("source_folders") or ())
+    return out
+
+
 def clean_store(unit, store, st, log, config_path=None):
     """Clean one store-month once every basis it produces has a final. Returns the
     deleted run folders."""
@@ -248,6 +261,7 @@ def clean_store(unit, store, st, log, config_path=None):
             remove_version_workbook(unit, v, log)
             remove_results_file(v, log, config_path)
     used = set(os.path.normcase(os.path.abspath(f)) for d in finals for f in d.get("source_folders") or ())
+    used |= other_months_folders(store, unit.month, config_path)
     reported = set(v["run"] for b in produced for v in st[b]["versions"])
     newest_final_run = max(d["run"] for d in finals)
     gone = []

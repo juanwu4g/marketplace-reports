@@ -166,6 +166,21 @@ def test_clean_up_once_every_basis_is_final(v2):
     assert [v["version"] for v in R.versions("S1", MONTH)] == [s1_v]
 
 
+def test_a_folder_another_month_reads_is_kept(v2):
+    """September's report read an October-named run folder (it held September's
+    bill): cleaning October must not delete it."""
+    oct_run = "20261103_010000_m202610"
+    v = R.version_id(oct_run, "20261003_050000")
+    raw = layout.run_folder("S2", oct_run)
+    os.makedirs(raw)
+    R.write(R.document("ML", MARKET, "MX", "MXN", 2, "S2", MONTH, "bill", v, "2026-10-03T05:00:00", [raw], None,
+                       {"level": R.GAPS, "reasons": []}))
+    make("S2", "20261110_010000_m202610", "20261110_050000", R.COMPLETE, "bill", month="2026-10")
+    oct_md = layout.monthly_dir("2026-10", MARKET)
+    out = FZ.run(FZ.Unit("ML", MARKET, "2026-10", oct_md, ("bill",), name, cname), ["S2"])
+    assert os.path.isdir(raw) and out["cleaned"] == []
+
+
 def test_month_without_final_is_never_cleaned(v2):
     make("S1", R1, "20261003_050000", R.GAPS, "bill")
     make("S1", R2, "20261012_050000", R.FAILED, "bill", workbook=False)
