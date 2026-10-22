@@ -16,6 +16,7 @@ import traceback
 
 from core import browser_kit
 from core import download_diag
+from platforms.falabella import login
 from platforms.falabella import page_kit as pk
 from platforms.falabella import periods
 
@@ -108,6 +109,8 @@ def guarded(ctx, route, forms, fn, *a):
 def check_language(ctx):
     """Open the payments page and read data-localefull. Not Spanish -> raise."""
     ctx.go(PAYMENTS)
+    if login.on_login_page(login.current_url(ctx.d)) and login.sign_in(ctx):
+        ctx.go(PAYMENTS)
     info = pk.wait_for(lambda: pk.page_locale(ctx.d), timeout=60, poll=2)
     if not info:
         raise pk.PageError("payments page never rendered (no data-localefull found)")
