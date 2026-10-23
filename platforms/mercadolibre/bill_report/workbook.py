@@ -58,7 +58,13 @@ def pl_rows(S):
         R("ship_income", "加：买家支付的运费", "Envío a cargo del cliente", "d",
           "买家付给卖家的运费（随销售行列出）；平台的全额运费在下面“平台运费”里扣"),
         R("ship_income_rev", "减：冲销订单的买家运费", "Envío a cargo del cliente × 冲销比例", "d", ""),
-        R("revenue", "营业收入合计", "", "sum", "", ("net_gmv", "ship_income", "ship_income_rev")),
+        R("seller_discount", "减：卖家承担的优惠（账单之外）", "Descuentos y bonificaciones < 0 · Ventas", "d",
+          "账单不含：取自销售报表本月计费销售的“Descuentos y bonificaciones”负数部分；冲销的销售按冲销比例冲回；"
+          "包裹订单按各商品金额分摊"),
+        R("platform_subsidy", "加：平台补贴（账单之外）", "Descuentos y bonificaciones > 0 · Ventas", "d",
+          "账单不含：同一列的正数部分（平台给卖家的补贴，如秘鲁 Flex 运费补贴）；冲销同上"),
+        R("revenue", "营业收入合计", "", "sum", "",
+          ("net_gmv", "ship_income", "ship_income_rev", "seller_discount", "platform_subsidy")),
     ]
     for key, lab, orig, note in C.PL_FEE_LINES:
         rows.append(R(key, lab, orig, "d", note))
@@ -68,7 +74,13 @@ def pl_rows(S):
         R("contrib", "经营贡献（未扣商品成本）", "", "f", "＝ 营业收入 − 平台费用", ("revenue", "fees_total")),
         R("cogs", "减：商品采购成本", "", "in", "⚠ 账单不含商品成本：请录入（或配置 SKU 成本表）"),
         R("profit", "扣除商品成本后的贡献", "", "f",
-          "未扣：MercadoPago 资金费用、卖家自担优惠、税金（见备查项与①六）", ("contrib", "-cogs")),
+          "未扣：MercadoPago 资金费用、代扣税金（见下两行与①六）", ("contrib", "-cogs")),
+        R("withheld", "平台代扣代缴税金（预缴税款，不计入贡献）", "TAXES_AMOUNT · MercadoPago settlement", "d",
+          ("账单不含：MercadoPago 对本月计费销售代扣的 IVA/ISR（结算报表 TAXES_AMOUNT；结算里没有的按销售报表推算）；"
+           "冲销的销售按冲销比例冲回。可抵减申报税额，所以不从贡献中扣（①五）") if p.withholding else
+          "%s平台不代扣税：0" % p.country_cn),
+        R("profit_after_wh", "【敏感性】若代扣税不能抵减：扣除后的贡献", "", "f",
+          "＝ 扣除商品成本后的贡献 − 代扣税金；仅供比较", ("profit", "withheld")),
     ]
     return rows
 
@@ -166,8 +178,9 @@ def readme_sections(S, ctx):
         ("一、这份报表是什么", [
             ("基准", "以 MercadoLibre 的账单（Reporte_Facturacion ＋ Reporte_Notas_Credito）为唯一金额基准的财务报表。"
                      "账单的每一行（含贷记单）只计一次（按 Número del cargo），本月计费日的行合起来就是“账本”；"
-                     "② 的平台费用 ＝ 账本，销售额也取自账单的销售行。其他文件只用来找 SKU、判断状态、把店铺级"
-                     "费用落到 SKU，不提供金额。"),
+                     "② 的平台费用 ＝ 账本，销售额也取自账单的销售行。其他文件用来找 SKU、判断状态、把店铺级"
+                     "费用落到 SKU；账单里没有的三项金额 —— 卖家承担的优惠、平台补贴、平台代扣税金 —— 取自销售"
+                     "报表与 MercadoPago 结算，在②单独成行（见五、六）。"),
             ("两份报表的关系", "每月与订单基准报表（%s_%s.xlsx）一起生成，两者各自独立计算、互不引用。会计入账以本报表（账单基准）为准；订单基准报表作经营分析参考。" % (S["store"], ctx["month"])),
             ("店铺 / 国家 / 币种", "%s ／ %s ／ %s（%s）" % (S["store"], p.country_cn, p.currency, p.currency_cn)),
             ("下载文件夹", S["folder"]),
@@ -195,6 +208,8 @@ def readme_sections(S, ctx):
                 m["coverage"][M.NONE][0])),
             ("期后冲销", "本月计费、在 %s 之后才冲销的销售 %d 笔、%s：按计费日口径不计入本月，列在②备查项与⑤三-E。" % (
                 S["p1"], m["post_n"], fmtm(-m["post_amount"], dec))),
+            ("账单之外", "卖家承担的优惠 %s、平台补贴 %s（已计入营业收入）；平台代扣税金 %s（不计入贡献）。" % (
+                fmtm(pl["seller_discount"], dec), fmtm(pl["platform_subsidy"], dec), fmtm(pl["withheld"], dec))),
         ] + ([SC.point_line([cost], pl["contrib"] - cost.cogs)] if cost is not None else [])),
         ("五、会计处理（口径）", [
             ("%s" % p.vat_name,
@@ -203,9 +218,17 @@ def readme_sections(S, ctx):
              "不参与损益计算。怎么申报、能抵多少，请交%s会计师按 %s 规定确认。" % (
                  p.vat_name, p.vat_name, pct(p.vat_rate, 0), p.vat_name, pct(p.vat_rate, 0),
                  pct(p.vat_rate, 0), p.country_cn, p.tax_auth)),
-            ("代扣税", ("墨西哥平台通过 MercadoPago 代扣 IVA/ISR（retenciones）。代扣不在账单里，所以不在本基准内：②备查项"
-                       "单列一行；有 MercadoPago 结算文件时附上其 TAXES_AMOUNT 合计作参考。它是预缴税款而非费用。")
-             if p.withholding else ("%s平台不代扣税，账单里也没有代扣行。" % p.country_cn)),
+            ("代扣税", ("墨西哥平台通过 MercadoPago 代扣 IVA/ISR（retenciones），账单里没有。②“平台代扣代缴税金”逐笔取"
+                       "MercadoPago 结算报表（settlement）里该销售付款号（Pago）的 TAXES_AMOUNT —— 即平台实际扣下的税；"
+                       "结算里找不到的销售，按销售报表“Cargo por venta e impuestos”减去账单上该单的佣金推算（⑩列出笔数）。"
+                       "和销售额一样，在佣金行计费日计入，冲销的销售按冲销比例冲回。代扣是预缴税款，可在申报时抵减，所以不从"
+                       "经营贡献中扣；②最后一行给出“若不能抵减”时的贡献作比较。会计师提到的 Reporte base gravable de "
+                       "retención（Monto retenido total）下载后将用来逐月核对本行。")
+             if p.withholding else ("%s平台不代扣税，账单里也没有代扣行；②代扣税金行为 0。" % p.country_cn)),
+            ("卖家优惠与平台补贴", "账单的 Total de la venta 是标价金额，不含卖家自己出的优惠和平台给的补贴。两者取自销售报表"
+                              "（Ventas）每笔订单的“Descuentos y bonificaciones”：负数 ＝ 卖家承担的优惠，正数 ＝ 平台补贴"
+                              "（如秘鲁 Flex 运费补贴）。按销售的佣金计费日计入，冲销按比例冲回；多商品包裹的金额在包裹行上，"
+                              "按各商品“件数 × 单价”分摊；随销售归到 SKU。不在销售报表里的销售按 0 计（⑩列出）。"),
             ("销售额", "一笔销售在它的“Cargo por venta”（佣金）行的计费日计入；金额取该行的 Total de la venta"
                        "（＝ 数量 × 单价，已逐行验证）。账单没有单独的销售收入行，佣金行就是销售的凭证。"),
             ("取消与退款（估算）", "账单不写退款金额，只写佣金冲销（Anulación del cargo por venta）。冲销比例 ＝ 冲销额 ÷ "
@@ -233,21 +256,24 @@ def readme_sections(S, ctx):
              "账单不含商品成本。②“商品采购成本”是黄色录入行；配置 SKU 成本表（config.json → reports.sku_costs）"
              "后按“计费件数 − 发货前取消 − 退回后重新上架件数”× 单位成本自动填入。"),
         ]),
-        ("六、不在本基准内", [
-            ("MercadoPago 资金费用", "分期手续费、提现、资金冻结与释放、MercadoPago 自身的费用都不在 MercadoLibre 账单里。"),
-            ("卖家自担的优惠", "卖家自己出的折扣券、促销让利若已体现在单价里则已含在销售额；单独结算的部分账单不显示。"),
-            ("平台补贴", "平台给卖家的运费补贴、现金返还（cashback）不在账单里（MercadoPago 有）。"),
-            ("代扣税", "见五。" if p.withholding else "不适用（本国平台不代扣）。"),
-            ("库存估值", "⑨只有数量；库存成本、跌价不在本报表。"),
+        ("六、账单之外的数据", [
+            ("已纳入：卖家承担的优惠", "销售报表“Descuentos y bonificaciones”的负数部分 → ②“减：卖家承担的优惠”、⑦按 SKU。"),
+            ("已纳入：平台补贴", "同一列的正数部分 → ②“加：平台补贴”、⑦按 SKU。"),
+            ("已纳入：代扣税", "MercadoPago 结算 TAXES_AMOUNT → ②“平台代扣代缴税金”、⑦按 SKU（见五）。" if p.withholding
+             else "不适用（本国平台不代扣）。"),
+            ("未纳入：MercadoPago 资金费用", "分期手续费、提现、资金冻结与释放、MercadoPago 自身的费用不在账单里，也不按订单可分。"),
+            ("未纳入：库存估值", "⑨只有数量；库存成本、跌价不在本报表。"),
         ]),
         ("七、各页说明", [
-            (SHEETS[1], "损益：计费销售 → 冲销 → 净销售额 → 平台费用 → 经营贡献；行位置固定。下方费用率与备查项。"),
+            (SHEETS[1], "损益：计费销售 → 冲销 → 净销售额 → 优惠与补贴 → 平台费用 → 经营贡献 → 代扣税金；行位置固定。"
+                        "下方费用率与备查项。"),
             (SHEETS[2], "勾稽：账本 ＝ ②费用、销售 → 净销售额、费用归属、SKU 映射覆盖、销售状态、每张账单 ↔ 付款报表、"
                         "贷记单 ↔ 付款报表、仓储费归属。每座桥以“残差（应为 0）”结束。"),
             (SHEETS[3], "账单里出现的每个科目：原文、中文、归入的②行、归 SKU 的方式、结算方式、本期金额。"),
             (SHEETS[4], "冲销汇总、本月计费销售的状态、逐单清单（取消 / 退货 / 部分退款 / 未证实 / 期后）、按 SKU 汇总。"),
             (SHEETS[5], "退货逐单：ML 审核结果、去向、仓库质检、退货处理费、MercadoPago 退款。"),
-            (SHEETS[6], "表一每个 SKU 一行：件数、销售额、冲销、直接费用、分摊费用、贡献；表二每笔销售 → SKU 的映射。"),
+            (SHEETS[6], "表一每个 SKU 一行：件数、销售额、冲销、卖家优惠与平台补贴、直接费用、分摊费用、贡献、代扣税金；"
+                        "表二每笔销售 → SKU 的映射。"),
             (SHEETS[7], "本月按周（按计费日）的销售、冲销、费用与贡献；销售额前 10 的 SKU 按周。"),
             (SHEETS[8], "Full 库存快照与本月净销量（只看数量，不进损益）。"),
             (SHEETS[9], "全部校验（error / warn / skipped）、未匹配的销售、待决事项。"),
@@ -332,16 +358,10 @@ def pl_memo(fam, S):
                     "＝ 平台费用 × %s/(1+%s)；能否抵扣取决于平台开给本店的发票（factura / boleta）" % (vr, vr))),
     ]
     if p.withholding:
-        memo.append(("withheld_taxes", (
-            "平台代扣代缴税金（IVA/ISR）——不在本基准内", "Retenciones (MercadoPago)",
-            lambda X: X["m"]["mp_taxes"] or 0.0,
-            fam.per_store(lambda X: (
-                "账单不含代扣税。本行是 MercadoPago 结算流水里本月计费销售的 TAXES_AMOUNT 合计，仅作参考；"
-                "它是预缴税款而非费用") if X["m"]["mp_taxes"] is not None else
-                "账单不含代扣税；本店文件夹没有 MercadoPago 结算文件，无法给出参考值（显示 0）"))))
-    else:
-        memo.append(("withheld_taxes", ("平台代扣税", "Retenciones", lambda X: 0.0,
-                                        "%s平台不代扣；账单无此项" % p.country_cn)))
+        memo.append(("withheld_given_back", (
+            "本期冲销对应的 MercadoPago 实际退还代扣税（旁证）", "settlement REFUND / DISPUTE · TAXES_AMOUNT",
+            lambda X: X["m"]["wh_given_back_mp"],
+            "与②“平台代扣代缴税金”里按冲销比例冲回的部分对照；含时间差，不替代②口径")))
     memo += [
         ("post_reversals", ("期后冲销：本月计费、月后才冲销的销售额（不计入本月）", "Anulación posterior al cierre",
                             lambda X: -X["m"]["post_amount"], fam.per_store(lambda X: "%d 笔；对应佣金冲销 %s" % (
@@ -768,27 +788,33 @@ def sku_cols(with_cost):
             RF.Col("计费件数", 8, K.INT), RF.Col("冲销件数", 8, K.INT),
             RF.Col("净件数", 8, K.INT, formula="=D{r}-E{r}", **calc),
             mny("计费销售额"), mny("发货前取消"), mny("退货退款"), mny("部分退款"), mny("其他冲销"),
-            mny("净商品销售额", formula="=G{r}+H{r}+I{r}+J{r}+K{r}", **calc), mny("买家运费（净）"),
+            mny("净商品销售额", formula="=G{r}+H{r}+I{r}+J{r}+K{r}", **calc),
+            mny("卖家承担的优惠"), mny("平台补贴"), mny("买家运费（净）"),
             mny("直接：佣金"), mny("直接：联盟佣金"), mny("直接：平台运费"), mny("直接：退货处理费"),
             mny("直接：Full 仓储"), mny("直接：Full 揽收/取回"),
-            mny("直接费用小计", formula="=SUM(N{r}:S{r})", **calc),
+            mny("直接费用小计", formula="=SUM(P{r}:U{r})", **calc),
             mny("分摊：广告"), mny("分摊：Full 仓储类"), mny("分摊：Full 揽收/违约"), mny("分摊：店铺服务"),
-            mny("分摊：其他"), mny("分摊费用小计", formula="=SUM(U{r}:Y{r})", **calc),
-            mny("经营贡献（未扣成本）", 15, formula="=L{r}+M{r}+T{r}+Z{r}", **calc),
-            RF.Col("贡献率", 8, K.PCT, formula="=IF(L{r}=0,0,AA{r}/L{r})", **calc)]
+            mny("分摊：其他"), mny("分摊费用小计", formula="=SUM(W{r}:AA{r})", **calc),
+            mny("经营贡献（未扣成本）", 15, formula="=L{r}+M{r}+N{r}+O{r}+V{r}+AB{r}", **calc),
+            RF.Col("贡献率", 8, K.PCT, formula="=IF(L{r}=0,0,AC{r}/L{r})", **calc),
+            mny("代扣税金（不计入贡献）", 13)]
     if with_cost:
         cols += [RF.Col("单位成本", 11, RF.MONEY), RF.Col("成本件数", 8, K.INT),
-                 mny("商品成本", formula="=-AC{r}*AD{r}", **calc),
-                 mny("扣成本后贡献", formula="=AA{r}+AE{r}", **calc),
+                 mny("商品成本", formula="=-AF{r}*AG{r}", **calc),
+                 mny("扣成本后贡献", formula="=AC{r}+AH{r}", **calc),
                  RF.Col("成本来源", 34, font=GREY9)]
     return cols
 
 
+# ⑦ column numbers the sheet code needs (1-based, without the summary's 店铺 column)
+SKU_RATE_COL, SKU_UNIT_COST_COL, SKU_COST_UNITS_COL, SKU_COST_SOURCE_COL = 30, 32, 33, 36
+
 # ② key(s) each ⑦ money column must sum to
 SKU_TIES = {"G": ("gmv_billed",), "H": ("rev_cancel",), "I": ("rev_return",), "J": ("rev_partial",),
-            "K": ("rev_unproven",), "L": ("net_gmv",), "M": ("ship_income", "ship_income_rev"),
-            "N": ("fee_commission",), "O": ("fee_affiliate",), "P": ("fee_shipping",), "Q": ("fee_return",),
-            "AA": ("contrib",)}
+            "K": ("rev_unproven",), "L": ("net_gmv",), "M": ("seller_discount",), "N": ("platform_subsidy",),
+            "O": ("ship_income", "ship_income_rev"),
+            "P": ("fee_commission",), "Q": ("fee_affiliate",), "R": ("fee_shipping",), "S": ("fee_return",),
+            "AC": ("contrib",), "AE": ("withheld",)}
 
 MAP_COLS = [RF.Col("订单号（Número de venta）", 19), RF.Col("包裹号", 18), RF.Col("付款号（Pago）", 14),
             RF.Col("刊登号", 15), RF.Col("账单上的标题", 40, font=TEXT9), RF.Col("件数", 6, K.INT),
@@ -811,11 +837,11 @@ def sku_rows(S, cost):
             kv[0]))) if tiers else "—"
         vals = [k, S["sku_titles"].get(k, ""), tier_txt, x["units"], x["units_rev"], None,
                 x["gmv"], x["rev_cancel"], x["rev_return"], x["rev_partial"], x["rev_unproven"], None,
-                x["ship_net"],
+                x["discount"], x["subsidy"], x["ship_net"],
                 x["d:fee_commission"], x["d:fee_affiliate"], x["d:fee_shipping"], x["d:fee_return"],
                 x["d:fee_full_storage"], x["d:fee_full_ops"], None,
                 x["a:fee_ads"], x["a:fee_full_storage"], x["a:fee_full_ops"], x["a:fee_store"], x["a:fee_other"],
-                None, None, None]
+                None, None, None, x["withheld"]]
         if cost is not None:
             line = cost.line(k)
             vals += [line.unit_cost if line is not None and line.unit_cost is not None else 0.0,
@@ -831,7 +857,7 @@ def sheet_sku(wb, fam, S, ctx):
     ws = wb.create_sheet(SHEETS[6])
     K.title_rows(ws, "SKU 盈利分析（%s · 账单基准）" % ctx["period_cn"],
                  "表一：每个 SKU 一行。直接费用按订单/明细归属；“分摊”列是店铺级费用按净商品销售额占比分摊（政策见①五），"
-                 "两者分开列。单位：%s" % p.currency,
+                 "两者分开列。卖家优惠、平台补贴、代扣税金随订单归 SKU（账单之外，见①六）。单位：%s" % p.currency,
                  "表二（下方）：每笔销售 → SKU 的映射，含级别与可信度。")
     RF.set_widths(ws, [c.width for c in cols])
     r = 4
@@ -843,26 +869,26 @@ def sheet_sku(wb, fam, S, ctx):
     for k, vals in sku_rows(S, cost):
         cells = fam.write_row(ws, r, cols, vals)
         if cost is not None and (cost.line(k) is None or cost.line(k).unit_cost is None):
-            cells[28].fill = fill(K.C_INPUT)
+            cells[SKU_UNIT_COST_COL - 1].fill = fill(K.C_INPUT)
         if k.startswith(M.UNMAPPED_PREFIX) or k.startswith("（"):
             cells[0].font = F(10, False, K.C_RED)
         r += 1
     last = r - 1
     write_cells(ws, r, 1, ["合计"], font=BOLD, fill_color=K.C_TOTAL)
     for j in range(4, len(cols) + 1):
-        if j == 28 or (cost is not None and j in (29, 33)):
+        if j == SKU_RATE_COL or (cost is not None and j in (SKU_UNIT_COST_COL, SKU_COST_SOURCE_COL)):
             continue
         L_ = get_column_letter(j)
         write_cells(ws, r, j, ["=SUM(%s%d:%s%d)" % (L_, first, L_, last)],
-                    fmt=K.INT if j in (4, 5, 6, 30) else fam.money, font=BOLD, fill_color=K.C_TOTAL)
+                    fmt=K.INT if j in (4, 5, 6, SKU_COST_UNITS_COL) else fam.money, font=BOLD, fill_color=K.C_TOTAL)
     tot = r
     ctx["sku_total_row"] = tot
     r += 1
     # ② values and residuals, column by column
     ws.cell(row=r, column=1, value="② 对应值").font = BOLD
     ties = dict(SKU_TIES)
-    ties_extra = {"R+V": ("fee_full_storage",), "S+W": ("fee_full_ops",), "U": ("fee_ads",), "X": ("fee_store",),
-                  "Y": ("fee_other",)}
+    ties_extra = {"T+X": ("fee_full_storage",), "U+Y": ("fee_full_ops",), "W": ("fee_ads",), "Z": ("fee_store",),
+                  "AA": ("fee_other",)}
     for col, keys in ties.items():
         c = ws.cell(row=r, column=_col_idx(col), value="=" + "+".join(plref(ctx, k) for k in keys))
         c.number_format = fam.money
@@ -881,7 +907,7 @@ def sheet_sku(wb, fam, S, ctx):
         c.font = BOLD
         c.fill = fill(K.C_TOTAL)
         c.border = K.BOX
-    ws.cell(row=r, column=3, value="R+V＝Full仓储类；S+W＝Full揽收/违约；U 广告；X 店铺服务；Y 其他").font = GREY9
+    ws.cell(row=r, column=3, value="T+X＝Full仓储类；U+Y＝Full揽收/违约；W 广告；Z 店铺服务；AA 其他").font = GREY9
     r += 2
     if cost is not None:
         ws.cell(row=r, column=1, value="商品成本：%s" % SC.pl_note(cost)).font = GREY9
@@ -928,38 +954,55 @@ def _col_idx(letters):
 
 TREND_KEYS = ["fee_commission", "fee_affiliate", "fee_shipping", "fee_return", "fee_ads", "fee_full_storage",
               "fee_full_ops", "fee_store", "fee_other"]
+# S["weekly"] keys in ⑧'s data columns (B..), then TREND_KEYS; formula columns are None
+TREND_HEAD = ["n", "units", "gmv", "rev", None, "promo", "ship"]
+TREND_RATE_COL = 20          # 费用率 (T): the totals row sums the columns before it
+
+
+def trend_cols():
+    return ([RF.Col("周（计费日）", 14), RF.Col("计费笔数", 8, K.INT), RF.Col("件数", 8, K.INT),
+             RF.Col("计费销售额", 14, RF.MONEY), RF.Col("冲销", 13, RF.MONEY),
+             RF.Col("净商品销售额", 14, RF.MONEY, formula="=D{r}+E{r}", fill=K.C_CALC),
+             RF.Col("卖家优惠与平台补贴（净）", 13, RF.MONEY), RF.Col("买家运费（净）", 12, RF.MONEY)] +
+            [RF.Col(C.FEE_CN[k], 12, RF.MONEY) for k in TREND_KEYS] +
+            [RF.Col("平台费用合计", 14, RF.MONEY, formula="=SUM(I{r}:Q{r})", fill=K.C_CALC),
+             RF.Col("经营贡献", 14, RF.MONEY, formula="=F{r}+G{r}+H{r}+R{r}", fill=K.C_CALC),
+             RF.Col("费用率", 8, K.PCT, formula="=IF(F{r}=0,0,-R{r}/F{r})", fill=K.C_CALC)])
+
+
+def trend_values(label, x):
+    return [label] + [x[k] if k else None for k in TREND_HEAD] + [x[k] for k in TREND_KEYS] + [None, None, None]
+
+
+def trend_ties():
+    """⑧ column -> the ② key(s) its total must equal."""
+    ties = {"D": ("gmv_billed",), "E": ("rev_cancel", "rev_return", "rev_partial", "rev_unproven"),
+            "F": ("net_gmv",), "G": ("seller_discount", "platform_subsidy"), "H": ("ship_income", "ship_income_rev"),
+            "R": ("fees_total",), "S": ("contrib",)}
+    for k, col in zip(TREND_KEYS, "IJKLMNOPQ"):
+        ties[col] = (k,)
+    return ties
 
 
 def sheet_trend(wb, fam, S, ctx):
     p = S["prof"]
-    cols = ([RF.Col("周（计费日）", 14), RF.Col("计费笔数", 8, K.INT), RF.Col("件数", 8, K.INT),
-             RF.Col("计费销售额", 14, RF.MONEY), RF.Col("冲销", 13, RF.MONEY),
-             RF.Col("净商品销售额", 14, RF.MONEY, formula="=D{r}+E{r}", fill=K.C_CALC),
-             RF.Col("买家运费（净）", 12, RF.MONEY)] +
-            [RF.Col(C.FEE_CN[k], 12, RF.MONEY) for k in TREND_KEYS] +
-            [RF.Col("平台费用合计", 14, RF.MONEY, formula="=SUM(H{r}:P{r})", fill=K.C_CALC),
-             RF.Col("经营贡献", 14, RF.MONEY, formula="=F{r}+G{r}+Q{r}", fill=K.C_CALC),
-             RF.Col("费用率", 8, K.PCT, formula="=IF(F{r}=0,0,-Q{r}/F{r})", fill=K.C_CALC)])
+    cols = trend_cols()
     ws = fam.table_sheet(wb, SHEETS[7], "月度趋势（%s 按周 · 账单基准）" % ctx["period_cn"],
                          "一个会计月内按周（周一起，按计费日）。冲销按冲销的计费日、费用按各自的计费日落周。单位：%s" % p.currency,
                          cols)
     r = 5
     first = r
     for (a, b, label), x in zip(S["weeks"], S["weekly"]):
-        fam.write_row(ws, r, cols, [label, x["n"], x["units"], x["gmv"], x["rev"], None, x["ship"]] +
-                      [x[k] for k in TREND_KEYS] + [None, None, None])
+        fam.write_row(ws, r, cols, trend_values(label, x))
         r += 1
     write_cells(ws, r, 1, ["合计"], font=BOLD, fill_color=K.C_TOTAL)
-    for j in range(2, 19):
+    for j in range(2, TREND_RATE_COL):
         L_ = get_column_letter(j)
         write_cells(ws, r, j, ["=SUM(%s%d:%s%d)" % (L_, first, L_, r - 1)],
                     fmt=K.INT if j in (2, 3) else fam.money, font=BOLD, fill_color=K.C_TOTAL)
     tot = r
     r += 1
-    ties = {"D": ("gmv_billed",), "E": ("rev_cancel", "rev_return", "rev_partial", "rev_unproven"),
-            "F": ("net_gmv",), "G": ("ship_income", "ship_income_rev"), "Q": ("fees_total",), "R": ("contrib",)}
-    for k, col in zip(TREND_KEYS, "HIJKLMNOP"):
-        ties[col] = (k,)
+    ties = trend_ties()
     ws.cell(row=r, column=1, value="② 对应值").font = BOLD
     for col, keys in ties.items():
         fam.money_cell(ws.cell(row=r, column=_col_idx(col)), "=" + "+".join(plref(ctx, k) for k in keys))

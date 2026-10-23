@@ -74,6 +74,34 @@ python -m platforms.mercadolibre.bill_report --store <name> --month 2026-09 --fo
   month's sale reversed after month-end stays in the month's GMV and is listed as
   a post-period item (② memo, ⑤ 三-E).
 
+## Amounts outside the bill (2026-10-23, accountant's request)
+
+The bill does not carry three amounts; they are taken per sale from the files that
+state them and follow the sale exactly as its `Total de la venta` does — in on the
+commission's charge date, out in the reversed share on a reversal's charge date —
+so they go to the sale's SKU and the ⑦ columns tie to ② (`model._outside`).
+
+| ② row | source | sign |
+|---|---|---|
+| 减：卖家承担的优惠（账单之外） `seller_discount` | sales export `Descuentos y bonificaciones` < 0 | in revenue |
+| 加：平台补贴（账单之外） `platform_subsidy` | the same column > 0 (Peru: the Flex shipping bonus) | in revenue |
+| 平台代扣代缴税金 `withheld` (after 扣除商品成本后的贡献) | Mexico: settlement `TAXES_AMOUNT` of the sale's Pago (SETTLEMENT*/SHIPPING rows); without them, the export's `Cargo por venta e impuestos` less the bill's commission rows of the sale; else 0. CL/PE: 0 | **not** in contribution (a prepaid tax); the next row 【敏感性】 shows contribution less it |
+
+* A pack's money is on the export's pack row: each item takes its share of units ×
+  unit price. A Pago shared by several sales is split by their totals.
+* The export's other identity (Total − the other money columns) is **not** used: on
+  the golden stores it is 0 except for exchange orders, so it is not a discount.
+* Checks (warn): `outside_ventas` — billed sales not in the export (no discount
+  known, 0); `withheld_source` (MX) — sales whose tax is derived or unknown.
+* ② memo `withheld_given_back` (MX): MercadoPago's actual tax give-back on the
+  month's reversals, as evidence next to the reversed share.
+* The accountant's "Reporte base gravable de Retención" (`Monto retenido total`) is
+  not downloaded yet; when it is, it reconciles the `withheld` row month by month.
+  On BOCINA_TA02 2026-09 the settlement source matches the export-derived amount
+  on 187 of 200 sales; the rest are pack items, orders the export zeroed after a
+  cancellation, and a few single orders where MercadoPago withheld less than the
+  derivation — which is why the settlement is the primary source.
+
 ## Detalle catalogue (`catalog.py`)
 
 | Detalle | ② line | To SKU |
@@ -136,7 +164,8 @@ after month-end, a bill month without credit notes, duplicate charge numbers, sa
 billed twice, reversal share estimated, reversals without evidence, refunds not yet
 reversed, mapping below 99 %, storage attribution by nearest day > 25 %, Full
 charges without SKU, invoice not (fully) paid in `Reporte_Pagos_Facturas`, credit
-notes not matched. Skipped: no MercadoPago files, no Full (Peru).
+notes not matched, billed sales not in the sales export, withheld tax not from the
+settlement (MX). Skipped: no MercadoPago files, no Full (Peru).
 
 ## Files
 

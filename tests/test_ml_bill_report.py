@@ -92,7 +92,11 @@ def write_ventas(path):
            "Pertenece a un kit", "Unidades", "Ingresos por productos (MXN)", "SKU", "# de publicación",
            "Título de la publicación", "Variante", "Precio unitario de venta de la publicación (MXN)",
            "Forma de entrega", "Fecha en camino", "Fecha entregado", "Revisado por Mercado Libre",
-           "Fecha de revisión", "Dinero a favor", "Resultado", "Destino", "Motivo del resultado"]
+           "Fecha de revisión", "Dinero a favor", "Resultado", "Destino", "Motivo del resultado",
+           "Cargo por venta e impuestos (MXN)", "Descuentos y bonificaciones"]
+    # money: 1001 a seller coupon of 20; pack 5003 a coupon of 10 on the pack row (1003 is 100 of its 250)
+    # and a charge of 60 (commission 15 of 1003 + withheld tax); 1005 a platform bonus of 5
+    money = {"1001": (-39.05, -20), "1002": (-72.16, None), "5003": (-60, -10), "1005": (-19.24, 5)}
     rows = [
         ["1001", "2 de septiembre de 2026 10:00 hs.", "Entregado", "", "No", "No", 2, 200, "SKU-A", "MLM111",
          "Bocina A", "", 100, "Mercado Envíos Full", "3 de septiembre", "4 de septiembre", "", "", "", "", "", ""],
@@ -118,9 +122,21 @@ def write_ventas(path):
     for j, h in enumerate(hdr, 1):
         ws.cell(row=6, column=j, value=h)
     for i, r in enumerate(rows, 7):
-        for j, v in enumerate(r, 1):
+        for j, v in enumerate(r + list(money.get(r[0], (None, None))), 1):
             ws.cell(row=i, column=j, value=v)
     wb.save(path)
+
+
+def write_settlement(path):
+    """MercadoPago settlement: tax withheld on 1001, 1002 (given back on its refund) and 1005; none for
+    1003 (-> derived from the sales export) and 1004 (-> unknown)."""
+    rows = [("9001", "SETTLEMENT", 200, -9.05), ("9002", "SETTLEMENT", 300, -27.16),
+            ("9002", "REFUND", -300, 27.16), ("9005", "SETTLEMENT", 80, -7.24),
+            ("7777", "SETTLEMENT", -5000, 0)]                       # a transfer out: not a sale
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("SOURCE_ID;TRANSACTION_TYPE;TRANSACTION_AMOUNT;TAXES_AMOUNT;TRANSACTION_DATE\n")
+        for r in rows:
+            fh.write("%s;%s;%s;%s;2026-09-15T10:00:00.000-06:00\n" % r)
 
 
 def write_collection(path):
@@ -199,6 +215,7 @@ def make_mx_folder(tmp_path):
     write_nc(str(f / "Reporte_Notas_Credito_MercadoLibre_Oct2026.xlsx"), [])
     write_ventas(str(f / "20261013_Ventas_MX_Mercado_Libre_y_Mercado_Shops_x.xlsx"))
     write_collection(str(f / "collection-20261013-abcd.csv"))
+    write_settlement(str(f / "settlement_v2-1-manual-2026-10-13.csv"))
     write_storage(str(f / "01-09-26_30-09-26_Costos_por_servicio_almacenamiento.xlsx"))
     write_pagos(str(f / "Reporte_Pagos_Facturas_Sept2026.xlsx"))
     return str(f)
@@ -281,6 +298,41 @@ def test_store_level_costs_direct_and_allocated(mx_folder):
     tot = sum(base.values())
     assert sk["SKU-A"]["a:fee_ads"] == pytest.approx(-100.0 * base["SKU-A"] / tot)
     assert sum(x["contrib"] for x in sk.values()) == pytest.approx(S["m"]["pl"]["contrib"])
+
+
+def test_amounts_outside_the_bill(mx_folder):
+    """Seller coupons and platform bonuses from the sales export, withheld tax from the
+    settlement (else derived from the export), each following its sale like its Total."""
+    S = derive(mx_folder)
+    out, pl = S["outside"], S["m"]["pl"]
+    assert out["1001"]["discount"] == pytest.approx(-20) and out["1001"]["withheld"] == pytest.approx(-9.05)
+    # an item of a pack takes its share of the pack row: 100 of 250
+    assert out["1003"]["discount"] == pytest.approx(-4)
+    # not in the settlement: the export's charge share (60 x 0.4) less the bill's commission (15)
+    assert out["1003"]["withheld"] == pytest.approx(-9) and out["1003"]["wh_src"] == model.WH_VENTAS
+    assert out["1004"]["wh_src"] == model.WH_NONE and not out["1004"]["in_ventas"]
+    assert out["1005"]["subsidy"] == pytest.approx(5) and out["1005"]["discount"] == 0
+    # billed in September; 1002 and 1003 fully reversed in September give theirs back, 1005 only in October
+    assert pl["seller_discount"] == pytest.approx(-20)
+    assert pl["platform_subsidy"] == pytest.approx(5)
+    assert pl["withheld"] == pytest.approx(-9.05 - 7.24)
+    assert pl["revenue"] == pytest.approx(pl["net_gmv"] - 20 + 5 + pl["ship_income"] + pl["ship_income_rev"])
+    assert S["m"]["wh_given_back_mp"] == pytest.approx(27.16)
+    sk = S["sku"]
+    assert sk["SKU-A"]["discount"] == pytest.approx(-20) and sk["SKU-B"]["subsidy"] == pytest.approx(5)
+    assert sk["SKU-A"]["withheld"] == pytest.approx(-9.05) and sk["SKU-B"]["withheld"] == pytest.approx(-7.24)
+    assert sum(x["contrib"] for x in sk.values()) == pytest.approx(pl["contrib"])
+    for k, v in model.residuals(S).items():
+        assert abs(v) < 1e-6, k
+    checks = dict((c["key"], c) for c in model.validate(S))
+    assert not checks["withheld_source"]["ok"] and "推算 1 笔" in checks["withheld_source"]["detail"]
+    assert not checks["outside_ventas"]["ok"] and "1 笔" in checks["outside_ventas"]["detail"]
+
+
+def test_no_withholding_outside_mexico(mx_folder):
+    S = derive(mx_folder, site="pe")
+    assert S["m"]["pl"]["withheld"] == 0 and S["m"]["pl"]["seller_discount"] == pytest.approx(-20)
+    assert "withheld_source" not in [c["key"] for c in model.validate(S)]
 
 
 def test_unknown_detalle_is_an_error_but_ties(mx_folder):
@@ -411,6 +463,12 @@ def test_workbook_is_a_sister(mx_folder, tmp_path):
     for want in ("商品销售额（本期计费的销售）", "减：发货前取消", "减：退货退款", "净商品销售额", "平台费用合计",
                  "经营贡献（未扣商品成本）"):
         assert want in labels
+    for want in ("减：卖家承担的优惠（账单之外）", "加：平台补贴（账单之外）", "平台代扣代缴税金（预缴税款，不计入贡献）"):
+        assert want in labels
+    sku = wb[K.SHEET_NAMES[6]]
+    head = dict((c.column_letter, c.value) for c in sku[5])
+    assert (head["M"], head["N"], head["AC"], head["AE"]) == (
+        "卖家承担的优惠", "平台补贴", "经营贡献（未扣成本）", "代扣税金（不计入贡献）")
     n_resid = sum(1 for ws in wb.worksheets for row in ws.iter_rows()
                   for c in row[:3] if isinstance(c.value, str) and c.value.strip().startswith("残差"))
     assert n_resid >= 20

@@ -419,13 +419,13 @@ def sheet_sku(wb, fam, Ss, ctx):
         for k, vals in WB.sku_rows(S, cost):
             cells = fam.write_row(ws, r, cols, [S["store"]] + vals)
             if cost is not None and (cost.line(k) is None or cost.line(k).unit_cost is None):
-                cells[29].fill = fill(K.C_INPUT)
+                cells[WB.SKU_UNIT_COST_COL].fill = fill(K.C_INPUT)
             if k.startswith(M.UNMAPPED_PREFIX) or k.startswith("（"):
                 cells[1].font = F(10, False, K.C_RED)
             r += 1
     # money and count columns move one to the right (店铺 is column A)
-    skip = {29} | ({30, 34} if with_cost else set())
-    int_cols = {5, 6, 7, 31}
+    skip = {WB.SKU_RATE_COL + 1} | ({WB.SKU_UNIT_COST_COL + 1, WB.SKU_COST_SOURCE_COL + 1} if with_cost else set())
+    int_cols = {5, 6, 7, WB.SKU_COST_UNITS_COL + 1}
     tot = total_row(ws, r, first, range(5, len(cols) + 1), int_cols=int_cols, skip=skip)
     money_fmt(ws, tot, [j for j in range(5, len(cols) + 1) if j not in skip], fam, int_cols=int_cols)
     r += 1
@@ -456,32 +456,21 @@ def sheet_sku(wb, fam, Ss, ctx):
 
 def sheet_trend(wb, fam, Ss, ctx):
     p = Ss[0]["prof"]
-    cols = ([RF.Col("周（计费日）", 14), RF.Col("计费笔数", 8, K.INT), RF.Col("件数", 8, K.INT),
-             RF.Col("计费销售额", 14, RF.MONEY), RF.Col("冲销", 13, RF.MONEY),
-             RF.Col("净商品销售额", 14, RF.MONEY, formula="=D{r}+E{r}", fill=K.C_CALC),
-             RF.Col("买家运费（净）", 12, RF.MONEY)] +
-            [RF.Col(C.FEE_CN[k], 12, RF.MONEY) for k in WB.TREND_KEYS] +
-            [RF.Col("平台费用合计", 14, RF.MONEY, formula="=SUM(H{r}:P{r})", fill=K.C_CALC),
-             RF.Col("经营贡献", 14, RF.MONEY, formula="=F{r}+G{r}+Q{r}", fill=K.C_CALC),
-             RF.Col("费用率", 8, K.PCT, formula="=IF(F{r}=0,0,-Q{r}/F{r})", fill=K.C_CALC)])
+    cols = WB.trend_cols()
     ws = fam.table_sheet(wb, SHEETS[7], "月度趋势（%s 按周 · 账单基准 · 全店合计）" % ctx["period_cn"],
                          "全部店铺按周（周一起，按计费日）相加。各店的周数据与前 10 SKU 见单店报表⑧。单位：%s" % p.currency,
                          cols)
-    keys = ["n", "units", "gmv", "rev", "ship"] + WB.TREND_KEYS
+    keys = [k for k in WB.TREND_HEAD if k] + WB.TREND_KEYS
     r = 5
     first = r
     for i, (a, b, label) in enumerate(Ss[0]["weeks"]):
         x = dict((k, sum(S["weekly"][i][k] for S in Ss)) for k in keys)
-        fam.write_row(ws, r, cols, [label, x["n"], x["units"], x["gmv"], x["rev"], None, x["ship"]] +
-                      [x[k] for k in WB.TREND_KEYS] + [None, None, None])
+        fam.write_row(ws, r, cols, WB.trend_values(label, x))
         r += 1
-    tot = total_row(ws, r, first, range(2, 19), int_cols=(2, 3))
-    money_fmt(ws, tot, range(4, 19), fam)
+    tot = total_row(ws, r, first, range(2, WB.TREND_RATE_COL), int_cols=(2, 3))
+    money_fmt(ws, tot, range(4, WB.TREND_RATE_COL), fam)
     r += 1
-    ties = {"D": ("gmv_billed",), "E": ("rev_cancel", "rev_return", "rev_partial", "rev_unproven"),
-            "F": ("net_gmv",), "G": ("ship_income", "ship_income_rev"), "Q": ("fees_total",), "R": ("contrib",)}
-    for k, col in zip(WB.TREND_KEYS, "HIJKLMNOP"):
-        ties[col] = (k,)
+    ties = WB.trend_ties()
     ws.cell(row=r, column=1, value="② 对应值（合计）").font = BOLD
     for col, ks in ties.items():
         fam.money_cell(ws.cell(row=r, column=WB._col_idx(col)), "=" + "+".join(plref(fam, ctx, k) for k in ks))
