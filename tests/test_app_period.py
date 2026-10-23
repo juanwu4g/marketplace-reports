@@ -139,3 +139,18 @@ def test_period_preview_reads_off_the_tk_thread(app3, tmp_path, monkeypatch):  #
             break
         time.sleep(0.01)
     assert app3.period_grid.get_children("") == ("m:ML-MX",)
+
+
+def test_period_boxes_follow_the_choice(app3):  # noqa: F811
+    """Each choice uses only its boxes; the others are greyed out (and back on when chosen)."""
+    def states():
+        return {name: box.cget("state") for name, (_, box) in app3.period_fields.items()}
+    on = "readonly"
+    for kind, used in (("quarterly", {"quarter"}), ("annual", {"year"}),
+                       ("custom", {"from", "to"}), ("quarterly", {"quarter"})):
+        app3.period_kind.set(kind)
+        app3._period_changed()                                # what the radio button calls
+        assert {n for n, st in states().items() if st == on} == used, kind
+        assert all(st == "disabled" for n, st in states().items() if n not in used)
+        assert all(lab.cget("state") == ("normal" if n in used else "disabled")
+                   for n, (lab, _) in app3.period_fields.items())

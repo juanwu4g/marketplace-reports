@@ -11,6 +11,7 @@ import datetime
 import io
 import json
 import os
+import re
 import sys
 
 from core import region_choice
@@ -212,6 +213,19 @@ def confirm_scope(step, groups, month, latest=None):
 
 
 # ────────────────────────────────────────────────────────── 按钮
+
+# 中文（含全角标点）的字符范围。说明文字里挨着它们的空格要去掉，见 cjk_tight。
+_CJK = "\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef"
+_SPACE_BY_CJK = re.compile(r"(?<=[%s]) +| +(?=[%s])" % (_CJK, _CJK))
+
+
+def cjk_tight(text):
+    """去掉挨着中文字符的空格："12 月" -> "12月"，"自定义在 custom（" -> "自定义在custom（"。
+
+    Tk 的标签只在空格处折行：中文里夹一个空格，就会在那里提前换行（"12" 留在上一行
+    末尾、"月的…" 跑到下一行）。中文本来也不用空格；两个英文词之间的空格不动。"""
+    return _SPACE_BY_CJK.sub("", text or "")
+
 
 def button_states(busy, has_stores, has_human, picked_human=False):
     """哪些按钮该亮。返回 {名字: True/False}。

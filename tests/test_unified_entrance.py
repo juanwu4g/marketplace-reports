@@ -379,3 +379,13 @@ def test_old_all_countries_task_name_is_listed_as_legacy():
     assert [n for _, n, _ in ov["legacy"]] == ["ML月度报表"]
     assert ov["kind"] == "bad" and "ML月度报表" in ov["notes"][-1][1]
     assert ("ALL", "ML月度报表") in RC.legacy_tasks() and RC.ALL_TASK == "月度报表"
+
+
+def test_cjk_tight_removes_spaces_next_to_chinese_only():
+    """Tk breaks lines only at spaces: a space inside Chinese text broke the period tab's
+    hints early ("12" at the end of a line, "月的…" on the next)."""
+    assert E.cjk_tight("季度，12 月的还生成全年") == "季度，12月的还生成全年"
+    assert E.cjk_tight("自定义在 custom（旧布局在「期间报表」里）") == "自定义在custom（旧布局在「期间报表」里）"
+    assert E.cjk_tight("按住 Ctrl 多选") == "按住Ctrl多选"
+    assert E.cjk_tight("Monto con IVA 的金额") == "Monto con IVA的金额"     # English words keep theirs
+    assert E.cjk_tight("") == "" and E.cjk_tight(None) == ""
