@@ -70,9 +70,14 @@ WRAP = LEFT_W - 85    # 左边说明文字的折行宽度（留出分组框边�
 WHO = "月度报表窗口"     # 写进中止请求：是哪个窗口点的
 
 
+# 「期间报表」页：每种期间用哪几个框（季度那个框里已经带着年份）。
+PERIOD_FIELDS = {"quarterly": ("quarter",), "annual": ("year",), "custom": ("from", "to")}
+
+
 def hint(parent, text="", var=None, wrap=WRAP, **kw):
-    """灰色的说明文字。"""
-    return ttk.Label(parent, text=text, textvariable=var, style="Hint.TLabel",
+    """灰色的说明文字。挨着中文的空格去掉（E.cjk_tight）：Tk 只在空格处折行，留着会
+    在句子中间提前换行。"""
+    return ttk.Label(parent, text=E.cjk_tight(text), textvariable=var, style="Hint.TLabel",
                      wraplength=wrap, justify="left", **kw)
 
 
@@ -1154,25 +1159,33 @@ class App(object):
                             command=self._period_changed).pack(side="left", padx=(0, S.PAD))
         grid = ttk.Frame(f)
         grid.pack(anchor="w", pady=(S.SMALL, 0))
-        ttk.Label(grid, text="季度").grid(row=0, column=0, sticky="w")
+        lab_q = ttk.Label(grid, text="季度")
+        lab_q.grid(row=0, column=0, sticky="w")
         self.period_quarter = ttk.Combobox(grid, values=PC.quarters(latest), width=10, state="readonly")
         self.period_quarter.set(PC.quarters(latest)[0])
         self.period_quarter.grid(row=0, column=1, sticky="w", padx=(S.GAP, S.PAD))
-        ttk.Label(grid, text="年份").grid(row=0, column=2, sticky="w")
+        lab_y = ttk.Label(grid, text="年份")
+        lab_y.grid(row=0, column=2, sticky="w")
         self.period_year = ttk.Combobox(grid, values=PC.years(latest), width=8, state="readonly")
         self.period_year.set(PC.years(latest)[0])
         self.period_year.grid(row=0, column=3, sticky="w", padx=(S.GAP, 0))
-        ttk.Label(grid, text="从").grid(row=1, column=0, sticky="w", pady=(S.SMALL, 0))
+        lab_f = ttk.Label(grid, text="从")
+        lab_f.grid(row=1, column=0, sticky="w", pady=(S.SMALL, 0))
         months = E.recent_months(36)
         self.period_from = ttk.Combobox(grid, values=months, width=10, state="readonly")
         self.period_from.set(months[min(2, len(months) - 1)])
         self.period_from.grid(row=1, column=1, sticky="w", padx=(S.GAP, S.PAD), pady=(S.SMALL, 0))
-        ttk.Label(grid, text="到").grid(row=1, column=2, sticky="w", pady=(S.SMALL, 0))
+        lab_t = ttk.Label(grid, text="到")
+        lab_t.grid(row=1, column=2, sticky="w", pady=(S.SMALL, 0))
         self.period_to = ttk.Combobox(grid, values=months, width=10, state="readonly")
         self.period_to.set(months[0])
         self.period_to.grid(row=1, column=3, sticky="w", padx=(S.GAP, 0), pady=(S.SMALL, 0))
         for w in (self.period_quarter, self.period_year, self.period_from, self.period_to):
             w.bind("<<ComboboxSelected>>", lambda e: self._period_changed())
+        # 每种期间只用其中几个框，别的灰掉（见 PERIOD_FIELDS）
+        self.period_fields = {"quarter": (lab_q, self.period_quarter),
+                              "year": (lab_y, self.period_year),
+                              "from": (lab_f, self.period_from), "to": (lab_t, self.period_to)}
         self.period_text = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.period_text, style="Section.TLabel", wraplength=WRAP,
                   justify="left").pack(anchor="w", pady=(S.SMALL, 0))
@@ -1259,6 +1272,10 @@ class App(object):
         return SC.region_arg(sel, self.tree), SC.subset(sel, self.tree)
 
     def _period_changed(self):
+        on = PERIOD_FIELDS.get(self.period_kind.get(), ())
+        for name, (label, box) in self.period_fields.items():
+            box.configure(state="readonly" if name in on else "disabled")
+            label.configure(state="normal" if name in on else "disabled")
         p = self._period()
         if p:
             self.period_text.set("期间：%s" % PR.period_cn(p))
