@@ -16,6 +16,12 @@ sale in the share reversed / original commission; that share of Total de la
 venta is the reversed sale amount (an estimate — the invoice does not state the
 refund itself; MercadoPago's refund is shown next to it as evidence).
 
+Amounts the bill does not carry are taken from the files that state them, per
+sale, and follow the sale exactly as its Total de la venta does (in at billing,
+out in the reversed share): seller-funded discounts and platform subsidies from
+the sales export's "Descuentos y bonificaciones", the taxes MercadoPago withheld
+(Mexico) from the settlement report's TAXES_AMOUNT (see _outside).
+
 S (one dict per store) carries the inputs, the derived tables and S["m"], the
 numbers the sheets print. Nothing here writes Excel.
 """
@@ -112,7 +118,7 @@ def load(store, folder, month, site):
     if p:
         try:
             S["ventas"], f = R.read_ventas(p)
-            note(f["name"], "SKU 查找；状态证据", "%d 行；下单日 %s → %s" % (f["rows"], f["first"], f["last"]))
+            note(f["name"], "SKU 查找；状态证据；账单之外的金额：卖家优惠、平台补贴", "%d 行；下单日 %s → %s" % (f["rows"], f["first"], f["last"]))
         except Exception as e:                     # noqa: BLE001
             S["load_errors"].append((os.path.basename(p), str(e)))
 
@@ -130,7 +136,9 @@ def load(store, folder, month, site):
 
     S["collection"] = many("collection-*.csv", R.read_collection, "SKU 查找；状态证据（MercadoPago）",
                            lambda df, f: "%d 笔收款" % len(df))
-    S["settlement"] = many("settlement_v2-*.csv", R.read_settlement, "状态证据：实际退款（MercadoPago）",
+    S["settlement"] = many("settlement_v2-*.csv", R.read_settlement,
+                           "状态证据：实际退款（MercadoPago）" + ("；账单之外的金额：代扣税金（TAXES_AMOUNT）"
+                                                          if prof.withholding else ""),
                            lambda df, f: "%d 行资金流水" % len(df))
     S["cargos_full"] = many("Reporte_Cargos_Full_*.xlsx", R.read_cargos_full, "Full 费用归 SKU（不取金额）",
                             lambda df, f: "%d 行" % len(df))
@@ -305,12 +313,10 @@ def derive(S):
                 c_by_order.setdefault(r.order_id, r)
             c_by_op.setdefault(r.op_id, r)
     refunds = collections.defaultdict(float)
-    taxes = collections.defaultdict(float)
     if S["settlement"] is not None:
         for r in S["settlement"].itertuples(index=False):
             if r.type.upper().startswith("REFUND"):
                 refunds[r.source_id] += -r.amount
-            taxes[r.source_id] += r.taxes
     triage = {}
     if S["returns"] is not None:
         for r in S["returns"].itertuples(index=False):
@@ -363,11 +369,102 @@ def derive(S):
         ev["sku"] = sales[ev["sale_no"]]["sku"]
     S["map"] = smap
 
+    _outside(S, v_by_sale, v_single)
     _sku_table(S)
     _pl(S)
     _weekly(S)
     _bridges(S)
     return S
+
+
+# ------------------------------------------------------------------ outside the bill
+
+OUTSIDE_KEYS = ("discount", "subsidy", "withheld")
+WH_SETTLEMENT, WH_VENTAS, WH_NONE, WH_NA = "settlement", "ventas", "none", "n/a"
+
+
+def _outside(S, v_by_sale, v_single):
+    """Per sale, the amounts the bill does not carry (② sign):
+    discount  seller-funded discounts: the negative part of Ventas "Descuentos y
+              bonificaciones";
+    subsidy   platform subsidies (e.g. Peru's Flex shipping bonus): its positive part;
+    withheld  taxes MercadoPago withheld on the payment (Mexico): TAXES_AMOUNT of the
+              settlement rows of the sale's Pago that charge it (SETTLEMENT*,
+              SHIPPING); without such rows, the Ventas "Cargo por venta e impuestos"
+              less the bill's commission rows of the sale (the same tax, derived);
+              else unknown (0).
+    A pack's money is on its parent row in Ventas: each item takes the share of its
+    units × unit price. A Pago shared by several sales is split by their totals.
+    Billing events in `cohort` get the sale's amounts, reversals the reversed share
+    (minus) — the same way the sale's Total de la venta moves."""
+    sales, prof = S["sales"], S["prof"]
+    heads, items = {}, collections.defaultdict(list)
+    if S["ventas"] is not None:
+        for r in S["ventas"].itertuples(index=False):
+            if r.kind == "parent":
+                heads[r.sale_no] = r
+            elif r.kind == "child":
+                items[r.parent].append(r)
+
+    def money_row(s):
+        v = v_by_sale.get(s["sale_no"]) or v_single.get(s["pack_no"])
+        if v is None or v.kind != "child":
+            return v, 1.0
+        head, kids = heads.get(v.parent), items[v.parent]
+        if head is None:
+            return None, 0.0
+        w = lambda r: (r.units or 0.0) * (r.unit_price or 0.0)
+        tot = sum(w(r) for r in kids)
+        return head, (w(v) / tot if tot > 0 else 1.0 / len(kids))
+
+    charged = collections.defaultdict(float)        # Pago -> tax withheld (positive)
+    given_back = collections.defaultdict(float)     # Pago -> tax returned on refunds/disputes
+    if prof.withholding and S["settlement"] is not None:
+        for r in S["settlement"].itertuples(index=False):
+            t = r.type.upper()
+            if t.startswith(("SETTLEMENT", "SHIPPING")):
+                charged[r.source_id] -= r.taxes
+            elif t.startswith(("REFUND", "DISPUTE")):
+                given_back[r.source_id] += r.taxes
+    by_pago = collections.defaultdict(list)
+    for s in sales.values():
+        if s["pago"]:
+            by_pago[s["pago"]].append(s)
+
+    out = {}
+    for sale_no, s in sales.items():
+        v, share = money_row(s)
+        d = (v.v_discount or 0.0) * share if v is not None else 0.0
+        o = dict(in_ventas=v is not None, discount=min(d, 0.0), subsidy=max(d, 0.0), withheld=0.0,
+                 wh_src=WH_NA, given_back=0.0)
+        if prof.withholding:
+            if s["pago"] in charged:
+                peers = by_pago[s["pago"]]
+                tot = sum(x["total"] for x in peers)
+                part = s["total"] / tot if tot > 0 else 1.0 / len(peers)
+                o["withheld"] = -charged[s["pago"]] * part
+                o["given_back"] = given_back.get(s["pago"], 0.0) * part
+                o["wh_src"] = WH_SETTLEMENT
+            else:
+                fee = S["fees_by_sale"][sale_no]
+                commission = sum(a for (det, how), a in fee.items()
+                                 if how == "all" and C.entry(det)[0].line == "fee_commission"
+                                 and not C.entry(det)[0].reversal)
+                charge = -(v.v_charge or 0.0) * share if v is not None else 0.0
+                tax = charge - commission
+                if v is not None and charge > 0 and tax >= -prof.tol:
+                    o["withheld"], o["wh_src"] = -max(tax, 0.0), WH_VENTAS
+                else:
+                    o["wh_src"] = WH_NONE
+        out[sale_no] = o
+    S["outside"] = out
+    for ev in S["cohort"]:
+        for k in OUTSIDE_KEYS:
+            ev[k] = out[ev["sale_no"]][k]
+    for e in S["revs"]:
+        o = out.get(e["sale_no"])
+        for k in OUTSIDE_KEYS:
+            e[k] = -o[k] * e["share"] if o else 0.0
 
 
 # ------------------------------------------------------------------ per SKU
@@ -398,6 +495,8 @@ def _sku_table(S):
         x["units"] += s["qty"]
         x["gmv"] += s["total"]
         x["ship_income"] += s["buyer_ship"]
+        for k in OUTSIDE_KEYS:
+            x[k] += s[k]
         x["n_sales"] += 1
         title_for(s["sku"], s["title"])
     for e in S["revs"]:
@@ -408,6 +507,8 @@ def _sku_table(S):
         x = sk[sku]
         x["rev_" + e["cls"]] += e["amount"]
         x["ship_income_rev"] += e["buyer_ship"]
+        for k in OUTSIDE_KEYS:
+            x[k] += e[k]
         full = S["status"][e["sale_no"]]["share"] >= ST.FULL
         u = (e["qty"] * e["share"]) if full else 0.0
         x["units_rev"] += u
@@ -524,7 +625,7 @@ def _sku_table(S):
         x["ship_net"] = x["ship_income"] + x["ship_income_rev"]
         x["direct"] = sum(v for kk, v in x.items() if kk.startswith("d:"))
         x["alloc"] = sum(v for kk, v in x.items() if kk.startswith("a:"))
-        x["contrib"] = x["net_gmv"] + x["ship_net"] + x["direct"] + x["alloc"]
+        x["contrib"] = x["net_gmv"] + x["discount"] + x["subsidy"] + x["ship_net"] + x["direct"] + x["alloc"]
         x["units_net"] = x["units"] - x["units_rev"]
         x["cost_units_excluded"] = x["units_cancel"] + x["units_back"]
         if not titles.get(k):
@@ -550,11 +651,15 @@ def _pl(S):
         pl["rev_" + c] = sum(e["amount"] for e in S["revs"] if e["in_period"] and e["cls"] == c)
     pl["ship_income"] = sum(s["buyer_ship"] for s in S["cohort"])
     pl["ship_income_rev"] = sum(e["buyer_ship"] for e in S["revs"] if e["in_period"])
+    # outside the bill: billed sales' amounts, less the reversed share (see _outside)
+    for k, key in (("discount", "seller_discount"), ("subsidy", "platform_subsidy"), ("withheld", "withheld")):
+        pl[key] = sum(s[k] for s in S["cohort"]) + sum(e[k] for e in S["revs"] if e["in_period"])
     # fees are charges to the seller: positive in the invoice, negative in the P&L
     for k in C.PL_FEE_KEYS:
         pl[k] = -float(P_.loc[P_["line"] == k, "amount"].sum())
     pl["net_gmv"] = pl["gmv_billed"] + sum(pl["rev_" + c] for c in ST.REVERSAL_CLASSES)
-    pl["revenue"] = pl["net_gmv"] + pl["ship_income"] + pl["ship_income_rev"]
+    pl["revenue"] = (pl["net_gmv"] + pl["seller_discount"] + pl["platform_subsidy"] + pl["ship_income"]
+                     + pl["ship_income_rev"])
     pl["fees_total"] = sum(pl[k] for k in C.PL_FEE_KEYS)
     pl["contrib"] = pl["revenue"] + pl["fees_total"]
     m["pl"] = pl
@@ -570,12 +675,22 @@ def _pl(S):
     m["post_n"] = len(set(e["sale_no"] for e in post))
     m["post_amount"] = sum(e["amount"] for e in post)
     m["post_commission"] = sum(e["commission_rev"] for e in post)
-    # MercadoPago: withheld taxes on the month's billed sales (Mexico: not in this baseline)
-    m["mp_taxes"] = None
-    if S["settlement"] is not None:
-        pagos = set(s["pago"] for s in S["cohort"] if s["pago"])
-        st = S["settlement"]
-        m["mp_taxes"] = -float(st.loc[st["source_id"].isin(pagos), "taxes"].sum())
+    # where the outside-the-bill amounts of the billed sales come from
+    out = S["outside"]
+    src = collections.OrderedDict((k, [0, 0.0]) for k in (WH_SETTLEMENT, WH_VENTAS, WH_NONE, WH_NA))
+    no_ventas = [0, 0.0]
+    for s in S["cohort"]:
+        o = out[s["sale_no"]]
+        src[o["wh_src"]][0] += 1
+        src[o["wh_src"]][1] += s["total"]
+        if not o["in_ventas"]:
+            no_ventas[0] += 1
+            no_ventas[1] += s["total"]
+    m["wh_sources"] = src
+    m["no_ventas"] = no_ventas
+    # MercadoPago's own give-back of withheld tax on the in-period reversals (evidence)
+    m["wh_given_back_mp"] = sum(out[sn]["given_back"] for sn in set(
+        e["sale_no"] for e in S["revs"] if e["in_period"]) if sn in out)
     # MercadoPago refunds next to the in-period reversals (evidence)
     m["mp_refund_in"] = sum(S["status"][sn]["ev"].mp_refund
                             for sn in set(e["sale_no"] for e in S["revs"] if e["in_period"]))
@@ -602,7 +717,7 @@ def _pl(S):
     m["coverage"] = cov
     m["mapped_share"] = (1.0 - cov[M.NONE][1] / pl["gmv_billed"]) if pl["gmv_billed"] else 1.0
     m["sku_sum"] = dict((k, sum(x[k] for x in sk.values())) for k in (
-        "gmv", "net_gmv", "ship_net", "direct", "alloc", "contrib", "units", "units_rev"))
+        "gmv", "net_gmv", "ship_net", "direct", "alloc", "contrib", "units", "units_rev") + OUTSIDE_KEYS)
 
 
 # ------------------------------------------------------------------ ⑧ weekly
@@ -618,18 +733,20 @@ def _weekly(S):
         rows[i]["units"] += s["qty"]
         rows[i]["gmv"] += s["total"]
         rows[i]["ship"] += s["buyer_ship"]
+        rows[i]["promo"] += s["discount"] + s["subsidy"]
     for e in S["revs"]:
         if e["in_period"]:
             i = week_of(e["charge_date"], wk)
             rows[i]["rev"] += e["amount"]
             rows[i]["ship"] += e["buyer_ship"]
+            rows[i]["promo"] += e["discount"] + e["subsidy"]
     for r in S["P"].itertuples(index=False):
         i = week_of(r.charge_date, wk)
         rows[i][r.line] -= r.amount
     for x in rows:
         x["net_gmv"] = x["gmv"] + x["rev"]
         x["fees"] = sum(x[k] for k in C.PL_FEE_KEYS)
-        x["contrib"] = x["net_gmv"] + x["ship"] + x["fees"]
+        x["contrib"] = x["net_gmv"] + x["promo"] + x["ship"] + x["fees"]
     S["weekly"] = rows
     # top SKUs by net GMV, weekly net GMV
     top = sorted((k for k in S["sku"] if not k.startswith("（")),
@@ -712,6 +829,9 @@ def residuals(S):
     res["② 计费 GMV ＝ ⑦ 合计"] = pl["gmv_billed"] - ss["gmv"]
     res["② 净商品销售额 ＝ ⑦ 合计"] = pl["net_gmv"] - ss["net_gmv"]
     res["② 买家运费（净）＝ ⑦ 合计"] = pl["ship_income"] + pl["ship_income_rev"] - ss["ship_net"]
+    res["② 卖家承担的优惠 ＝ ⑦ 合计"] = pl["seller_discount"] - ss["discount"]
+    res["② 平台补贴 ＝ ⑦ 合计"] = pl["platform_subsidy"] - ss["subsidy"]
+    res["② 平台代扣税金 ＝ ⑦ 合计"] = pl["withheld"] - ss["withheld"]
     res["② 平台费用 ＝ ⑦ 直接 ＋ 分摊"] = pl["fees_total"] - (ss["direct"] + ss["alloc"])
     res["② 经营贡献 ＝ ⑦ 合计"] = pl["contrib"] - ss["contrib"]
     att = S["attributed"]
@@ -821,6 +941,19 @@ def validate(S):
     if S["ventas"] is None:
         ck("ventas", st, "销售报表（仅用于 SKU 与状态）", False, "没有 *Ventas*.xlsx：SKU 只能靠 MercadoPago "
            "与刊登号，状态证据变少", severity="warn")
+    nv = m["no_ventas"]
+    if S["ventas"] is not None:
+        ck("outside_ventas", st, "本月计费的销售都在销售报表里（优惠/补贴）", not nv[0],
+           "%d 笔（计费 GMV %s）不在销售报表里：它们的卖家优惠与平台补贴取不到，按 0 计" % (
+               nv[0], "{:,.2f}".format(nv[1])) if nv[0] else "是", severity="warn")
+    if prof.withholding:
+        ws = m["wh_sources"]
+        weak = ws[WH_VENTAS][0] + ws[WH_NONE][0]
+        ck("withheld_source", st, "代扣税金都来自 MercadoPago 结算（TAXES_AMOUNT）", not weak,
+           "结算 %d 笔；结算里没有、按销售报表推算 %d 笔（计费 GMV %s）；两处都取不到、按 0 计 %d 笔（计费 GMV %s）" % (
+               ws[WH_SETTLEMENT][0], ws[WH_VENTAS][0], "{:,.2f}".format(ws[WH_VENTAS][1]), ws[WH_NONE][0],
+               "{:,.2f}".format(ws[WH_NONE][1])) if weak else "全部 %d 笔来自结算" % ws[WH_SETTLEMENT][0],
+           severity="warn")
     mp = S["collection"] is not None or S["settlement"] is not None
     ck("mp", st, "MercadoPago 文件（状态证据）", mp,
        "有：%s" % "、".join(n for n, r, _ in S["files"] if "MercadoPago" in r) if mp else

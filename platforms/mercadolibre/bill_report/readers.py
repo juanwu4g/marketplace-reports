@@ -316,10 +316,16 @@ VENTAS_COLS = {
 }
 
 
+# money columns this report takes (headers end in the currency, "(MXN)"; the discount
+# column has none).
+# A pack's money is on its parent row; its items carry only units and unit price.
+VENTAS_MONEY = {"Cargo por venta e impuestos": "v_charge", "Descuentos y bonificaciones": "v_discount"}
+
+
 def read_ventas(path):
     """The sales export -> (rows, facts). One row per sheet row; `kind` is
     'parent' (multi-product pack head: no SKU, carries the pack id), 'child'
-    (an item of the pack above it) or 'single'."""
+    (an item of the pack above it) or 'single'. Money columns: VENTAS_MONEY."""
     xl = pd.ExcelFile(path)
     sheet = next((s for s in xl.sheet_names if s.lower().startswith("ventas")), xl.sheet_names[0])
     raw = pd.read_excel(path, sheet_name=sheet, header=None, dtype=object)
@@ -332,6 +338,9 @@ def read_ventas(path):
         out[dst] = df[src] if src in df.columns else None
     unit_col = next((c for c in df.columns if c.startswith("Precio unitario de venta")), None)
     out["unit_price"] = df[unit_col].map(num) if unit_col else 0.0
+    for prefix, dst in VENTAS_MONEY.items():
+        col = next((c for c in df.columns if c.startswith(prefix)), None)
+        out[dst] = df[col].map(num) if col else 0.0
     out = out[out["sale_no"].map(idstr) != ""].copy()
     out["sale_no"] = out["sale_no"].map(idstr)
     out["listing"] = out["listing"].map(idstr)
