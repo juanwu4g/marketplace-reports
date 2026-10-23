@@ -296,6 +296,9 @@ def main(argv=None):
     ap.add_argument("--site", type=str.lower, choices=sorted(SITE_PROFILES), default=None,
                     help="国家站点 mx / cl / pe。不给时取第一家店下载目录 run_meta.json 里的 site"
                          "（老目录没有这个字段，按 mx）")
+    ap.add_argument("--results-version", default=None,
+                    help="写出月度结果文件（core/results），版本号 <下载目录名>__<YYYYMMDD_HHMMSS>；"
+                         "只用于单店报表（run_reports 传）")
     a = ap.parse_args(argv)
 
     # ---- 站点：一份工作簿只属于一个国家 ----
@@ -417,6 +420,7 @@ def main(argv=None):
                 print("       %s" % b)
             if ne:
                 print("[警告] 文件里存在公式错误，请勿直接发出。")
+                write_results(a, stores, checks, out, formula_errors=True)
                 return EXIT_CHECKS
 
     if a.metrics_out:
@@ -428,7 +432,18 @@ def main(argv=None):
             f.write(json.dumps(recs, ensure_ascii=False, indent=1))
         print("[指标] %s" % a.metrics_out)
 
+    write_results(a, stores, checks, out)
     return EXIT_CHECKS if failed else EXIT_OK
+
+
+def write_results(a, stores, checks, out, formula_errors=False):
+    """--results-version：单店报表写完后写它的月度结果文件（platforms/mercadolibre/
+    results_files）。数字取自填工作簿的同一个 S。写不出只提示，不改退出码。"""
+    if not a.results_version or len(stores) != 1:
+        return None
+    from platforms.mercadolibre import results_files
+    return results_files.write_from(lambda: results_files.order_document(
+        stores[0], checks, a.results_version, out, formula_errors), log=print)
 
 
 def run(argv=None):

@@ -26,12 +26,13 @@ from core.paths import ROOT
 # report_build 按文件路径起（它就在本文件旁边）；它用到的 core/ 与 report/ 模块由它
 # 自己把项目根目录加进 sys.path 后导入。
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_build.py")
-DOWNLOADS = os.path.join(ROOT, "downloads")
+from core import layout
+DOWNLOADS = layout.raw_root()
 
 # 没写出报表时的现场记录放这里，不放报表输出目录：那是财务每个月要打开的文件
 # 夹，以前每出一份报表（包括成功的）就往里面的 diagnostics/ 丢一个日志，从不
 # 清理，一年下来几百个。logs/ 本来就是放运行记录的地方（.gitignore 已排除）。
-DIAG_DIR = os.path.join(ROOT, "logs", "report_diag")
+DIAG_DIR = os.path.join(layout.logs_dir(), "report_diag")
 
 # report_build.py 的退出码。照抄自那边的 EXIT_*（本文件刻意不 import 它，见文
 # 件头），两边要一起改。
@@ -235,19 +236,17 @@ def latest_run(store, base=None, month=None):
             want = (int(month[:4]), int(month[5:7]))
         except Exception:
             want = None
-    base = base or DOWNLOADS
-    d = os.path.join(base, store)
-    if not os.path.isdir(d):
+    found = layout.run_folders(store, base=base)
+    if not found and not os.path.isdir(os.path.join(base, store) if base else layout.store_dir(store)):
         return None, "没有下载目录"
-    runs = sorted((x for x in os.listdir(d)
-                   if os.path.isdir(os.path.join(d, x)) and x[:2] == "20"),
-                  reverse=True)
-    if not runs:
+    if not found:
         return None, "目录下没有任何运行记录"
+    runs = [r for r, _ in found]
+    where = dict(found)
     usable = []
     skipped = []
     for r in runs:
-        folder = os.path.join(d, r)
+        folder = where[r]
         ok, missing = _usable(folder)
         if ok:
             usable.append((r, folder))
@@ -283,7 +282,7 @@ def latest_run(store, base=None, month=None):
                      "这份报表的收入和费用都会缺失，仅供参考" % wm)
         return folder, note
     return None, "%d 个目录都缺文件（最新的缺：%s）" % (
-        len(runs), "、".join(_usable(os.path.join(d, runs[0]))[1]))
+        len(runs), "、".join(_usable(where[runs[0]])[1]))
 
 
 def classify(r):
@@ -359,7 +358,7 @@ def _write_diag(out, month, pairs, rc, secs, output):
 
 
 def build(pairs, month, out, metrics_out=None, strict=False,
-          no_recalc=None, timeout=3600, echo=True, site=None):
+          no_recalc=None, timeout=3600, echo=True, site=None, results_version=None):
     """生成一份报表。pairs 是 [(店铺名, 下载目录), ...]。
 
     一份报表可以覆盖多家店 —— 汇总报表就是把 12 家一起传进来。
@@ -374,6 +373,9 @@ def build(pairs, month, out, metrics_out=None, strict=False,
         formula_errors  重算后文件里是否有公式报错
         returncode      report_build 的退出码（见 RC_*）；没跑起来或超时为 None
         diagnostic_log  没写出报表时保存的完整输出的路径，否则为 None
+
+    results_version 给了（且只有一家店）时，report_build 写完报表后写这个版本的月度
+                    结果文件（platforms/mercadolibre/results_files）
 
     "写没写出来"和"校验过没过"是两件事：checks_failed 为真时文件多半仍已写出
     （除非 --strict），所以不要用 checks_failed 判断有没有文件，看 outcome。
@@ -406,6 +408,9 @@ def build(pairs, month, out, metrics_out=None, strict=False,
     if site:
         # 国家（mx / cl / pe）。不给时 report_build 读下载目录 run_meta.json 的 site。
         cmd += ["--site", str(site).lower()]
+    if results_version and len(pairs) == 1:
+        # 单店报表写完后由 report_build 自己写月度结果文件（core/results）：数字在子进程里
+        cmd += ["--results-version", results_version]
 
     env = dict(os.environ)
     # 报表全程中文输出，管道里必须是 UTF-8，否则一句 print 就会 UnicodeEncodeError

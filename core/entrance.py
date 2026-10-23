@@ -17,16 +17,18 @@ from core import region_choice
 from core import runlog
 from core import site_time
 
+from core import layout
 from core.paths import ROOT
-DEFAULT_REPORT_DIR = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+DEFAULT_REPORT_DIR = layout.reports_root()
 SETTINGS = os.path.join(ROOT, "gui_settings.json")
 RUNNER = os.path.join(ROOT, "run_monthly.py")
 
 # 窗口打开时停在哪一页。月度报表.cmd = 立即运行；--tab 可以直接打开别的页。
-TABS = ("run", "human", "schedule")
+TABS = ("run", "human", "schedule", "period")
 TAB_ALIASES = {"run": "run", "launch": "run", "启动": "run",
                "human": "human", "人工": "human",
-               "schedule": "schedule", "sched": "schedule", "定时": "schedule"}
+               "schedule": "schedule", "sched": "schedule", "定时": "schedule",
+               "period": "period", "期间": "period", "期间报表": "period"}
 
 # 每家店下载大约要多久（分钟），给确认框估时用。实测 8–15 分钟，取偏长的。
 MIN_PER_STORE = 15

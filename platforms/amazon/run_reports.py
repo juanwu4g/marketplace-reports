@@ -11,7 +11,7 @@ reads) is shared: core/platform_reports.py. This module only says what is
 Amazon's own.
 
 Amazon's own: each store uses its newest download folder **for that month**
-(downloads/<store>/<stamp>_m<YYYYMM>/) that holds the month's transaction report
+(core/layout.run_folders_for_month) that holds the month's transaction report
 (<YYYY><Mon>MonthlyTransaction.csv), else the newest one with a run_meta.json
 (a month without transactions is still a report — an empty one — and a run that
 failed is reported as such by the report's checks). Files missing there are

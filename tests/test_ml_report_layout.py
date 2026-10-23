@@ -20,7 +20,7 @@ PKG = os.path.join(os.path.dirname(os.path.abspath(rb.__file__)), "report")
 # bottom to top: a module may import only from modules before it
 LAYERS = ["site", "catalog", "loading", "derived", "checks", "sheet_common", "sheet_readme",
           "sheet_pl", "sheet_bridge", "sheet_fees", "sheet_returns", "sheet_sku", "sheet_trend",
-          "sheet_inventory", "sheet_gaps"]
+          "sheet_inventory", "sheet_gaps", "figures"]
 
 # names other code reads from report_build (tests, pl_billing_basis.py, test_golden.py)
 USED_NAMES = """

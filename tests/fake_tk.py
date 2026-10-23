@@ -400,7 +400,7 @@ tk.PhotoImage = PhotoImage
 
 ttk = types.ModuleType("tkinter.ttk")
 for _n, _c in (("Frame", Frame), ("Label", Label), ("Button", Button),
-               ("Checkbutton", Button), ("Combobox", Combobox), ("Entry", Entry),
+               ("Checkbutton", Button), ("Radiobutton", Button), ("Combobox", Combobox), ("Entry", Entry),
                ("Spinbox", Entry), ("LabelFrame", Frame), ("Notebook", Notebook),
                ("PanedWindow", PanedWindow), ("Scrollbar", Scrollbar),
                ("Style", Style), ("Treeview", Treeview)):

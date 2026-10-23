@@ -494,7 +494,12 @@ def test_reports_crash_and_refusals(sandbox, fake_build, monkeypatch, capsys):
         r.main(["--stores", "ML_1"])
     with pytest.raises(store_config.StoreConfigError):
         r.main(["--market", "ML-MX"])
-    assert not glob.glob(os.path.join(str(sandbox), "downloads", "data", "*"))
+    # no workbook; the crashed version is recorded as a failed results file
+    assert not glob.glob(os.path.join(str(sandbox), "downloads", "data", "reports", "*"))
+    from core import results
+    [v] = results.versions(S1, MONTH, "main")
+    assert v["grade"]["level"] == results.FAILED and v["workbook"] is None
+    assert "生成出错" in v["grade"]["reasons"][0] and v["run"] == "20261001_000000_m202609"
 
 
 # ------------------------------------------------------------------ the thin modules

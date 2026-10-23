@@ -1191,31 +1191,37 @@ def sheet_pl(wb, fam, ctx):
         ("平台费用合计", _fee_share(FEE_ROWS), sales),
         ("退款率（退货退款 ÷ 商品销售收入）", lambda S: -S["m"]["pl"][TC.REFUND], sales),
         ("经营贡献毛利率", lambda S: S["m"]["contrib"], sales)], note_col)
+    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [row for _k, row in pl_memo(fam)], note_col)
+
+
+def pl_memo(fam):
+    """②'s 备查项: [(key, (label, original, value(S), note))]; key None = not an amount
+    (the results file leaves it out). ② and results_figures both read this."""
     iva_net = lambda S: _r(S["m"][TC.IVA_OUT] + S["m"]["fee_iva"] + S["m"][TC.IVA_WITHHELD] + S["m"][TC.IVA_ADJ])
-    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [
-        ("含 IVA 的商品成交额（订单行）", "ventas + impuesto de ventas · Pedido", lambda S: S["m"]["gmv"],
-         "参考指标：本月入账订单的商品价款含 IVA"),
-        ("订单数 / 件数", "Id. del pedido / cantidad", lambda S: S["m"]["orders_n"],
-         fam.per_store(lambda S: "%d 张订单，%d 件" % (S["m"]["orders_n"], S["m"]["units"]))),
-        ("销项 IVA（商品、运费、礼品包装、促销所含，已扣退款）", "impuesto de ventas / abono de envío / …",
-         lambda S: S["m"][TC.IVA_OUT], "卖家应申报的销项 IVA（%s）" % pct(IVA_RATE, 0)),
-        ("Amazon 代扣 IVA（预缴，可抵减）", "impuesto de retenciones en la plataforma",
-         lambda S: S["m"][TC.IVA_WITHHELD], "≈ 销项 IVA 的一半（8%）；不是费用。凭证金额见③桥 E"),
-        ("平台费用所含进项 IVA（可抵扣）", "IVA acreditable", lambda S: S["m"]["fee_iva"],
-         "＝ 含税费用 − 含税费用 ÷ %.2f；广告费用 Amazon 拆出的 IVA。以 Amazon 费用发票为准" % (1 + IVA_RATE)),
-        ("IVA 调整", "Ajuste del IVA del producto", lambda S: S["m"][TC.IVA_ADJ], "Amazon 对销项 IVA 的尾差调整"),
-        ("本月 IVA 净额估算（正数＝还要向 SAT 缴）", "", iva_net,
-         "＝ 销项 IVA − 进项 IVA − Amazon 代扣 IVA ＋ IVA 调整；仅供参考，以申报为准"),
-        ("本月 ISR 代扣（扣缴凭证）", "ImpRetenidos 001 · Certificado de retención",
-         lambda S: S["m"]["cert_isr"], "本月销售对应的 ISR（2.5%%）预缴；%s" % _cert_note(fam)),
-        ("本月从余额扣的 ISR（上月的）", "Ajuste（sin descripción）", lambda S: S["m"][TC.ISR],
-         "约每月 11 日扣上个月的 ISR；在③桥 C 中作为余额扣款"),
-        ("【敏感性】若代扣税不可抵扣时的贡献毛利", "",
-         lambda S: _r(S["m"]["contrib"] + S["m"][TC.IVA_WITHHELD] + S["m"]["cert_isr"]),
-         "＝ 经营贡献毛利 − 代扣 IVA − 本月 ISR（凭证）。仅当卖家无法抵减时适用（如未按时申报）"),
-        ("本月 Amazon 余额净变动（含 IVA、代扣、转账）", "Σ total", lambda S: S["m"]["tx_total"],
-         "＝ 交易明细 total 合计；推导见③桥 C"),
-    ], note_col)
+    return [
+        ("gmv", ("含 IVA 的商品成交额（订单行）", "ventas + impuesto de ventas · Pedido", lambda S: S["m"]["gmv"],
+             "参考指标：本月入账订单的商品价款含 IVA")),
+        (None, ("订单数 / 件数", "Id. del pedido / cantidad", lambda S: S["m"]["orders_n"],
+             fam.per_store(lambda S: "%d 张订单，%d 件" % (S["m"]["orders_n"], S["m"]["units"])))),
+        ("iva_out", ("销项 IVA（商品、运费、礼品包装、促销所含，已扣退款）", "impuesto de ventas / abono de envío / …",
+             lambda S: S["m"][TC.IVA_OUT], "卖家应申报的销项 IVA（%s）" % pct(IVA_RATE, 0))),
+        ("iva_withheld", ("Amazon 代扣 IVA（预缴，可抵减）", "impuesto de retenciones en la plataforma",
+             lambda S: S["m"][TC.IVA_WITHHELD], "≈ 销项 IVA 的一半（8%）；不是费用。凭证金额见③桥 E")),
+        ("fee_iva", ("平台费用所含进项 IVA（可抵扣）", "IVA acreditable", lambda S: S["m"]["fee_iva"],
+             "＝ 含税费用 − 含税费用 ÷ %.2f；广告费用 Amazon 拆出的 IVA。以 Amazon 费用发票为准" % (1 + IVA_RATE))),
+        ("iva_adj", ("IVA 调整", "Ajuste del IVA del producto", lambda S: S["m"][TC.IVA_ADJ], "Amazon 对销项 IVA 的尾差调整")),
+        ("iva_net", ("本月 IVA 净额估算（正数＝还要向 SAT 缴）", "", iva_net,
+             "＝ 销项 IVA − 进项 IVA − Amazon 代扣 IVA ＋ IVA 调整；仅供参考，以申报为准")),
+        ("cert_isr", ("本月 ISR 代扣（扣缴凭证）", "ImpRetenidos 001 · Certificado de retención",
+             lambda S: S["m"]["cert_isr"], "本月销售对应的 ISR（2.5%%）预缴；%s" % _cert_note(fam))),
+        ("isr_deducted", ("本月从余额扣的 ISR（上月的）", "Ajuste（sin descripción）", lambda S: S["m"][TC.ISR],
+             "约每月 11 日扣上个月的 ISR；在③桥 C 中作为余额扣款")),
+        ("contrib_if_tax_not_deductible", ("【敏感性】若代扣税不可抵扣时的贡献毛利", "",
+             lambda S: _r(S["m"]["contrib"] + S["m"][TC.IVA_WITHHELD] + S["m"]["cert_isr"]),
+             "＝ 经营贡献毛利 − 代扣 IVA − 本月 ISR（凭证）。仅当卖家无法抵减时适用（如未按时申报）")),
+        ("balance_change", ("本月 Amazon 余额净变动（含 IVA、代扣、转账）", "Σ total", lambda S: S["m"]["tx_total"],
+             "＝ 交易明细 total 合计；推导见③桥 C")),
+    ]
 
 
 def fill_cogs(fam, sh, rows_at, note_col, ctx):
@@ -1365,6 +1371,19 @@ FEE_COLS = [RF.Col("店铺", 20, font=TEXT10), RF.Col("类型（Amazon 原文 ti
 _LINE_ORDER = [x.key for x in PL_ROWS] + list(TC.TAX_LINES) + list(TC.CASH_LINES)
 
 
+def fee_groups(S):
+    """④'s rows of one store (the ledger has rows): order/refund lines one row per
+    amount column, others one per description kind; n, amount as Amazon states it,
+    IVA, net (what enters ②); in ②'s row order. ④ and results_figures read this."""
+    L = S["ledger"]
+    is_or = L["_key"].isin(("order", "refund"))
+    L = L.assign(_what=L["_col"].where(is_or | (L["line"] == TC.UNREGISTERED), L[T_DESC].map(_short_desc)))
+    g = L.groupby([T_TYPE, "_what", "_zh", "line"]).agg(
+        n=("_row", "nunique"), amt=("amt", "sum"), iva=("iva", "sum"), net=("net", "sum")).reset_index()
+    g["_order"] = g["line"].map(lambda k: _LINE_ORDER.index(k) if k in _LINE_ORDER else 99)
+    return g.sort_values(["_order", T_TYPE, "_what"])
+
+
 def sheet_fees(wb, fam, ctx):
     ws = fam.table_sheet(wb, SHEETS[3], "平台费用明细（%s）" % ctx["period_cn"],
                          "本月交易明细里出现的每一种交易类型与金额列。订单/退款行按金额列分行；其他行按说明分行。"
@@ -1377,14 +1396,7 @@ def sheet_fees(wb, fam, ctx):
             ws.cell(row=r, column=3, value="本月没有交易").font = F(10, False, K.C_GREY)
             r += 2
             continue
-        # order/refund lines: one row per column; others: one per description kind
-        is_or = L["_key"].isin(("order", "refund"))
-        L = L.assign(_what=L["_col"].where(is_or | (L["line"] == TC.UNREGISTERED),
-                                           L[T_DESC].map(_short_desc)))
-        g = L.groupby([T_TYPE, "_what", "_zh", "line"]).agg(
-            n=("_row", "nunique"), amt=("amt", "sum"), iva=("iva", "sum"), net=("net", "sum")).reset_index()
-        g["_order"] = g["line"].map(lambda k: _LINE_ORDER.index(k) if k in _LINE_ORDER else 99)
-        for _, x in g.sort_values(["_order", T_TYPE, "_what"]).iterrows():
+        for _, x in fee_groups(S).iterrows():
             what = x["_what"]
             zh = x["_zh"]
             if x["line"] != TC.UNREGISTERED and what in TC.COL_ZH:
@@ -1758,8 +1770,51 @@ def apply_costs(stores, month, checks, table=None):
     return table
 
 
+# ======================================================================= results file
+
+def results_figures(S):
+    """This store's numbers for the monthly results file (core/results), from the
+    same S and row specs that fill the workbook: ② (PL_ROWS, S["m"]["pl"], the cost
+    table's cogs as fill_cogs writes it), pl_memo, ④ fee lines by type and column
+    (net, as ②), ⑤ the month's refunds, ⑦ S["sku"], ⑨ S["stock"]."""
+    from core import results
+    cost = S.get("cost")
+    spec = [{"key": x.key, "label": x.label, "original": x.original, "kind": x.kind, "formula": x.formula,
+             "value": (S["m"]["pl"][x.key] if x.kind == "d" else
+                       (_r(cost.cogs) if cost is not None else 0.0) if x.kind == "in" else None)}
+            for x in PL_ROWS]
+    fam = RF.Family([S], money=MNY)
+    memo = [{"key": k, "label": label, "value": float(fn(S))} for k, (label, _o, fn, _note) in pl_memo(fam) if k]
+    fees = []
+    if len(S["ledger"]):
+        for _, x in fee_groups(S).iterrows():
+            if x["line"] in FEE_ROWS:
+                what = x["_what"]
+                fees.append({"name": "%s · %s" % (x[T_TYPE], what), "label": x["_zh"], "pl_key": x["line"],
+                             "amount": _r(x["net"])})
+    m = S["m"]
+    rets = [{"key": "refund", "label": "退货退款", "count": int(m.get("refund_orders") or 0),
+             "amount": float(m["pl"][TC.REFUND])}]
+    skus = []
+    for sku, x in (S["sku"].iterrows() if len(S["sku"]) else ()):
+        skus.append({"sku": sku, "title": _s(x["name"]), "units": float(x["units"]),
+                     "units_returned": float(x["returns"]), "net_sales": _r(x[TC.SALES] + x[TC.REFUND]),
+                     "fees": _r(x["fees"]), "contribution": _r(x["contrib"]),
+                     "cost": results.sku_cost(cost, sku) if sku != NO_SKU else None})
+    inv = None
+    st = S.get("stock")
+    if st is not None:
+        rows = [{"sku": _s(x.get("sku")), "title": _s(x.get("product-name")), "stock": _n(x, "available"),
+                 "sold_30d": _n(x, "units-shipped-t30")} for _, x in st.iterrows()]
+        dates = [d for d in (st["snapshot-date"] if "snapshot-date" in st.columns else []) if isinstance(d, str) and d]
+        inv = {"as_of": min(dates)[:10] if dates else None, "rows": rows}
+    return {"pl": results.pl_rows(spec), "memo": memo, "fees": fees, "returns": rets, "sku": skus,
+            "inventory": inv}
+
+
 def build(pairs, month, out_path, strict=False, build_date=None):
-    """pairs: [(store, folder)]. Returns a result dict (outcome, checks, out)."""
+    """pairs: [(store, folder)]. Returns a result dict (outcome, checks, out, and
+    "results": core/report_family.results_inputs when the workbook was written)."""
     stores = [derive(load_store(s, f, month)) for s, f in pairs]
     ctx = build_context(stores, month, build_date)
     ctx["checks"] = validate(stores)
@@ -1770,4 +1825,5 @@ def build(pairs, month, out_path, strict=False, build_date=None):
         return {"outcome": "strict_aborted", "checks": ctx["checks"], "out": out_path}
     build_workbook(stores, ctx, out_path)
     return {"outcome": "checks_failed" if bad else "ok", "checks": ctx["checks"], "out": out_path,
-            "metrics": {S["store"]: S["m"] for S in stores}}
+            "metrics": {S["store"]: S["m"] for S in stores},
+            "results": RF.results_inputs(stores, results_figures)}

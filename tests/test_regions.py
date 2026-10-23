@@ -489,7 +489,7 @@ def test_run_reports_both_bases_bill_first(monkeypatch, tmp_path, cfg):
                 "checks": [], "checks_failed": False, "data_incomplete": False, "formula_errors": False,
                 "output": "", "out": out}
 
-    def bill(usable, month, region, out_dir, per_store=True, combined=True):
+    def bill(usable, month, region, out_dir, per_store=True, combined=True, **kw):
         calls.append(("bill", len(usable), per_store, combined))
         return [{"label": "全店汇总 账单基准", "outcome": "ok", "checks": [], "out": "x.xlsx", "seconds": 1}]
     monkeypatch.setattr(run_reports.financial_report, "build", build)

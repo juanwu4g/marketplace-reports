@@ -205,7 +205,7 @@ def main(argv=None):
     ap.add_argument("--month", default=None, help="YYYY-MM，默认上个月")
     ap.add_argument("--market", action="append", default=None,
                     help="市场代码，如 FA-CL、AZ-MX，可重复；默认 config.json 里所有能列出 SKU 的市场")
-    ap.add_argument("--downloads", default=None, help="下载目录的根（默认 downloads/）")
+    ap.add_argument("--downloads", default=None, help="旧布局的下载根目录（<根>/<店>/<运行>/）；默认按 config.json 的数据布局找")
     a = ap.parse_args(argv)
     month = a.month or last_month()
     if not a.out.lower().endswith(".xlsx"):

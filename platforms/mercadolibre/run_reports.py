@@ -51,7 +51,11 @@ from core.store_config import StoreConfigError, StoreNotAllowed
 from platforms.mercadolibre import financial_report
 
 from core.paths import ROOT
-OUT_DIR = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+from core import finalize
+from core import layout
+from core import results as RS
+from platforms.mercadolibre import results_files
+OUT_DIR = layout.reports_root()
 BASES = ("bill", "order")                 # 账单基准是会计入账口径，先出、先列
 BASIS_CN = {"bill": "账单基准", "order": "订单基准"}
 
@@ -130,13 +134,29 @@ def bases_from_arg(arg, config_path=None):
     return configured_bases(config_path)
 
 
-def bill_reports(usable, month, region, out_dir, per_store=True, combined=True):
+def bill_reports(usable, month, region, out_dir, per_store=True, combined=True, stamp=None,
+                 store_dir=None, prepared_out=None):
     """账单基准：每店一份 + 全店汇总一份。每家店只读一次数据，单店和汇总共用。
-    返回结果列表（outcome / label / out / checks / seconds），和订单基准的同一种。"""
+    返回结果列表（outcome / label / out / checks / seconds），和订单基准的同一种。
+
+    stamp：本次出报表的时间戳（core/results.built_stamp）—— 给了就为每份单店报表写
+    月度结果文件，版本号 <下载目录名>__<stamp>，两种基准共用。store_dir(folder)：
+    单店报表写到哪个目录（新布局是 _versions/<版本>/，默认 out_dir）。
+    prepared_out：给一个 dict，就把每家店读好的 (S, checks) 按 (店, 目录) 放进去
+    （新布局的汇总表由 core/finalize 按最终版本重出，同一目录的店不必再读一遍）。"""
     from core import sku_costs as SC
     from platforms.mercadolibre.bill_report import build as BB
     site = region.lower()
     results, prepared = [], []
+    store_dir = store_dir or (lambda folder: out_dir)
+
+    def save(make):
+        if stamp:
+            results_files.write_from(make)
+
+    def failed(name, folder, why, checks=(), meta=None):
+        save(lambda: results_files.failed_document(name, month, "bill", region, version_id(folder, stamp),
+                                                   folder, why, checks, meta))
     try:
         table = SC.load_configured()
     except Exception as e:                    # 成本表读不出来：照常出报表，成本行留空
@@ -156,6 +176,8 @@ def bill_reports(usable, month, region, out_dir, per_store=True, combined=True):
                  "skipped": "下载目录记的站点是 %s，不是 %s" % (meta_site, site)}
             print("    [跳过] %s" % r["skipped"])
             results.append(r)
+            if per_store:
+                failed(name, folder, r["skipped"])
             continue
         def prep(name=name, folder=folder):
             S, checks = BB.prepare(name, folder, month, site, table)
@@ -164,13 +186,23 @@ def bill_reports(usable, month, region, out_dir, per_store=True, combined=True):
         if got.get("crashed"):
             print("    [错误] 读取或计算出错：%s" % got["output"])
             results.append(got)
+            if per_store:
+                failed(name, folder, "读取或计算出错：%s" % got["output"])
             continue
         S, checks = got["S"], got["checks"]
         prepared.append((S, checks))
+        if prepared_out is not None:
+            prepared_out[(name, os.path.normcase(os.path.abspath(folder)))] = (S, checks)
         if per_store:
-            r = BB.guarded("%s 账单基准" % name, BB.write_store, S, checks, out_dir, table)
+            r = BB.guarded("%s 账单基准" % name, BB.write_store, S, checks, store_dir(folder), table)
             _print_bill(r)
             results.append(r)
+            if r.get("crashed"):
+                failed(name, folder, "生成报表时出错：%s" % r["output"], checks, S.get("meta"))
+            else:
+                scan = r.get("scan")
+                save(lambda: results_files.bill_document(S, checks, version_id(folder, stamp), r["out"],
+                                                         formula_errors=bool(scan is not None and scan[1])))
     if combined and prepared:
         print("\n" + "-" * 62)
         print("汇总报表：%d 家店铺（账单基准）" % len(prepared))
@@ -180,6 +212,11 @@ def bill_reports(usable, month, region, out_dir, per_store=True, combined=True):
         _print_bill(r)
         results.append(r)
     return results
+
+
+def version_id(folder, stamp):
+    """本次出报表的版本号：<下载目录名>__<stamp>（core/results.version_id）。"""
+    return RS.version_id(folder, stamp) if stamp else None
 
 
 def _print_bill(r):
@@ -260,6 +297,82 @@ def exit_code(results, usable, unusable, per_store=True):
     return 0
 
 
+def store_workbook_name(store, month, basis="order"):
+    """单店报表的文件名：订单基准 <店>_<月>.xlsx，账单基准加 _账单基准。"""
+    if basis == "bill":
+        from platforms.mercadolibre.bill_report import build as BB
+        return BB.workbook_name(store, month)
+    return "%s_%s.xlsx" % (store, month)
+
+
+def order_failed(name, folder, month, region, version, r):
+    """订单基准的单店报表没写出来：子进程没机会写结果文件，这里补一个“失败”版本。"""
+    if not version or os.path.isfile(RS.path_for(name, month, version, "order")):
+        return None
+    why = financial_report.OUTCOME_LABELS.get(r.get("outcome"), r.get("outcome"))
+    if r.get("skipped"):
+        why += "：%s" % r["skipped"]
+    return results_files.write_from(lambda: results_files.failed_document(
+        name, month, "order", region, version, folder, why, r.get("checks") or ()))
+
+
+def finalize_step(args, month, bases, usable, unusable, prepared):
+    """core/finalize：定出每家店每种基准的最终版本。新布局下还要把定稿复制进月份
+    文件夹、按最终版本出全店汇总（两种基准各一份）、写版本说明.txt、清理。
+    返回汇总表的生成结果（和上面的单店结果同一种），没有就是 []。"""
+    from platforms.mercadolibre.bill_report import build as BB
+    region = args.region
+    market = results_files.market_of(region)
+    try:
+        all_stores = store_config.stores_for_region(region)
+    except Exception:                         # noqa: BLE001 — the summary then covers the stores at hand
+        all_stores = []
+    unit = finalize.Unit(
+        "ML", market, month, args.out_dir, tuple(bases), store_workbook_name,
+        lambda m, b: BB.combined_name(m, region) if b == "bill" else combined_name(m, region))
+
+    def build_combined(basis, pairs, dst):
+        print("\n" + "-" * 62)
+        print("汇总报表：%d 家店铺（%s，按各店最终版本）" % (len(pairs), BASIS_CN[basis]))
+        print("-" * 62)
+        folders = [(store, (doc.get("source_folders") or [None])[0]) for store, doc in pairs]
+        if basis == "bill":
+            r = BB.guarded("全店汇总 账单基准", _bill_combined, folders, month, region, dst, prepared)
+            _print_bill(r)
+            return r
+        r = safe_build(folders, month, dst, strict=args.strict, site=region.lower(),
+                       metrics_out=(os.path.join(args.out_dir, "全店_%s_指标.json" % month)
+                                    if args.metrics else None))
+        r["label"] = "全店汇总" + (" 订单基准" if len(bases) > 1 else "")
+        return r
+
+    try:
+        out = finalize.run(unit, [n for n, _f in usable], all_stores, build_combined,
+                           no_combined=args.no_combined)
+    except Exception as e:                    # noqa: BLE001 — the workbooks are out; say what went wrong
+        import traceback
+        print("\n[错误] 整理最终版本时出错：%s: %s" % (e.__class__.__name__, e))
+        traceback.print_exc(file=sys.stdout)
+        return []
+    return out["combined"]
+
+
+def _bill_combined(folders, month, region, dst, prepared):
+    """账单基准的全店汇总，从各店最终版本的下载目录出；本次已读过的目录不再读。"""
+    from core import sku_costs as SC
+    from platforms.mercadolibre.bill_report import build as BB
+    try:
+        table = SC.load_configured()
+    except Exception:                         # noqa: BLE001 — as bill_reports: no cost rows
+        table = None
+    prep = []
+    for store, folder in folders:
+        got = prepared.get((store, os.path.normcase(os.path.abspath(folder))))
+        prep.append(got or BB.prepare(store, folder, month, region.lower(), table))
+    return BB.write_combined(prep, month, region, out_dir=os.path.dirname(dst), table=table,
+                             name=os.path.basename(dst), order_combined=combined_name(month, region))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--month", default=None,
@@ -317,10 +430,21 @@ def main():
         print("       公式已写入文件，Excel/WPS 打开时会自动计算；")
         print("       但本次无法自动检查公式是否报错。")
 
+    # 一次出报表一个时间戳：两种基准的每份单店报表都是版本 <下载目录名>__<stamp>，
+    # 各写一个月度结果文件（core/results）。新布局下单店报表先写进月份文件夹的
+    # _versions/<版本>/，汇总表由 core/finalize 按各店的最终版本出（见文件尾）。
+    stamp = RS.built_stamp()
+    v2 = finalize.is_v2()
+
+    def store_dir(folder):
+        return finalize.version_dir(args.out_dir, version_id(folder, stamp)) if v2 else args.out_dir
+
     results = []
+    prepared = {}
     if "bill" in bases:
         results += bill_reports(usable, month, args.region, args.out_dir,
-                                per_store=not args.no_per_store, combined=not args.no_combined)
+                                per_store=not args.no_per_store, combined=not args.no_combined and not v2,
+                                stamp=stamp, store_dir=store_dir, prepared_out=prepared)
         if "order" in bases:
             print("\n" + "=" * 62)
             print("订单基准报表（经营分析参考）—— %d 家店铺" % len(usable))
@@ -329,7 +453,7 @@ def main():
     # ---- 单店报表：一家出问题不影响其余 ----
     if "order" in bases and not args.no_per_store:
         for name, folder in usable:
-            out = os.path.join(args.out_dir, "%s_%s.xlsx" % (name, month))
+            out = os.path.join(store_dir(folder), store_workbook_name(name, month))
             print("\n" + "-" * 62)
             print("单店报表：%s" % name)
             print("-" * 62)
@@ -337,12 +461,15 @@ def main():
                 [(name, folder)], month, out, strict=args.strict,
                 site=args.region.lower(),   # 国家传给报表：币种、账单周期、税务口径
                 metrics_out=(os.path.join(args.out_dir, "%s_%s_指标.json"
-                                          % (name, month)) if args.metrics else None))
+                                          % (name, month)) if args.metrics else None),
+                results_version=version_id(folder, stamp))
             r["label"] = name + (" 订单基准" if len(bases) > 1 else "")
             results.append(r)
+            if not financial_report.written(r):
+                order_failed(name, folder, month, args.region, version_id(folder, stamp), r)
 
-    # ---- 汇总报表：12 家店传进同一次调用 ----
-    if "order" in bases and not args.no_combined:
+    # ---- 汇总报表：12 家店传进同一次调用（新布局：core/finalize 按最终版本出） ----
+    if "order" in bases and not args.no_combined and not v2:
         out = os.path.join(args.out_dir, combined_name(month, args.region))
         print("\n" + "-" * 62)
         print("汇总报表：%d 家店铺" % len(usable))
@@ -354,6 +481,9 @@ def main():
                          if args.metrics else None))
         r["label"] = "全店汇总" + (" 订单基准" if len(bases) > 1 else "")
         results.append(r)
+
+    # ---- 最终版本：每家店每种基准；新布局下复制定稿、出汇总表、写版本说明、清理 ----
+    results += finalize_step(args, month, bases, usable, unusable, prepared)
 
     # ---- 汇总 ----
     print("\n" + "=" * 62)

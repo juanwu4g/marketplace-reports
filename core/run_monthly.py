@@ -106,6 +106,12 @@ run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一
 和 ALL 是同一套流程（一把锁、一份日志、每段带 [区域] 前缀），只是只跑这几个。
 这里可以带 --stores：每家店归到它所在的区域；列出了店的区域只跑这几家（不出
 全店汇总），没列出店的区域跑全部店铺。--stores 里有不属于这几个区域的店：退出码 3。
+
+期间报表
+--------
+出报表的那一步跑完以后，这个月是季度的最后一个月（3、6、9、12 月）时，给这一轮的
+每个区域（再）生成那个季度的期间报表；12 月还生成全年（period_hook）。只读定稿的
+月度结果，几秒钟；出了问题写日志和「！期间报表异常_…」告警，**退出码不变**。
 """
 import argparse
 import datetime
@@ -124,6 +130,7 @@ import time
 import traceback
 
 from core import console  # noqa: F401  中文输出编码保护
+from core import layout
 from core import runlog
 # 见上：故意的前置 import，用来在下载之前就验证报表侧能不能加载。
 from platforms.mercadolibre.run_reports import prev_month, OUT_DIR
@@ -133,7 +140,7 @@ from core.paths import ROOT
 # 目前只有一个平台。第二个平台接进来时，这里换成"按店铺所属平台选包"——
 # 见 docs/ARCHITECTURE.md 的 "Extension points"。
 PLATFORM_PKG = "platforms.mercadolibre"
-LOG_DIR = os.path.join(ROOT, "logs")
+LOG_DIR = layout.logs_dir()
 LOCK = os.path.join(LOG_DIR, "monthly.lock")
 
 # 锁超过这个时长就认为是上次被强杀留下的残骸，直接接管。计划任务的超时是
@@ -181,13 +188,38 @@ def resolve_out_dir(cli=None):
             return str(d).strip(), "主界面里选的，存在 gui_settings.json"
     except Exception:
         pass
-    return OUT_DIR, "默认"
+    return layout.reports_root(), "默认"
+
+
+def report_dir(out_dir, month, unit):
+    """A unit's monthly reports: out_dir itself in the legacy layout (flat, as
+    always); reports/monthly/<month>/<PF>-<CC>/ under it in the new one."""
+    if layout.mode() == layout.LEGACY:
+        return out_dir
+    from core import markets
+    return layout.monthly_dir(month, markets.unit_market(unit), override=out_dir)
+
+
+def summary_from_finals():
+    """New layout: the 全店汇总 is rebuilt from every store's final version
+    (core/finalize), so a run of a few stores still leaves a whole summary and
+    need not skip it. Old layout: a few stores' summary would overwrite the
+    whole one, so a subset run passes --no-combined (as always)."""
+    return layout.mode() == layout.V2
+
+
+def alert_dir(out_dir, month):
+    """Where the 「！报表异常」 file goes: out_dir (legacy) or the month folder."""
+    if layout.mode() == layout.LEGACY:
+        return out_dir
+    return layout.alert_dir(month, override=out_dir)
 
 
 def config():
     """读 config.json 里的 monthly 段。读不到就当没配，不影响主流程。"""
     try:
-        with io.open(os.path.join(ROOT, "config.json"), encoding="utf-8") as f:
+        from core import store_config
+        with io.open(store_config.CONFIG_PATH, encoding="utf-8") as f:
             return json.load(f).get("monthly") or {}
     except Exception:
         return {}
@@ -398,8 +430,8 @@ def build_plan(step, month, stores, out_dir, py=None, reports_all=False,
     co = batch + ["--collect-only", "--month", month] + dsub
     rsub = [] if reports_all else sub
     rp = ([py, "-u", "-m", PLATFORM_PKG + ".run_reports", "--month", month]
-          + reg + rsub + (["--no-combined"] if rsub else [])
-          + ["--out-dir", out_dir])
+          + reg + rsub + (["--no-combined"] if rsub and not summary_from_finals() else [])
+          + ["--out-dir", report_dir(out_dir, month, region)])
     plan = []
     if step in ("both", "download"):
         plan.append({"key": "download", "label": "下载 %s 的数据" % month,
@@ -431,7 +463,8 @@ def _build_plan_market(step, month, stores, out_dir, py, reports_all, unit, all_
     co = batch + ["--collect-only", "--month", month] + mk + ["--stores"] + listed
     rsub = [] if reports_all or not stores else ["--stores"] + list(stores)
     rp = ([py, "-u", "-m", pkg + ".run_reports", "--month", month] + mk + rsub
-          + (["--no-combined"] if rsub else []) + ["--out-dir", out_dir])
+          + (["--no-combined"] if rsub and not summary_from_finals() else [])
+          + ["--out-dir", report_dir(out_dir, month, unit)])
     plan = []
     if step in ("both", "download"):
         plan.append({"key": "download", "label": "下载 %s 的数据" % month, "cmd": dl})
@@ -817,7 +850,7 @@ def _cause_text(code):
 
 
 def alert_path(out_dir, month, region="MX"):
-    return os.path.join(os.path.abspath(out_dir), alert_name(month, region))
+    return os.path.join(os.path.abspath(alert_dir(out_dir, month)), alert_name(month, region))
 
 
 def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
@@ -850,6 +883,7 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
              "也可以双击 月度报表.cmd，在窗口右边的「运行日志」里挑这一轮来看。",
              "处理办法见 README.md 第 12 节《出问题先做这三步》。"]
     text = "\n".join(body)
+    out_dir = alert_dir(out_dir, month)
     try:
         if not os.path.isdir(out_dir):
             os.makedirs(out_dir)
@@ -1093,6 +1127,64 @@ def conclude(log, args, month, out_dir, region, st, rec, log_path):
     return final
 
 
+def period_hook(log, args, month, out_dir, units, plan):
+    """出完报表以后，这个月是季度的最后一个月：把这个季度的期间报表（再）生成一遍；
+    12 月还加上全年（docs/RESULTS_AND_PERIODS.md §5）。
+
+    期间报表只读各月的定稿月度结果（core/period_report），几秒钟。它出什么事都
+    **不改**这一轮的退出码、不拦别的国家：写进日志，再在这个月的告警目录里写一个
+    「！期间报表异常_…」文件。这一轮没出报表（只下载 / 补取）就什么都不做。
+    美客多自动生成的是账单基准（会计入账口径）；订单基准在窗口里按需生成。
+    返回 [结果]（测试看），出错时返回 None。"""
+    if not any(s.get("key") == "report" for s in plan or []):
+        return []
+    step = runlog.STEP_REPORT
+    try:
+        from core import markets
+        from core import period_report as PR
+        periods = PR.auto_periods(month)
+        if not periods:
+            return []
+        folder = alert_dir(out_dir, month)
+        entrance_cn = runlog.ENTRANCE_ZH.get(args.entrance, args.entrance)
+        done = []
+        for unit in units:
+            market = markets.unit_market(unit)
+            for period in periods:
+                res = PR.generate(period, market, out_dir=out_dir)
+                done.append(res)
+                lines = PR.summary_lines(res)
+                if res["status"] == PR.EMPTY:
+                    log.info(step, "期间报表 " + lines[0] + "（这个期间还没有月度结果文件）")
+                    continue
+                bad = res["status"] in (PR.ERROR, PR.INCOMPLETE)
+                for i, line in enumerate(lines):
+                    log.write(step, runlog.WARN if bad and i == 0 else runlog.INFO,
+                              ("期间报表 " if i == 0 else "") + line)
+                if bad:
+                    try:
+                        p = PR.write_alert(folder, res, month, entrance_cn)
+                        log.warn(step, "已写出期间报表告警：%s" % p)
+                    except Exception as e:                        # noqa: BLE001
+                        log.warn(step, "[警告] 期间报表告警写不进去：%s" % str(e)[:120])
+                else:
+                    gone = PR.clear_alert(folder, res)
+                    if gone:
+                        log.info(step, "期间报表已完整，删掉了旧的告警：%s" % gone)
+        return done
+    except Exception:                                             # noqa: BLE001
+        log.warn(step, "期间报表没生成（不影响这一轮的月报）：\n" + traceback.format_exc())
+        try:
+            os.makedirs(alert_dir(out_dir, month), exist_ok=True)
+            with io.open(os.path.join(alert_dir(out_dir, month), "！期间报表异常_%s.txt"
+                                      % month.replace("-", "")), "w", encoding="utf-8") as f:
+                f.write("%s 月报跑完后自动生成期间报表时出错：\n\n%s\n完整日志：%s\n"
+                        % (month, traceback.format_exc(), log.path))
+        except Exception:                                         # noqa: BLE001
+            pass
+        return None
+
+
 def execute(args, plan=None):
     """跑一轮。plan 给测试用：换掉真正的子进程命令，流程本身不变。
 
@@ -1206,6 +1298,7 @@ def execute(args, plan=None):
         # 人为中止不告警：停的人自己知道。
         return finish("aborted", 6)
     final = conclude(log, args, month, out_dir, region, st, doc, paths["log"])
+    period_hook(log, args, month, out_dir, [region], plan)     # never changes `final`
     return finish("done" if final < 2 else "failed", final)
 
 
@@ -1443,6 +1536,7 @@ def execute_all(args, plans=None):
                 save()
                 break
             final = conclude(rlog, args, month, out_dir, r, st, rec, paths["log"])
+            period_hook(rlog, args, month, out_dir, [r], it["plan"])   # never changes `final`
             rec.update(status="done" if final < 2 else "failed", exit=final,
                        ended=now(), alert=alert_path(out_dir, month, r)
                        if final and rec["urgent"] else None)

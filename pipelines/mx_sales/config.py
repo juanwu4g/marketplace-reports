@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# The code lives in <repo>/pipelines; the data does not. The monthly run always
+# sets MX_SALES_* (platforms/mercadolibre/transform.data_env, from core/layout).
+# Run by hand without them, the pipeline falls back to the old data folder
+# <repo>/downloads — never to its own code folder.
+DEFAULT_DATA_ROOT = PROJECT_ROOT.parent / "downloads"
 
 
 @dataclass(frozen=True)
@@ -23,7 +28,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        root = Path(os.environ.get("MX_SALES_ROOT", PROJECT_ROOT)).resolve()
+        root = Path(os.environ.get("MX_SALES_ROOT", DEFAULT_DATA_ROOT)).resolve()
         return cls(
             raw_dir=Path(os.environ.get("MX_SALES_RAW_DIR", root)),
             processed_dir=Path(os.environ.get("MX_SALES_PROCESSED_DIR", root / "data" / "processed")),

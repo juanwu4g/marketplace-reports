@@ -58,7 +58,8 @@ NO_SKU = "(无 SKU · 店铺级费用)"
 # which units carry a cost of goods (core/sku_costs, README "Accounting rules")
 COST_UNITS_BASIS = ("本月结算件数（“Pago por precio del producto”的行数）− 本月退货件数"
                     "（“Descuento por devolución de producto”的行数，退回的商品回到库存）")
-MNY = K.money_format(0)
+DECIMALS = 0                    # CLP has no cents
+MNY = K.money_format(DECIMALS)
 IVA_RATE = 0.19
 # The cost table holds costs net of IVA; this report is with IVA, so each unit cost is
 # multiplied by 1 + IVA (core/sku_costs.apply factor).
@@ -758,19 +759,25 @@ def sheet_pl(wb, fam, ctx):
         ("广告推广", _fee_share((FC.ADS,)), sales),
         ("平台费用合计", _fee_share(FEE_ROWS), sales),
         ("经营贡献毛利率", lambda S: S["m"]["contrib"], sales)], note_col)
-    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [
-        ("订单口径 GMV（含 IVA，不含已取消）", "Lista de Órdenes · Precio pagado",
-         lambda S: S["m"].get("gmv_orders", 0.0),
-         "本月创建的订单买家实付金额，含 IVA；与结算口径的差见③桥 A"),
-        ("订单数（不含已取消）", "", lambda S: S["m"].get("orders_live_n", 0), ""),
-        ("已取消订单金额", "Canceladas", lambda S: S["m"].get("cancel_amt", 0.0), ""),
-        ("买家支付的运费（代收）", "Pago de envío comprador", lambda S: S["m"]["pl"][FC.SHIP_INCOME],
-         "其中 Falabella 配送的部分原样转付平台（下一行），剩余计入“运费收入（净额）”"),
-        ("其中转付 Falabella", "Reversa de pago de envío comprador",
-         lambda S: S["m"]["pl"][FC.SHIP_BUYER], "代收代付，不是收入也不是费用"),
-        ("其中含 IVA（应缴 SII 的 IVA 净额，参考）", "IVA débito − crédito fiscal", lambda S: S["m"]["tx_iva"],
-         "上表金额含 IVA：经营贡献毛利里有这么多是销项 IVA − 进项 IVA（按交易日），要向 SII 缴纳，不是利润"),
-    ], note_col)
+    fam.memo_block(sh, r + 1, "备查项（不参与上表计算）", [row for _k, row in PL_MEMO], note_col)
+
+
+# ② 备查项：(key, (行名, 原文, 取值, 说明))。key 为 None 的行不是金额（结果文件不收）。
+# ② 页和结果文件（results_figures）都读这一份。
+PL_MEMO = [
+    ("gmv_orders", ("订单口径 GMV（含 IVA，不含已取消）", "Lista de Órdenes · Precio pagado",
+                    lambda S: S["m"].get("gmv_orders", 0.0),
+                    "本月创建的订单买家实付金额，含 IVA；与结算口径的差见③桥 A")),
+    (None, ("订单数（不含已取消）", "", lambda S: S["m"].get("orders_live_n", 0), "")),
+    ("cancel_amt", ("已取消订单金额", "Canceladas", lambda S: S["m"].get("cancel_amt", 0.0), "")),
+    ("ship_buyer_paid", ("买家支付的运费（代收）", "Pago de envío comprador", lambda S: S["m"]["pl"][FC.SHIP_INCOME],
+                         "其中 Falabella 配送的部分原样转付平台（下一行），剩余计入“运费收入（净额）”")),
+    ("ship_passed_on", ("其中转付 Falabella", "Reversa de pago de envío comprador",
+                        lambda S: S["m"]["pl"][FC.SHIP_BUYER], "代收代付，不是收入也不是费用")),
+    ("iva_net", ("其中含 IVA（应缴 SII 的 IVA 净额，参考）", "IVA débito − crédito fiscal",
+                 lambda S: S["m"]["tx_iva"],
+                 "上表金额含 IVA：经营贡献毛利里有这么多是销项 IVA − 进项 IVA（按交易日），要向 SII 缴纳，不是利润")),
+]
 
 
 def fill_cogs(fam, sh, rows_at, note_col, ctx):
@@ -876,19 +883,28 @@ FEE_COLS = [RF.Col("店铺", 22, font=TEXT10), RF.Col("交易类型（Falabella 
             RF.Col("金额（含 IVA）", 16, RF.MONEY)]
 
 
+def fee_groups(S):
+    """④'s rows of one store: transaction type × 中文 × ② line, n and amount (含 IVA),
+    in ②'s row order then by amount; None when the month has no transactions.
+    ④ and the results file (results_figures) both read this."""
+    t = S["tx"]
+    if not len(t):
+        return None
+    keys = [x.key for x in PL_ROWS]
+    g = t.groupby([T_COLS["type"], "_zh", "_line"]).agg(n=(AMT, "size"), amt=(AMT, "sum")).reset_index()
+    g["_order"] = g["_line"].map(lambda k: keys.index(k) if k in keys else 99)
+    return g.sort_values(["_order", "amt"])
+
+
 def sheet_fees(wb, fam, ctx):
     ws = fam.table_sheet(wb, SHEETS[3], "平台费用明细（%s）" % ctx["period_cn"],
                          "本月交易明细里出现的每一种交易类型。归入②的哪一行见“损益表行”。金额 CLP，含 IVA。", FEE_COLS)
-    keys = [x.key for x in PL_ROWS]
     r = 5
     for S in fam.stores:
-        t = S["tx"]
-        if not len(t):
+        g = fee_groups(S)
+        if g is None:
             continue
-        g = t.groupby([T_COLS["type"], "_zh", "_line"]).agg(
-            n=(AMT, "size"), amt=(AMT, "sum")).reset_index()
-        g["_order"] = g["_line"].map(lambda k: keys.index(k) if k in keys else 99)
-        for _, x in g.sort_values(["_order", "amt"]).iterrows():
+        for _, x in g.iterrows():
             cells = fam.write_row(ws, r, FEE_COLS, [
                 S["store"], x[T_COLS["type"]], x["_zh"], pl_label(x["_line"]),
                 FC.LINE_CATEGORY.get(x["_line"], "⚠ 未登记"), int(x["n"]),
@@ -1193,8 +1209,69 @@ def apply_costs(stores, month, checks, table=None):
     return table
 
 
+# ======================================================================= results file
+
+# ② row of a transaction line that is not a ② row itself
+PL_ROW_OF_LINE = {FC.SHIP_INCOME: "ship_net", FC.SHIP_BUYER: "ship_net"}
+
+
+def results_figures(S):
+    """This store's numbers for the monthly results file (core/results), from the
+    same S and row specs that fill the workbook: ② (PL_ROWS, S["m"]["pl"], the
+    cost table's cogs as fill_cogs writes it), PL_MEMO, ④ by transaction type
+    (fee lines only), ⑤'s money of the returned orders by line, ⑦ S["sku"], ⑨
+    S["stock"] (Falabella gives sales of the last 4 weeks: sold_window_days 28)."""
+    from core import results
+    cost = S.get("cost")
+    spec = [{"key": x.key, "label": x.label, "original": x.original, "kind": x.kind, "formula": x.formula,
+             "value": (S["m"]["pl"][x.key] if x.kind == "d" else
+                       (cost.cogs if cost is not None else 0.0) if x.kind == "in" else None)}
+            for x in PL_ROWS]
+    memo = [{"key": k, "label": label, "value": float(fn(S))} for k, (label, _o, fn, _note) in PL_MEMO if k]
+    fees = []
+    g = fee_groups(S)
+    if g is not None:
+        for _, x in g.iterrows():
+            if x["_line"] in FEE_LINES:
+                fees.append({"name": x[T_COLS["type"]], "label": x["_zh"],
+                             "pl_key": PL_ROW_OF_LINE.get(x["_line"], x["_line"]), "amount": float(x["amt"])})
+    rets = []
+    money = S["returns"].get("money")
+    if money is not None and len(money):
+        for (line_, zh), row in money.iterrows():
+            rets.append({"key": line_, "label": zh, "count": int(row["count"]), "amount": float(row["sum"])})
+    skus = []
+    for sku, x in (S["sku"].iterrows() if len(S["sku"]) else ()):
+        skus.append({"sku": sku, "title": x["name"] if isinstance(x["name"], str) else "",
+                     "units": float(x["units"]), "units_returned": float(x["returns"]),
+                     "net_sales": float(x[FC.SALES] + x[FC.REFUND]), "fees": float(x["fees"]),
+                     "contribution": float(x["contrib"]),
+                     "cost": results.sku_cost(cost, sku) if sku != NO_SKU else None})
+    inv = None
+    s = S.get("stock")
+    if s is not None:
+        rows = [{"sku": x.get("SKU Vendedor"), "title": x.get("Nombre") if isinstance(x.get("Nombre"), str) else "",
+                 "stock": float(x.get("Stock Disponible") or 0), "sold_30d": float(x.get("Ventas ultimas 4 semanas")
+                                                                                  or 0)}
+                for _, x in s.iterrows()]
+        inv = {"as_of": stock_date(S), "sold_window_days": 28, "rows": rows}
+    return {"pl": results.pl_rows(spec), "memo": memo, "fees": fees, "returns": rets, "sku": skus,
+            "inventory": inv}
+
+
+def stock_date(S):
+    """The snapshot's day: the Product_details file's modification day (the
+    download), else run_meta.json's downloaded_at; None when neither is known."""
+    p = S["files"].get("stock")
+    if p and os.path.isfile(p):
+        return datetime.date.fromtimestamp(os.path.getmtime(p)).isoformat()
+    at = (S.get("meta") or {}).get("downloaded_at")
+    return str(at)[:10] if at else None
+
+
 def build(pairs, month, out_path, strict=False, build_date=None):
-    """pairs: [(store, folder)]. Returns a result dict (outcome, checks, out)."""
+    """pairs: [(store, folder)]. Returns a result dict (outcome, checks, out, and
+    "figures": {store: results_figures(S)} when the workbook was written)."""
     stores = [derive(load_store(s, f, month)) for s, f in pairs]
     ctx = build_context(stores, month, build_date)
     ctx["checks"] = validate(stores)
@@ -1205,4 +1282,5 @@ def build(pairs, month, out_path, strict=False, build_date=None):
         return {"outcome": "strict_aborted", "checks": ctx["checks"], "out": out_path}
     build_workbook(stores, ctx, out_path)
     return {"outcome": "checks_failed" if bad else "ok", "checks": ctx["checks"], "out": out_path,
-            "metrics": {S["store"]: S["m"] for S in stores}}
+            "metrics": {S["store"]: S["m"] for S in stores},
+            "results": RF.results_inputs(stores, results_figures)}

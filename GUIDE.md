@@ -187,16 +187,19 @@ personal login will not work with this API.
 | `run_report.py` | Writes `REPORT.md` into each run folder. Presentation only — never touches the browser. |
 | `pending_store.py` | Reports requested but not yet collected (`logs/pending.json`); entries that age out are archived to `logs/pending_expired.json`. Survives a crash or reboot. |
 | `transform.py` | The seam to `downloads/mx_sales`: runs its CLI as a subprocess after a batch. |
-| `downloads/mx_sales/` | **Separate project** (own README, pyproject, tests): cleans the raw exports to Parquet + DuckDB. |
-| `downloads/data/` | That project's output: `processed/<report>/` Parquet and `mx_sales.duckdb`. |
-| `logs/` | **Gitignored.** `batch_<stamp>.json`, one per batch run; `runs/<run_id>.log` + `.json`, one pair per run of the runner; `current.json` while a run is in progress; `pending.json`, `pending_expired.json`; `report_diag/`. |
+| `pipelines/mx_sales/` | **Separate project** (own README, pyproject, tests): cleans the raw exports to Parquet + DuckDB. Its data folders are passed in (`MX_SALES_*`, from `core/layout.mx_sales_paths`). |
+| `core/layout.py` | Where every kind of data lives: the old layout (`downloads/`, `logs/` in the code folder) or the new one under `config.json` → `paths.data_root` (docs/DATA_LAYOUT.md). |
+| `core/results.py`, `core/grading.py`, `core/finalize.py` | Monthly results files, grades, final versions, the month folder and clean-up (docs/RESULTS_AND_PERIODS.md). |
+| `core/period_report/`, `run_period.py` | Quarterly / annual / custom period reports from the final monthly results; the window's 期间报表 tab. |
+| `tools/migrate_layout.py`, `tools/backfill_results.py` | Move a machine to the new layout (verified, reversible); build results files for months reported before them. |
+| logs (`logs/`, or `<data>/logs/` in the new layout) | **Gitignored.** `batch_<stamp>.json`, one per batch run; `runs/<run_id>.log` + `.json`, one pair per run of the runner; `current.json` while a run is in progress; `pending.json`, `pending_expired.json`; `report_diag/`. |
 | `report_build.py` | The monthly financial report generator: 10 sheets, P&L → bridges → fees → returns → SKU → trend → inventory → checks. Entry point only; the workbook is built by `report/` (country profile, loading, `derive()`, checks, one module per sheet) on `core/report_kit` + `core/report_family`. Runs as a plain script too (puts the repo root on `sys.path`). |
 | `financial_report.py` | The seam to `report_build.py`: picks each store's newest *complete* run folder and runs it as a subprocess. |
 | `run_reports.py` | Entry point for the monthly reports: one workbook per store plus an all-store roll-up. |
 | `pl_billing_basis.py` | Verification tool: rebuilds the P&L on a pure billing-date basis to compare against the current hybrid basis. Safe to delete. |
 | `experiments/ml_invoice_basis/` | Experiment, not part of the monthly run: MercadoLibre P&L on the invoice basis (Facturación + Notas de crédito) vs the order basis, and their stability across downloads. See its README. |
 | `platforms/mercadolibre/bill_report/` | The MercadoLibre bill basis (账单基准, the official one): a ten-sheet workbook per store and per country whose only amount baseline is the billing statement (Facturación + Notas de crédito, by charge date), with SKU mapping, cancellation/return status and store-level cost allocation. Written every month next to the order-based report by `run_reports` (`--basis`). See its README. |
-| `downloads/` | **Gitignored.** Output, one folder per run. |
+| `downloads/` | **Gitignored.** Old layout only: raw output, one folder per run (new layout: `<data>/raw/`). |
 | `config.json` | **Gitignored.** Real credentials and machine-specific paths. |
 | `config.example.json` | Template with every field documented. Copy → `config.json`. |
 | `requirements.txt` | Pinned runtime deps. |

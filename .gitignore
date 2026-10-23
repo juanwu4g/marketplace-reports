@@ -12,18 +12,10 @@ config.json
 # 这些导出里含买家姓名、地址、RFC/CFDI 税务信息等个人身份信息，
 # 以及全部销售与费用明细。
 #
-# 注意这里写的是 downloads/* 而不是 downloads/ —— git 规定：父目录被排除后，
-# 子文件再怎么 ! 也救不回来。只有逐项排除，下面的 ! 才生效。
-downloads/*
-!downloads/mx_sales/
-!downloads/tests/
-!downloads/pyproject.toml
-!downloads/README.md
-
-# 清洗管线的产物（Parquet / DuckDB / 生成的报表）
-downloads/data/
-downloads/mx_sales/**/__pycache__/
-downloads/tests/**/__pycache__/
+# 旧布局：数据在代码目录的 downloads/ 下（清洗管线的代码已搬到 pipelines/）。
+# 新布局：数据在 config.json → paths.data_root 指的目录里，不在仓库里。
+downloads/
+pipelines/data/
 
 # 商品成本表（config.json → reports.sku_costs）：财务的经营数据，不进库
 sku_costs.xlsx

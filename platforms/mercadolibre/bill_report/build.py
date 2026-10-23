@@ -10,6 +10,7 @@ import traceback
 from core import report_family as RF
 from core import report_kit as K
 from core import sku_costs as SC
+from core import layout
 from core.paths import ROOT
 from platforms.mercadolibre.bill_report import combined as CB
 from platforms.mercadolibre.bill_report import model as MD
@@ -17,7 +18,7 @@ from platforms.mercadolibre.bill_report import workbook as WB
 from platforms.mercadolibre.bill_report import mapping as M
 
 PLATFORM = "ML"
-DEFAULT_OUT = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+DEFAULT_OUT = layout.reports_root()
 SUFFIX = "_账单基准"
 
 
@@ -90,15 +91,16 @@ def write_store(S, checks, out_dir=None, table=None, recalc=True, build_date=Non
 
 
 def write_combined(prepared, month, region, out_dir=None, table=None, recalc=True, build_date=None,
-                   order_combined=""):
-    """prepared: [(S, checks)] of one country's stores."""
+                   order_combined="", name=None):
+    """prepared: [(S, checks)] of one country's stores. name: the file name
+    (default combined_name; core/finalize passes the 未定稿 one)."""
     Ss = [S for S, _ in prepared]
     checks = [c for _, cs in prepared for c in cs]
     ctx = _ctx(month, checks, table, build_date)
     ctx["order_combined"] = order_combined
     out_dir = out_dir or DEFAULT_OUT
     os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, combined_name(month, region))
+    out = os.path.join(out_dir, name or combined_name(month, region))
     CB.build(Ss, ctx, out)
     rc, scan = _finish(out, recalc)
     return {"out": out, "checks": checks, "recalc": rc, "scan": scan}

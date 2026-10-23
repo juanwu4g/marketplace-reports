@@ -21,7 +21,7 @@ def main(argv=None):
     ap.add_argument("--month", required=True, help="YYYY-MM（按计费日的会计月）")
     ap.add_argument("--folder", required=True, help="该店该月的下载文件夹")
     ap.add_argument("--site", choices=("mx", "cl", "pe"), help="国家；不填则读 run_meta.json 的 site")
-    ap.add_argument("--out-dir", help="输出目录（默认 downloads/data/reports/financial/）")
+    ap.add_argument("--out-dir", help="输出目录（默认报表目录，见 core/layout.reports_root）")
     ap.add_argument("--sku-costs", help="SKU 成本表（.xlsx/.csv，可选；格式见 docs/REPORT_FAMILY.md §7）")
     ap.add_argument("--no-recalc", action="store_true", help="不用 LibreOffice 重算")
     a = ap.parse_args(argv)

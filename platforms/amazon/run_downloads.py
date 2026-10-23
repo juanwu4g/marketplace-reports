@@ -5,7 +5,7 @@ forms, explain anything missing.
 
     python -m platforms.amazon.run_downloads --store "<store>" --month YYYY-MM
 
-Output: downloads/<store>/<YYYYMMDD_HHMMSS>_m<YYYYMM>/ with the raw files,
+Output: layout.run_folder(store, "<YYYYMMDD_HHMMSS>_m<YYYYMM>") (core/layout.py) with the raw files,
 run_meta.json (market, month, expected / missing / flags) and REPORT.md. Same
 layout and keys as the other platforms, so the runner, the window and the
 report side read all of them the same way.
@@ -23,6 +23,7 @@ from core import console  # noqa: F401  中文输出编码保护
 from core import download_diag
 from core import site_time
 from core import store_config
+from core import layout
 from core.paths import ROOT
 from platforms.amazon import forms
 from platforms.amazon import periods
@@ -46,8 +47,10 @@ def run_folder(store_name, month, stamp=None, base=None):
     browser's own working directory, and files would vanish)."""
     stamp = stamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     y, m = periods.parse_month(month)
-    root = base or os.path.join(ROOT, "downloads")
-    return os.path.abspath(os.path.join(root, store_name, "%s_m%04d%02d" % (stamp, y, m)))
+    name = "%s_m%04d%02d" % (stamp, y, m)
+    if base:
+        return os.path.abspath(os.path.join(base, store_name, name))
+    return layout.run_folder(store_name, name)
 
 
 def expected(month, only=None):

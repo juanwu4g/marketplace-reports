@@ -18,7 +18,7 @@ copy of the pipeline to keep in sync.
 File counts vary by period - MercadoLibre only offers report types that have
 data - so nothing here asserts a fixed number.
 
-Files land in ./downloads/<STORE>/<timestamp>/ .
+Files land in core/layout.run_folder(store, <timestamp>) .
 """
 import argparse
 import datetime
@@ -39,6 +39,7 @@ from platforms.mercadolibre import mercadopago
 from platforms.mercadolibre import run_report
 from core import download_diag
 
+from core import layout
 from core.paths import ROOT
 
 
@@ -128,7 +129,7 @@ def run_folder(store_name, stamp=None, base=None):
     stamp = stamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if base:
         return os.path.abspath(os.path.join(base, store_name, stamp))
-    return os.path.abspath(os.path.join(ROOT, "downloads", store_name, stamp))
+    return layout.run_folder(store_name, stamp)
 
 
 # Distinguishable from a route's own None, which means "nothing to do" rather

@@ -182,6 +182,11 @@ def write_pagos(path):
 
 @pytest.fixture
 def mx_folder(tmp_path):
+    return make_mx_folder(tmp_path)
+
+
+def make_mx_folder(tmp_path):
+    """The synthetic Mexican download folder (also used by test_results_writers)."""
     f = tmp_path / "STORE_MX" / "20261013_m202609"
     f.mkdir(parents=True)
     write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"), sept_rows())
@@ -336,6 +341,63 @@ def test_chile_cover_passes_with_cut_day(tmp_path):
     ck = dict((c["key"], c) for c in model.validate(S))
     assert ck["invoice_cover"]["ok"], ck["invoice_cover"]["detail"]
     assert S["m"]["ledger"] == pytest.approx(40.0)          # Sep 1, 7 (Sept file) + Sep 8, 30 (Oct file)
+
+
+def _cover(folder, site="pe"):
+    S = model.load("NEW", str(folder), "2026-09", site)
+    model.derive(S)
+    return dict((c["key"], c) for c in model.validate(S))["invoice_cover"]
+
+
+def _storage(days, month=9):
+    return [inv_row(d, "n%d_%d" % (month, d), "Cargo por servicio de almacenamiento Full", 10.0, deducted="No",
+                    month=month) for d in days]
+
+
+def test_cover_new_store_first_charge_mid_month_passes(tmp_path):
+    """A store opened 2026-09-17: its first bill is September's, nothing earlier exists."""
+    f = tmp_path / "NEW"
+    f.mkdir()
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"), _storage((17, 25, 30)))
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Oct2026.xlsx"), _storage((1, 5), month=10))
+    c = _cover(f)
+    assert c["ok"], c["detail"]
+    assert "新开的店" in c["detail"] and "2026-09-17" in c["detail"]
+
+
+def test_cover_old_store_with_august_bill_and_late_start_fails(tmp_path):
+    """An August bill exists, yet September's charges only start on the 17th: a bill
+    or rows are missing — still an error."""
+    f = tmp_path / "OLD"
+    f.mkdir()
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Ago2026.xlsx"), _storage((1, 15), month=8))
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"), _storage((17, 30)))
+    c = _cover(f)
+    assert not c["ok"] and c["severity"] == "error"
+
+
+def test_cover_missing_month_bill_fails(tmp_path):
+    """Only October's bill (first charge Oct 1): September's bill is missing."""
+    f = tmp_path / "MISS"
+    f.mkdir()
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Oct2026.xlsx"), _storage((1, 20), month=10))
+    assert not _cover(f)["ok"]
+
+
+def test_cover_chile_new_store_first_bill_is_next_cycle_fails(tmp_path):
+    """Chile: the first bill present is October's (cycle from Sep 24) — the
+    September bill (the one holding Sep 1) is missing, whatever the store's age."""
+    f = tmp_path / "CLN"
+    f.mkdir()
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Oct2026.xlsx"), _storage((24, 30)))
+    assert not _cover(f, "cl")["ok"]
+
+
+def test_cover_new_store_still_needs_month_end(tmp_path):
+    f = tmp_path / "NEWEND"
+    f.mkdir()
+    write_invoice(str(f / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx"), _storage((17, 20)))
+    assert not _cover(f)["ok"]          # charges stop on the 20th and no October bill: not proven
 
 
 # ------------------------------------------------------------------ workbook
