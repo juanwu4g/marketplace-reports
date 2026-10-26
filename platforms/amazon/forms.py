@@ -24,6 +24,7 @@ import traceback
 from core import browser_kit as bk
 from core import download_diag
 from platforms.amazon import periods
+from selenium.common.exceptions import WebDriverException
 
 REPOSITORY = "/payments/reports-repository"
 FEE_INVOICES = "/tax/seller-fee-invoices"
@@ -533,6 +534,14 @@ def fetch_document(ctx, btn):
                           timeout=20, poll=0.5)
         if not url:
             url = "tab:" + d.current_url
+    except WebDriverException as e:
+        # 那个标签页自己关掉了（2026-10-26 实测：'Ver' 开一个标签页触发下载，然后
+        # 马上关闭）。它关掉不等于浏览器没了：主窗口还在，下面照常回到主窗口。
+        # 这里要是把 selenium 的 "no such window" 原样抛出去，会被诊断成
+        # "店铺打不开"，整家店判成要人处理。
+        # 不把 selenium 的原话（"no such window…"）带进错误信息：诊断会把那几个词当成
+        # 浏览器断开（DEAD_SESSION）。
+        url = "tab:closed:" + e.__class__.__name__
     finally:
         for h in new:
             try:
@@ -552,6 +561,9 @@ def fetch_document(ctx, btn):
             os.remove(path)
             return got[0], data
         url = url[4:]
+        if url.startswith("closed:"):
+            raise bk.PageError("'Ver' 开的标签页在读到地址之前就自己关掉了，也没有文件落盘（%s）"
+                               % url[7:])
         if not url.startswith("http"):
             raise bk.PageError("document tab opened %r" % url[:120])
     d.set_script_timeout(90)

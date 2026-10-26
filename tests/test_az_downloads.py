@@ -220,3 +220,56 @@ def test_owed_stock_takes_only_a_csv_newer_than_the_request():
     assert forms.owed_stock_row(e, [old]) is None
     assert forms.owed_stock_row(e, [_stock_row("01/11/26", ready=False), old]) is None
     assert forms.owed_stock_row({"route": "stock"}, [old]) is old         # old entry: as before
+
+
+class _SelfClosingTab(object):
+    """'Ver' opens a tab that triggers the download and closes itself at once:
+    the handle shows up, then every call on it says the window is gone."""
+    def __init__(self):
+        self.calls, self.current = 0, "main"
+        self.switch_to = self
+
+    @property
+    def window_handles(self):
+        self.calls += 1
+        return ["main", "tab"] if self.calls == 2 else ["main"]   # 1: before; 2: after the click
+
+    @property
+    def current_window_handle(self):
+        return self.current
+
+    def window(self, h):
+        from selenium.common.exceptions import NoSuchWindowException
+        if h != "main":
+            raise NoSuchWindowException("no such window: target window already closed")
+        self.current = h
+
+    @property
+    def current_url(self):
+        from selenium.common.exceptions import NoSuchWindowException
+        raise NoSuchWindowException("no such window: target window already closed")
+
+    def close(self):
+        pass
+
+
+def test_a_document_tab_that_closes_itself_is_a_page_error_not_a_dead_browser(tmp_path, monkeypatch):
+    from core import browser_kit as bk
+    d = _SelfClosingTab()
+    ctx = type("Ctx", (), {})(); ctx.d, ctx.out_dir = d, str(tmp_path)
+    monkeypatch.setattr(forms.bk, "real_click", lambda d, b: None)
+    monkeypatch.setattr(forms.bk, "wait_for", lambda fn, timeout=0, poll=0: (lambda r: r if r else None)(_try(fn)))
+    monkeypatch.setattr(forms.bk, "wait_new_files", lambda *a, **k: [])
+    with pytest.raises(bk.PageError) as e:
+        forms.fetch_document(ctx, object())
+    assert "自己关掉了" in str(e.value)
+    assert d.current == "main"                                   # back on the main window
+    # the diagnosis must not call this a dead browser
+    assert not download_diag.DEAD_SESSION.search(str(e.value))
+
+
+def _try(fn):
+    try:
+        return fn()
+    except Exception:
+        return None
