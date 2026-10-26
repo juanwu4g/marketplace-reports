@@ -14,6 +14,8 @@ import re
 import time
 import traceback
 
+from selenium.common.exceptions import TimeoutException
+
 from core import browser_kit
 from core import download_diag
 from platforms.falabella import login
@@ -106,10 +108,22 @@ def guarded(ctx, route, forms, fn, *a):
 
 # ================================================================ language gate
 
+FIRST_LOAD_CAP = 60       # seconds the first page of a store may take to load
+
+
 def check_language(ctx):
     """Open the payments page and read data-localefull. Not Spanish -> raise."""
-    ctx.go(PAYMENTS)
-    if login.on_login_page(login.current_url(ctx.d)) and login.sign_in(ctx):
+    # 登录过期时这一下会落到会无限重载的统一登录页（login.py）：Selenium 默认等
+    # 300 秒才放弃，然后整家店失败、自动登录根本没试。先把等待压到 60 秒，超时
+    # 也照样看看停在哪儿 —— 在登录页就去登录。地址要在压低的时限里读：页面还在
+    # 转圈时，读地址也要等它。
+    with pk.page_load_cap(ctx.d, FIRST_LOAD_CAP):
+        try:
+            ctx.go(PAYMENTS)
+        except TimeoutException:
+            ctx.log("  付款页 %d 秒没加载完，看看是不是停在登录页" % FIRST_LOAD_CAP)
+        url = login.current_url(ctx.d)
+    if login.on_login_page(url) and login.sign_in(ctx):
         ctx.go(PAYMENTS)
     info = pk.wait_for(lambda: pk.page_locale(ctx.d), timeout=60, poll=2)
     if not info:
@@ -275,14 +289,41 @@ def orders_chunk(ctx, form, a, b):
     t0 = time.time()
     pk.js_click(d, xlsx)
     got = pk.wait_new_files(ctx.out_dir, before, timeout=300, settle=3)
+    land_order_export(ctx, form, a, b, before, got, t0)
+
+
+def land_order_export(ctx, form, a, b, before, got, t0):
+    """Name the export of a..b Ordenes_<period>.xlsx, or give the chunk up."""
+    got, late = own_new_files(before, got)
+    if late:
+        ctx.log("  [提醒] %s 是上一段订单晚到的文件，不算这一段的" % "、".join(late))
+        if not got:
+            # 这一段自己的文件可能还没开始下：把晚到的算进"之前"，再等一次
+            before = set(before) | set(late)
+            got, _ = own_new_files(before, pk.wait_new_files(ctx.out_dir, before,
+                                                             timeout=300, settle=3))
     if not got:
         ctx.give_up(form, "download-not-landed", step="订单导出 %s..%s" % (a, b))
         return
     if len(got) != 1:
-        ctx.log("  [提醒] 订单导出得到 %d 个文件：%s" % (len(got), got))
+        # 分不清哪个是这一段的：宁可这一段算没下到，也不能把别的时段的订单
+        # 当成 Ordenes_<这一段>
+        ctx.give_up(form, "file-rejected", files=got,
+                    step="订单导出 %s..%s 得到 %d 个新文件（%s），分不清哪个是这一段的"
+                         % (a, b, len(got), "、".join(got)))
+        return
     name = ctx.rename(got[0], "Ordenes_%s.xlsx" % periods.period_id(a, b))
     ctx.log("  订单 %s..%s -> %s（%d 秒）" % (a, b, name, time.time() - t0))
     ctx.got(form, [name])
+
+
+def own_new_files(before, got):
+    """Split wait_new_files' answer into (ours, late). A file whose name is a
+    partial download (x.crdownload) that was already in the folder before the
+    click is the previous export finishing late, not this one."""
+    half = {f[:-len(p)] for f in before for p in pk.PARTIAL if f.endswith(p)}
+    return ([f for f in got if f not in half and not f.endswith(pk.PARTIAL)],
+            [f for f in got if f in half])
 
 
 def retried(ctx, what, fn, *a, attempts=2):
@@ -392,6 +433,8 @@ def request_payments_report(ctx, menu_key, prefix):
     pk.js_click(d, btn)
     time.sleep(6)
     pk.close_popups(d)
+    # 表格还没画出来时读到的是"没有行"，之后任何一行旧的 Listo 都会被当成新的
+    pk.wait_download_rows(d)
     before = ([r for r in pk.download_rows(d) if r.startswith(prefix)] or [None])[0]
     pk.js_click(d, pk.need(d, "[data-testid=export-btn-id]", what="Descargar reporte"))
     item = pk.wait_for(lambda: [e for e in pk.find(d, "li[role=menuitem]")
@@ -412,6 +455,15 @@ def request_payments_report(ctx, menu_key, prefix):
     return before
 
 
+def new_tx_rows(rows, before, since):
+    """The Transacciones rows that can be ours: listed above the row that was
+    newest before the request (by file name — an older request that was still
+    Procesando then and is Listo now is not ours), and not made well before the
+    request (the file name carries its time; FORMS.md). Newest first."""
+    rows = pk.rows_above(rows, pk.file_name_of_row(before) if before else None)
+    return [r for r in rows if pk.row_not_older_than(r, since)]
+
+
 def download_row(ctx, row_text, timeout=90):
     """Click the download button of the downloads row with this file name."""
     name = pk.file_name_of_row(row_text)
@@ -430,13 +482,16 @@ def billing(ctx):
     _payments_ready(ctx)
     shown = pick_payments_range(ctx, "Fecha transacción", a, b)
     ctx.log("  Transacciones：%s" % shown)
+    asked = time.time()
     before = request_payments_report(ctx, "alltransactionsV2", "NewReportTransaction")
     requested = time.time()
     row, state = pk.wait_new_ready_row(ctx.d, before, timeout=ctx.collect_timeout,
-                                       prefix="NewReportTransaction")
+                                       prefix="NewReportTransaction",
+                                       select=lambda rows: new_tx_rows(rows, before, asked))
     if state != "ready":
         ctx.log("  Transacciones 还没生成好（%s），记为欠账" % state)
         ctx.pending.append({"form": form, "route": "billing", "row": row,
+                            "seen_before": before,
                             "range": ctx.month, "requested_at": requested,
                             "last_state": "generating" if row else "absent",
                             "probes": 1})
@@ -467,6 +522,7 @@ def stock(ctx):
     if not header:
         raise pk.PageError("Fulfillment 'Descargar' dropdown not found")
     exports = lambda: d.execute_script(_EXPORTS) or []
+    pk.wait_for(exports, timeout=10)      # read "before" from the rendered list, not an empty one
     before = (exports() or [[None, None]])[0][1]
     item = None
     for _ in range(3):              # the first click is lost while the page is still loading
@@ -496,6 +552,7 @@ def stock(ctx):
             ctx.go(FULFILLMENT, settle=10)
     if not newest:
         ctx.pending.append({"form": form, "route": "stock", "row": None,
+                            "seen_before": before,
                             "range": ctx.month, "requested_at": requested,
                             "last_state": "generating", "probes": 1})
         ctx.log("  库存导出还没完成，记为欠账")
@@ -869,24 +926,46 @@ def collect_owed(ctx, entry):
     """Try once more to fetch an owed async report. Returns files, or [] if still not ready."""
     if entry["route"] == "billing":
         _payments_ready(ctx)
-        name = pk.file_name_of_row(entry.get("row") or "")
+        pk.wait_download_rows(ctx.d)
         rows = [r for r in pk.download_rows(ctx.d) if r.startswith("NewReportTransaction")]
-        if name:
-            match = [r for r in rows if r.startswith(name)]
-        else:
-            # we never saw the row: the first one requested after the request time
-            match = rows[:1] if rows else []
-        if match and "Listo" in match[0]:
-            return download_row(ctx, match[0])
+        match = owed_tx_row(entry, rows)
+        if match and "Listo" in match:
+            return download_row(ctx, match)
         return []
     if entry["route"] == "stock":
         ctx.go(DASHBOARD, settle=6)
         ctx.go(FULFILLMENT, settle=12)
         rows = ctx.d.execute_script(_EXPORTS) or []
-        if rows and "Finalizado" in rows[0][0]:
-            return fetch_stock_link(ctx, rows[0][1])
+        row = owed_stock_row(entry, rows)
+        if row and "Finalizado" in row[0]:
+            return fetch_stock_link(ctx, row[1])
         return []
     return []
+
+
+def owed_tx_row(entry, rows):
+    """The downloads row of an owed Transacciones request, or None.
+
+    Seen while waiting -> that file name. Never seen -> the oldest row that
+    came after the request (new_tx_rows; a later run's request may sit above
+    it). Entries written before "seen_before" existed: the newest row, as
+    before."""
+    name = pk.file_name_of_row(entry.get("row") or "")
+    if name:
+        return next((r for r in rows if r.startswith(name)), None)
+    if "seen_before" not in entry:
+        return rows[0] if rows else None
+    mine = new_tx_rows(rows, entry["seen_before"], entry.get("requested_at"))
+    return mine[-1] if mine else None
+
+
+def owed_stock_row(entry, rows):
+    """The Fulfillment export of an owed stock request, or None: the newest
+    export listed above the one that was newest before the request (an export
+    older than the request is a stale snapshot). Old entries: the newest."""
+    if "seen_before" in entry:
+        rows = pk.rows_above(rows, entry["seen_before"], key=lambda r: r[1])
+    return rows[0] if rows else None
 
 
 ROUTES = (("order", orders), ("billing", billing), ("stock", stock),
