@@ -59,6 +59,11 @@ def test_ziniao_platform_names():
     assert markets.ziniao_matches("FA", None)            # nothing said, nothing contradicted
     assert markets.platform_from_ziniao("falabella-智利") == "FA"
     assert markets.platform_from_ziniao("沃尔玛-墨西哥") is None
+    # Liverpool stores are Ziniao custom-platform stores: accepted, never guessed
+    assert markets.ziniao_matches("LV", "自定义平台")
+    assert not markets.ziniao_matches("ML", "自定义平台")
+    assert not markets.ziniao_matches("LV", "MercadoLibre-墨西哥-本土")
+    assert markets.platform_from_ziniao("自定义平台") is None
 
 
 # ------------------------------------------------------------ legacy config

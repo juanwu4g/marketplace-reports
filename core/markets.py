@@ -32,7 +32,15 @@ PLATFORMS = collections.OrderedDict([
     # Ziniao names Amazon's platforms in Chinese: "亚马逊-墨西哥".
     ("AZ", Platform("AZ", "platforms.amazon", "亚马逊", "Amazon",
                     re.compile(r"amazon|亚马逊", re.I), ("MX",))),
+    # Liverpool's stores are Ziniao "custom platform" stores (GENERIC_ZINIAO).
+    ("LV", Platform("LV", "platforms.liverpool", "利物浦", "Liverpool",
+                    re.compile(r"liverpool|^自定义平台$", re.I), ("MX",))),
 ])
+
+# Ziniao's name for a store whose platform it does not know ("custom platform").
+# It says nothing about the platform: a pattern may accept it (Liverpool's does),
+# but it never suggests one (platform_from_ziniao).
+GENERIC_ZINIAO = re.compile(r"^自定义平台$")
 
 COUNTRIES = collections.OrderedDict([
     ("MX", "墨西哥"),
@@ -130,6 +138,8 @@ def ziniao_matches(platform_code, ziniao_platform_name):
 def platform_from_ziniao(ziniao_platform_name):
     """Best guess of our platform code from Ziniao's name, or None. Used only to
     suggest config entries (list_stores), never to decide what runs."""
+    if ziniao_platform_name and GENERIC_ZINIAO.search(str(ziniao_platform_name).strip()):
+        return None
     for p in PLATFORMS.values():
         if ziniao_platform_name and p.ziniao_pattern.search(str(ziniao_platform_name)):
             return p.code

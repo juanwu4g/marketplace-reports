@@ -132,6 +132,8 @@ SERVER_ERROR = re.compile(
     r"\b50[0234]\b|service (temporarily )?unavailable|bad gateway|"
     r"gateway time-?out|internal server error", re.I)
 BLOCKED_TITLE = re.compile(
+    # "Access Denied": the edge network (Akamai) in front of a portal refusing the browser.
+    r"access denied|"
     r"ingresa a tu cuenta|iniciar sesi[oó]n|inicia sesi[oó]n|\blog ?in\b|\bsign-?in\b|"
     r"verifica|captcha|no es posible acceder|p[aá]gina no encontrada|"
     r"\b40[34]\b|\b50[023]\b|ERR_|no se puede acceder", re.I)
@@ -379,7 +381,15 @@ def _server_error(ev):
     return None
 
 
+# A platform's routes raise an exception of this class when they recognise a sign-in
+# page by its content (fields, buttons) — a page whose address and title say nothing,
+# e.g. Liverpool's SAP supplier portal ("SAP NetWeaver Portal" before and after login).
+NEEDS_LOGIN_CLASSES = ("NeedsLogin",)
+
+
 def _blocked(ev):
+    if ev.get("exception_class") in NEEDS_LOGIN_CLASSES:
+        return "要人登录：%s" % (ev.get("exception") or "")[:100]
     url, title = ev.get("url") or "", ev.get("title") or ""
     if url and BLOCKED_URL.search(url):
         return "地址是 %s" % url[:80]

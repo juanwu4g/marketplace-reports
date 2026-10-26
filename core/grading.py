@@ -58,6 +58,16 @@ NON_BLOCKING_FORMS = {
     ("ML", "bill", "mercadopago/"):
         "账单基准的金额全部来自账单；MercadoPago 报表只用来判断取消/退货状态、补 SKU 映射和备查项，"
         "缺了②不变（订单基准不在此列：它用结算流水修正部分退款）",
+    # Liverpool (2026-10-26): every figure of ② comes from the supplier ledger; the
+    # marketplace lists only place amounts on SKUs (evidence: the 2026-09 report of
+    # Liverpool Report — ② identical with and without them, ⑦ falls back to the
+    # Liverpool article number and to allocation by sales).
+    ("LV", "*", "orders"):
+        "订单列表只用于卖家 SKU 编码、订单口径 GMV 和③桥 A；②的金额全部来自 Liverpool 账本",
+    ("LV", "*", "logistics"):
+        "物流费明细只用于把运费逐单归到 SKU 和③桥 D；②的物流费来自 Liverpool 账本",
+    ("LV", "*", "balance"):
+        "补充物流费明细只用于把补收运费逐单归到 SKU；②的金额来自 Liverpool 账本",
 }
 
 # Causes of a missing form that are not a gap: there was nothing to download

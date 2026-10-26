@@ -33,11 +33,12 @@ asks those functions; it never spells a name itself.
 | `ML` | MercadoLibre | 美客多 | MX, CL, PE |
 | `FA` | Falabella | Falabella | CL |
 | `AZ` | Amazon | 亚马逊 | MX |
+| `LV` | Liverpool | 利物浦 | MX |
 
 Country codes are ISO 3166-1 alpha-2 (`MX`, `CL`, `PE`, `CO` …). Codes appear in
 file names that finance keeps for years and in `config.json`: **once used, a code
 never changes.** A new platform picks a new two-letter code (proposals: `TT` TikTok
-Shop, `TM` Temu, `WM` Walmart, `AZ` Amazon, `SH` SHEIN) and registers it in
+Shop, `TM` Temu, `WM` Walmart, `SH` SHEIN) and registers it in
 `core/markets.py`.
 
 **Files.**

@@ -17,6 +17,7 @@ from core import store_config
 
 import test_az_report as AZT
 import test_fa_report as FAT
+import test_lv_report as LVT
 import test_ml_bill_report as BT
 import test_reports_build as OT
 
@@ -213,6 +214,24 @@ def test_falabella_figures_are_the_workbooks(tmp_path):
     assert "订单数（不含已取消）" not in [x["label"] for x in fig["memo"]]     # a count, not an amount
     assert fig["inventory"]["sold_window_days"] == 28 and fig["inventory"]["rows"]
     assert fig["returns"] and all(isinstance(x["count"], int) for x in fig["returns"])
+
+
+def test_liverpool_figures_are_the_workbooks(tmp_path):
+    folder = LVT.make_folder(tmp_path)
+    r, out = LVT.build(folder, tmp_path)
+    rec = r["results"][LVT.STORE]
+    assert rec["error"] is None and rec["folder"] == folder
+    fig = rec["figures"]
+    assert_data_rows_and_memo(fig, out)
+    m = r["metrics"][LVT.STORE]
+    p = dict((x["key"], x["value"]) for x in fig["pl"])
+    assert p["contrib"] == pytest.approx(m["contrib"]) and p["net_sales"] == pytest.approx(m["net_sales"])
+    assert p["withheld"] == pytest.approx(m["pl"]["withheld"])
+    assert p["profit_after_wh"] == pytest.approx(m["contrib"] + m["pl"]["withheld"])
+    assert sum(x["contribution"] for x in fig["sku"]) == pytest.approx(m["contrib"])
+    assert p["fee_total"] == pytest.approx(sum(f["amount"] for f in fig["fees"]))
+    assert all(f["pl_key"] in p for f in fig["fees"])
+    assert fig["inventory"] is None and fig["returns"]
 
 
 @pytest.fixture
