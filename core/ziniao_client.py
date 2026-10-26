@@ -20,6 +20,8 @@ Typical use:
 """
 import io
 import json
+import socket
+import re
 import os
 import platform
 import subprocess
@@ -150,6 +152,10 @@ class ZiniaoClient(object):
         except Exception:
             return None
 
+    # 紫鸟说"本地时间与服务器时间有差异"（这台机器重启后时钟偏了 12 小时就见过）：
+    # 它什么店都不会开，重试也没用。要人把 Windows 时间同步一下。
+    CLOCK_SKEW_RE = re.compile(r"时间.{0,12}差异|时间不一致|clock.{0,20}(skew|differ)", re.I)
+
     def _require_ok(self, resp, what):
         if resp is None:
             raise self._error("%s: no response from client" % what, what, None)
@@ -157,6 +163,10 @@ class ZiniaoClient(object):
         if code == 0:
             return resp
         text = json.dumps(resp, ensure_ascii=False)[:300]
+        if self.CLOCK_SKEW_RE.search(text):
+            raise self._error("%s: 紫鸟说本地时间与服务器时间有差异，不会打开任何店铺。"
+                              "把这台电脑的 Windows 时间同步（设置 → 时间和语言 → 立即同步）"
+                              "后再跑：%s" % (what, text), "clock_skew", text)
         if code == -10003:
             raise self._error("%s: login/permission error: %s" % (what, text),
                               what, text)
@@ -359,11 +369,32 @@ class ZiniaoClient(object):
         while True:
             resp = self.send(dict(request), timeout=300)
             if (resp is None or resp.get("statusCode") != -10000 or not waits):
-                return self._require_ok(resp, "startBrowser")
+                try:
+                    return self._require_ok(resp, "startBrowser")
+                except ZiniaoError:
+                    # 没回应（HTTP 超时）或重试用尽：紫鸟可能稍后还是把窗口开出来了
+                    # （内核下载完），那个窗口会占着代理、留在下一家店旁边。顺手关一下，
+                    # 没开着也无妨。
+                    if resp is None or resp.get("statusCode") == -10000:
+                        self._close_quietly(request.get("browserOauth"))
+                    raise
             wait = waits.pop(0)
             print("  紫鸟回了「未知错误」(-10000) —— 多半是这家店的内核还在下载，"
                   "%d 秒后再试（还可再试 %d 次）" % (wait, len(waits) + 1))
             time.sleep(wait)
+
+    def _close_quietly(self, oauth):
+        if not oauth:
+            return
+        try:
+            self.send({"action": "stopBrowser", "browserOauth": oauth}, timeout=30)
+        except Exception:
+            pass
+
+    # webdriver 命令的 HTTP 超时。Selenium 默认取 socket.getdefaulttimeout()，即 None：
+    # chromedriver 或内核卡死时任何一个命令都会无限期等下去，整批下载挂到 run_monthly
+    # 5 小时后才被掐。设一个上限，卡住的那一步会抛 (超时) 异常，按一张报表失败处理。
+    COMMAND_TIMEOUT = 600
 
     @contextmanager
     def open_store(self, store, headless=False, close_when_done=True):
@@ -396,6 +427,8 @@ class ZiniaoClient(object):
             opts.add_experimental_option(
                 "debuggerAddress", "127.0.0.1:%s" % info.get("debuggingPort"))
             step = "attach_webdriver"
+            if socket.getdefaulttimeout() is None:
+                socket.setdefaulttimeout(self.COMMAND_TIMEOUT)
             driver = webdriver.Chrome(service=Service(drv_path), options=opts)
             driver.implicitly_wait(20)
         except BaseException as e:

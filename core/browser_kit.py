@@ -199,13 +199,20 @@ def wait_new_files(path, before, timeout=90, settle=3, start_timeout=None):
     start_timeout  give up early when no download (not even a partial file) has
                    started after that many seconds
     Returns the sorted new names; at timeout, whatever was complete by then.
+
+    A file that was still partial (`export.xlsx.crdownload`) when `before` was
+    taken is the PREVIOUS click's download, not this one: when the browser
+    renames it to `export.xlsx` that name is "new" by set difference, so the
+    next route used to take the last route's late file as its own. Such names
+    are excluded (their stem was already downloading).
     """
     began = time.time()
     end = began + timeout
     seen, changed = set(), time.time()
+    earlier = {f[:-len(ext)] for f in before for ext in PARTIAL if f.endswith(ext)}
     while time.time() < end:
         time.sleep(1)
-        new = snapshot(path) - set(before)
+        new = snapshot(path) - set(before) - earlier
         if start_timeout and not new and time.time() - began >= start_timeout:
             return []
         done = {f for f in new if not f.endswith(PARTIAL)}

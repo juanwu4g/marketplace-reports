@@ -169,3 +169,16 @@ def test_core_browser_kit_names_no_platform():
     src = open(bk.__file__, encoding="utf-8").read().lower()
     for word in ("sellercenter", "mercadolibre", "español", "listo", "idioma"):
         assert word not in src, word
+
+
+def test_wait_new_files_ignores_a_partial_that_was_already_downloading(tmp_path, fast):
+    """A file still .crdownload before the click belongs to the previous route;
+    once the browser renames it, it must not count as this route's download."""
+    (tmp_path / "export.xlsx.crdownload").write_bytes(b"x")
+    before = bk.snapshot(tmp_path)
+    (tmp_path / "export.xlsx.crdownload").unlink()
+    (tmp_path / "export.xlsx").write_bytes(b"late file of the previous route")
+    (tmp_path / "ours.csv").write_bytes(b"this route's file")
+    assert bk.wait_new_files(str(tmp_path), before, timeout=3, settle=1) == ["ours.csv"]
+    assert bk.wait_new_files(str(tmp_path), bk.snapshot(tmp_path), timeout=2, settle=1,
+                             start_timeout=1) == []
