@@ -28,6 +28,9 @@ RULES = [
     ("店铺没打开", {"signal": "store-open", "exception_class": "ZiniaoError",
                 "exception": "startBrowser failed: {...}", "step": "startBrowser"},
      {}, "STORE_OPEN_FAILED"),
+    ("电脑时间不对", {"signal": "store-open", "exception_class": "ZiniaoError",
+                 "exception": "startBrowser: 紫鸟说本地时间与服务器时间有差异…", "step": "clock_skew"},
+     {}, "CLOCK_SKEW"),
     ("浏览器中途断开", {"signal": "exception", "exception_class": "WebDriverException",
                  "exception": "invalid session id"}, {}, "STORE_OPEN_FAILED"),
     ("登录页（URL）", {"signal": "ui-missing",
@@ -692,3 +695,10 @@ def test_select_all_that_did_not_take_is_retried(monkeypatch, tmp_path, capsys):
     assert len(calls) == 2, "第一次没勾上，要再看一次"
     assert "全选没有生效（第 1 次）" in out and "已勾选报表（4）" in out
     assert got == ["a", "b", "c", "d"]
+
+
+def test_clock_skew_is_a_human_action_with_the_fix():
+    acts = dd.human_actions([{"store": "S", "status": "failed",
+                              "missing": [{"form": "ventas", "cause": "CLOCK_SKEW"}]}])
+    assert acts and acts[0]["title"] == "电脑时间不对" and "同步" in acts[0]["how"]
+    assert acts[0]["rerun"] is True

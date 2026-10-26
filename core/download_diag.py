@@ -38,6 +38,9 @@ DIAG_DIR = "_diag"
 #
 #   code: (一句话解释, 谁的问题, 过会儿重试有没有用, 操作员下一步)
 CAUSES = {
+    "CLOCK_SKEW": (
+        "紫鸟说这台电脑的时间和服务器对不上，不会打开任何店铺", "紫鸟", True,
+        "同步 Windows 时间（设置 → 时间和语言 → 日期和时间 → 立即同步），再重跑"),
     "STORE_OPEN_FAILED": (
         "店铺浏览器没打开，或中途断开", "紫鸟", True,
         "确认紫鸟客户端已登录、这家店能手动打开，再重跑这家店"),
@@ -433,6 +436,8 @@ def _decide(ev, ctx):
     # 1. 过期、店铺没打开：和页面无关
     if signal == "expired":
         return "EXPIRED", "申请于 %s" % (_iso(ctx.get("requested_at")) or "未知时间")
+    if signal == "store-open" and ev.get("step") == "clock_skew":
+        return "CLOCK_SKEW", (exc_text or "本地时间与服务器时间有差异")[:200]
     if signal == "store-open":
         return "STORE_OPEN_FAILED", "%s%s%s" % (
             "卡在 %s；" % ev["step"] if ev.get("step") else "",
@@ -593,6 +598,9 @@ def classify(evidence, context=None):
 # 要人动手才能好的原因：(标题, 怎么处理, 处理完重跑有没有用)。
 # 这几种脚本自己永远解决不了 —— 不让人一眼看到，就会每个月原样失败一次。
 HUMAN = {
+    "CLOCK_SKEW": ("电脑时间不对",
+                   "紫鸟不会开任何店铺：同步这台电脑的 Windows 时间（设置 → 时间和语言 → 立即同步）",
+                   True),
     "PAGE_BLOCKED": ("要登录 / 验证",
                      "点「打开勾选的店铺」，在弹出的店铺窗口里按页面提示完成登录或验证",
                      True),
