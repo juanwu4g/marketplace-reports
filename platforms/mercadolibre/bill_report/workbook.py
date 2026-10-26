@@ -59,7 +59,8 @@ def pl_rows(S):
           "买家付给卖家的运费（随销售行列出）；平台的全额运费在下面“平台运费”里扣"),
         R("ship_income_rev", "减：冲销订单的买家运费", "Envío a cargo del cliente × 冲销比例", "d", ""),
         R("seller_discount", "减：卖家承担的优惠（账单之外）", "Descuentos y bonificaciones < 0 · Ventas", "d",
-          "账单不含：取自销售报表本月计费销售的“Descuentos y bonificaciones”负数部分；冲销的销售按冲销比例冲回；"
+          "账单不含：取自销售报表本月计费销售的“Descuentos y bonificaciones”负数部分；这一列是空的时候"
+          "（墨西哥、智利），按每笔订单的 Total 与其余金额列之差倒推（换货单除外）；冲销的销售按冲销比例冲回；"
           "包裹订单按各商品金额分摊"),
         R("platform_subsidy", "加：平台补贴（账单之外）", "Descuentos y bonificaciones > 0 · Ventas", "d",
           "账单不含：同一列的正数部分（平台给卖家的补贴，如秘鲁 Flex 运费补贴）；冲销同上"),
@@ -227,7 +228,9 @@ def readme_sections(S, ctx):
              if p.withholding else ("%s平台不代扣税，账单里也没有代扣行；②代扣税金行为 0。" % p.country_cn)),
             ("卖家优惠与平台补贴", "账单的 Total de la venta 是标价金额，不含卖家自己出的优惠和平台给的补贴。两者取自销售报表"
                               "（Ventas）每笔订单的“Descuentos y bonificaciones”：负数 ＝ 卖家承担的优惠，正数 ＝ 平台补贴"
-                              "（如秘鲁 Flex 运费补贴）。按销售的佣金计费日计入，冲销按比例冲回；多商品包裹的金额在包裹行上，"
+                              "（如秘鲁 Flex 运费补贴）。墨西哥、智利的销售报表把这一列导出成空白：卖家优惠券就按每笔订单"
+                              "倒推 ＝ Total −（商品收入 ＋ 佣金及税 ＋ 运费收入 ＋ 运费 ＋ 退款），差为负数时计入；换货单的差额是"
+                              "换货运费，不计；差为正数的列在⑩待查。按销售的佣金计费日计入，冲销按比例冲回；多商品包裹的金额在包裹行上，"
                               "按各商品“件数 × 单价”分摊；随销售归到 SKU。不在销售报表里的销售按 0 计（⑩列出）。"),
             ("销售额", "一笔销售在它的“Cargo por venta”（佣金）行的计费日计入；金额取该行的 Total de la venta"
                        "（＝ 数量 × 单价，已逐行验证）。账单没有单独的销售收入行，佣金行就是销售的凭证。"),
@@ -257,7 +260,8 @@ def readme_sections(S, ctx):
              "后按“计费件数 − 发货前取消 − 退回后重新上架件数”× 单位成本自动填入。"),
         ]),
         ("六、账单之外的数据", [
-            ("已纳入：卖家承担的优惠", "销售报表“Descuentos y bonificaciones”的负数部分 → ②“减：卖家承担的优惠”、⑦按 SKU。"),
+            ("已纳入：卖家承担的优惠", "销售报表“Descuentos y bonificaciones”的负数部分，或这一列空白时按 Total 倒推的"
+                                   "优惠券 → ②“减：卖家承担的优惠”、⑦按 SKU。"),
             ("已纳入：平台补贴", "同一列的正数部分 → ②“加：平台补贴”、⑦按 SKU。"),
             ("已纳入：代扣税", "MercadoPago 结算 TAXES_AMOUNT → ②“平台代扣代缴税金”、⑦按 SKU（见五）。" if p.withholding
              else "不适用（本国平台不代扣）。"),

@@ -300,6 +300,43 @@ def test_store_level_costs_direct_and_allocated(mx_folder):
     assert sum(x["contrib"] for x in sk.values()) == pytest.approx(S["m"]["pl"]["contrib"])
 
 
+def test_coupon_derived_from_the_total_when_the_column_is_blank(mx_folder):
+    """Mexico's export leaves Descuentos y bonificaciones blank: a seller coupon shows
+    only as a gap between Total and the other money columns (EWTTO_SM 2026-09: −40
+    per order). It is the sale's seller discount; an exchange order's gap is not."""
+    from openpyxl import load_workbook
+    p = os.path.join(mx_folder, "20261013_Ventas_MX_Mercado_Libre_y_Mercado_Shops_x.xlsx")
+    wb = load_workbook(p)
+    ws = wb.active
+    hdr = [c.value for c in ws[6]]
+    col = len(hdr) + 1
+    ws.cell(row=6, column=col, value="Total (MXN)")
+    for r in range(7, ws.max_row + 1):
+        sale = ws.cell(row=r, column=1).value
+        if sale == "1001":       # 200 − 39.05 − 20: no gap
+            ws.cell(row=r, column=col, value=140.95)
+        if sale == "1005":       # 80 − 19.24 + 5 − 40: a coupon of 40
+            ws.cell(row=r, column=col, value=25.76)
+        if sale == "1002":       # an exchange: its gap is the exchange's shipping
+            ws.cell(row=r, column=3, value="Venta con solicitud de cambio")
+            ws.cell(row=r, column=col, value=300 - 72.16 - 100)
+    wb.save(p)
+    S = derive(mx_folder)
+    out, pl = S["outside"], S["m"]["pl"]
+    assert out["1001"]["coupon"] == 0 and out["1001"]["discount"] == pytest.approx(-20)
+    assert out["1005"]["coupon"] == pytest.approx(-40) and out["1005"]["discount"] == pytest.approx(-40)
+    assert out["1005"]["subsidy"] == pytest.approx(5)
+    assert out["1002"]["coupon"] == 0 and out["1002"]["gap_kind"] == "exchange"
+    # 1001 −20, 1003 −4 given back with its return, 1005 −40 (reversed only in October)
+    assert pl["seller_discount"] == pytest.approx(-60)
+    g = S["m"]["ventas_gaps"]
+    assert g["coupon"] == [1, pytest.approx(-40)] and g["exchange"][0] == 1
+    for k, v in model.residuals(S).items():
+        assert abs(v) < 1e-6, k
+    check = dict((c["key"], c) for c in model.validate(S))["derived_discount"]
+    assert check["ok"] and "1 笔有卖家优惠" in check["detail"] and "换货单" in check["detail"]
+
+
 def test_amounts_outside_the_bill(mx_folder):
     """Seller coupons and platform bonuses from the sales export, withheld tax from the
     settlement (else derived from the export), each following its sale like its Total."""
