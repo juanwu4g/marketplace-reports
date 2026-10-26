@@ -133,7 +133,7 @@ from core import console  # noqa: F401  中文输出编码保护
 from core import layout
 from core import runlog
 # 见上：故意的前置 import，用来在下载之前就验证报表侧能不能加载。
-from platforms.mercadolibre.run_reports import prev_month, OUT_DIR
+from platforms.mercadolibre.run_reports import prev_month
 
 from core.paths import ROOT
 
@@ -143,9 +143,16 @@ PLATFORM_PKG = "platforms.mercadolibre"
 LOG_DIR = layout.logs_dir()
 LOCK = os.path.join(LOG_DIR, "monthly.lock")
 
-# 锁超过这个时长就认为是上次被强杀留下的残骸，直接接管。计划任务的超时是
-# 6 小时，这里留足余量。
-STALE_HOURS = 8
+# 锁的心跳（文件修改时间）停了这么久，就认为拿着它的那一轮已经不在了，接管。
+# 跑着的一轮每 HEARTBEAT 秒碰一下锁文件（和 current.json 一起，见 heartbeat()），
+# 子进程之间的收尾也就几秒钟，所以半小时没动静只剩两种可能：上次被强杀、PID
+# 又被系统分给了别的程序（断电重启后常见），或者运行器自己挂死了 —— 三种都不该
+# 让后面的每一轮退出码 5。以前按"锁有多老"算（8 小时）：一轮 ALL 跑超过 8 小时，
+# 第二轮会在它还在跑的时候接管；而 PID 被复用的残骸又能挡 8 小时。
+LOCK_QUIET = 30 * 60
+# 锁文件是空的 / 读不出 PID：多半是对方刚 O_EXCL 建好、还没写进内容。给它这么
+# 久；过了还是空的，就是残骸。
+LOCK_EMPTY_GRACE = 60
 
 # 下载这一步最多跑多久，见文件头「自己的时限」。必须小于 win_tasks 里的
 # TIME_LIMIT（6 小时），差出来的那一小时留给出报表和写告警。
@@ -497,8 +504,9 @@ def acquire(say=None):
 
     锁里记了 PID，进程没了就立刻接管。只看文件年龄是不够的：跑批中途被
     强杀（关窗口、任务超时、断电）时锁会留下，而下一次定时运行往往就在几
-    分钟后 —— 实测过一次 10:01 被杀、10:10 的定时任务拿到退出码 5，
-    再按 STALE_HOURS 还要空等 8 小时。
+    分钟后 —— 实测过一次 10:01 被杀、10:10 的定时任务拿到退出码 5。
+    PID 还在也不一定是那一轮：看锁的心跳（修改时间），停了超过 LOCK_QUIET
+    就接管。读不出 PID（空文件）过了 LOCK_EMPTY_GRACE 也接管。
 
     say(级别, 文字) 用来把经过写进日志；不给就 print。
     """
@@ -524,25 +532,30 @@ def acquire(say=None):
                 f.write(body)
             return True
         try:
-            age = (datetime.datetime.now()
-                   - datetime.datetime.fromtimestamp(os.path.getmtime(LOCK)))
-            with io.open(LOCK, encoding="utf-8") as f:
-                who = f.read().strip()
+            age = time.time() - os.path.getmtime(LOCK)
+            who = _lock_body()
         except Exception:
             continue                         # 刚好被对方删了：再抢一次
-        m = re.search(r"pid=(\d+)", who)
-        pid = int(m.group(1)) if m else 0
-        if not alive(pid):
+        pid = _lock_pid(who)
+        if pid <= 0:
+            if age < LOCK_EMPTY_GRACE:
+                # 对方刚建好锁、还没写内容：当它在跑。
+                tell(runlog.WARN, "另一轮正在启动（锁文件刚建好），本次跳过。")
+                return False
+            tell(runlog.INFO, "[提示] 锁文件里没有进程号（%s），是残骸，本次接管。"
+                 % (who or "空文件"))
+        elif not alive(pid):
             tell(runlog.INFO, "[提示] 锁是 %s 留下的，但那个进程已经不在了"
                               "（上次被中断），本次接管。" % (who or "上一次运行"))
-        elif age < datetime.timedelta(hours=STALE_HOURS):
+        elif age < LOCK_QUIET:
             tell(runlog.WARN, "另一轮还在跑（%s），本次跳过。" % (who or "?"))
             tell(runlog.INFO, "确认没有在跑的话，删掉 %s 再试。" % LOCK)
             return False
         else:
-            tell(runlog.WARN, "[警告] 锁已存在 %.1f 小时且进程仍在，超过 %d 小时"
-                              "判为异常，接管。"
-                 % (age.total_seconds() / 3600.0, STALE_HOURS))
+            tell(runlog.WARN, "[警告] 锁（%s）已经 %d 分钟没有心跳，超过 %d 分钟"
+                              "判为异常（那个进程号多半已被别的程序复用，或那一轮"
+                              "卡死了），接管。"
+                 % (who, age // 60, LOCK_QUIET // 60))
         try:
             os.remove(LOCK)
         except OSError:
@@ -551,10 +564,38 @@ def acquire(say=None):
     return False
 
 
-def release():
+def _lock_body():
+    with io.open(LOCK, encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def _lock_pid(body):
+    """锁里记的 PID；没有或读不出来是 0。"""
+    m = re.search(r"pid=(\d+)", body or "")
+    return int(m.group(1)) if m else 0
+
+
+def touch_lock():
+    """锁的心跳：和 current.json 一起碰（见 LOCK_QUIET）。永不抛异常。"""
     try:
-        os.remove(LOCK)
+        os.utime(LOCK, None)
     except OSError:
+        pass
+
+
+def heartbeat(log_dir=None):
+    runlog.touch_current(log_dir)
+    touch_lock()
+
+
+def release():
+    """只放自己的锁。我们卡久了、锁被别的一轮接管了的话，删掉的会是**它的**锁，
+    再来第三轮就会和它同时驱动紫鸟。"""
+    try:
+        if _lock_pid(_lock_body()) != os.getpid():
+            return
+        os.remove(LOCK)
+    except (OSError, ValueError):
         pass
 
 
@@ -668,7 +709,7 @@ def run_child(log, key, cmd, run_id, deadline=None, stores=None,
                     break
                 if t - last_beat >= HEARTBEAT:
                     last_beat = t
-                    runlog.touch_current(log_dir)
+                    heartbeat(log_dir)
     except KeyboardInterrupt:
         # 控制台里按了 Ctrl+C：当成中止处理，不能把子进程丢在那儿。
         ended = "aborted"
@@ -831,6 +872,12 @@ def describe_batch(path):
         attention.append("%d 张不影响报表的文件没下到（平台还在生成，或是报表不读的"
                          "那几种）：%s。需要的话过几个小时在 月度报表.cmd 窗口点「补取欠的"
                          "报表」。" % (n, names(waiting)))
+    late = doc.get("late")
+    if doc.get("collect_only") and isinstance(late, dict) and late.get("still_owed"):
+        # 只补取的一轮（别的平台）：店铺清单是空的，结论全在 late 里。还欠着就是
+        # 平台还在生成 —— 和上面 waiting 同一个道理，只提示，不告警。
+        attention.append("补取后还有 %s 张报表平台没生成好（这次取回 %s 张），过几个小时"
+                         "再点「补取欠的报表」。" % (late.get("still_owed"), late.get("done") or 0))
     tr = doc.get("transform")
     if isinstance(tr, dict) and not tr.get("skipped") and tr.get("ok") is False:
         attention.append("清洗有文件没通过，其余已写入（不影响报表，报表读的是"
@@ -1176,7 +1223,35 @@ def conclude(log, args, month, out_dir, region, st, rec, log_path):
             alert(month, urgent, out_dir, entrance=args.entrance,
                   log_path=log_path, region=region,
                   say=lambda level, text: log.write(E, level, text))
+    if final in (0, 1) and not urgent:
+        clear_alert(log, args, month, out_dir, region)
     return final
+
+
+def clear_alert(log, args, month, out_dir, region):
+    """这个月、这个区域重跑好了：删掉之前那份「！报表异常」，不然财务打开目录
+    看到的还是上次的告警，下次真出事时这个文件已经没人信了（期间报表的告警
+    由 PR.clear_alert 同样处理）。
+
+    只跑了几家店、报表也只出这几家的一轮不删：它证明不了别的店没事。"重跑这些
+    店铺并重出全部报表"（--reports-for all）会给全部店铺重出报表，算数。"""
+    if args.stores and args.reports_for != "all":
+        return None
+    try:
+        p = alert_path(out_dir, month, region)
+        if not os.path.isfile(p):
+            return None
+        os.remove(p)
+    except Exception as e:                                        # noqa: BLE001
+        log.warn(runlog.STEP_END, "[警告] 旧的告警文件删不掉：%s" % str(e)[:120])
+        return None
+    log.info(runlog.STEP_END, "这一轮没有要告警的事，删掉了之前的告警文件：%s" % p)
+    return p
+
+
+def report_ran(steps):
+    """这一轮出报表那一步真跑了吗（被下载硬失败挡住的不算）。"""
+    return any(x.get("step") == "report" for x in steps or [])
 
 
 def period_hook(log, args, month, out_dir, units, plan):
@@ -1337,10 +1412,17 @@ def execute(args, plan=None):
     save()
     stores = args.stores or all_stores or known_stores()
     st = {"worst": 0, "cut": False, "aborted": False}
+    final = None
     try:
-        run_steps(log, args, plan, run_id, stores, doc, st, save)
-    except Exception:
-        internal_error(log, doc, st)
+        try:
+            run_steps(log, args, plan, run_id, stores, doc, st, save)
+        except Exception:
+            internal_error(log, doc, st)
+        if not st["aborted"]:
+            final = conclude(log, args, month, out_dir, region, st, doc, paths["log"])
+            # 期间报表也在锁里生成（和全部国家时一样），而且只在报表那一步真跑了时。
+            if report_ran(steps):
+                period_hook(log, args, month, out_dir, [region], plan)   # never changes `final`
     finally:
         release()
         runlog.clear_current(run_id, LOG_DIR)
@@ -1349,8 +1431,6 @@ def execute(args, plan=None):
     if st["aborted"]:
         # 人为中止不告警：停的人自己知道。
         return finish("aborted", 6)
-    final = conclude(log, args, month, out_dir, region, st, doc, paths["log"])
-    period_hook(log, args, month, out_dir, [region], plan)     # never changes `final`
     return finish("done" if final < 2 else "failed", final)
 
 
@@ -1589,7 +1669,8 @@ def execute_all(args, plans=None):
                 save()
                 break
             final = conclude(rlog, args, month, out_dir, r, st, rec, paths["log"])
-            period_hook(rlog, args, month, out_dir, [r], it["plan"])   # never changes `final`
+            if report_ran(rec["steps"]):
+                period_hook(rlog, args, month, out_dir, [r], it["plan"])   # never changes `final`
             rec.update(status="done" if final < 2 else "failed", exit=final,
                        ended=now(), alert=alert_path(out_dir, month, r)
                        if final and rec["urgent"] else None)
@@ -1633,7 +1714,85 @@ def execute_all(args, plans=None):
 
 
 def main(argv=None):
-    return execute(parse_args(argv))
+    """命令行入口。运行器自己没接住的异常也要落到看得见的地方：一份告警文件、
+    一个说得清的退出码（配置错误 4，别的 2）。Python 自己的退出码 1 在窗口和
+    计划任务眼里是"跑完了、有要关注的项"，而且什么痕迹都不留。"""
+    args = None
+    try:
+        args = parse_args(argv)
+        return execute(args)
+    except Exception as e:                                        # noqa: BLE001
+        return crashed(e, args)
+
+
+def crashed(exc, args=None):
+    """execute 抛出来的异常：打印、写告警、放锁（只放自己的），返回退出码。
+
+    * config.json 坏了（StoreConfigError）→ 4。这时数据目录定不了，告警写到
+      旧布局的报表目录（代码目录下）。
+    * 数据盘掉线等 OSError（建不了日志 / 锁的目录）→ 2，告警写到代码目录的 logs\。
+    * 别的 → 2。
+    """
+    from core import store_config
+    tb = traceback.format_exc()
+    print(tb)
+    month = getattr(args, "month", None) or _safe_prev_month()
+    region = getattr(args, "region", None) or "MX"
+    if is_multi(region):
+        region = "MX"                       # 和 execute_all 里"哪个国家都定不了"一样
+    entrance = getattr(args, "entrance", None) or "cli"
+    if isinstance(exc, store_config.StoreConfigError):
+        code = 4
+        why = "config.json 有问题，这一轮没跑：%s" % exc
+    elif isinstance(exc, OSError):
+        code = 2
+        why = ("文件夹打不开或写不进去（数据盘没连上？网络盘掉线？），这一轮没跑："
+               "%s" % exc)
+    else:
+        code = 2
+        why = "运行器内部出错，这一轮没跑完：%s: %s" % (exc.__class__.__name__, exc)
+    print("\n[错误] %s" % why)
+    release()
+    lines = [why, "", "错误细节：", tb]
+    fallback_logs = os.path.join(ROOT, "logs")
+    legacy_reports = os.path.join(ROOT, "downloads", "data", "reports", "financial")
+    places = []
+    try:
+        places.append(alert_dir(resolve_out_dir(getattr(args, "out_dir", None))[0], month))
+    except Exception:                                             # noqa: BLE001
+        pass
+    if not isinstance(exc, OSError):
+        places.append(legacy_reports)       # 数据目录定不了：旧布局的报表目录
+    places.append(fallback_logs)
+    text = "\n".join(["%s 月报没跑成" % month, "时间：%s" % now(),
+                      "这一轮是：%s（%s）" % (runlog.ENTRANCE_ZH.get(entrance, entrance),
+                                           runlog.ENTRANCE_WHAT.get(entrance, "")), ""]
+                     + lines + ["处理办法见 README.md 第 12 节《出问题先做这三步》。"])
+    try:
+        name = alert_name(month, region)
+    except Exception:                                             # noqa: BLE001
+        name = alert_name(month, "MX")
+    for d in places:
+        try:
+            os.makedirs(d, exist_ok=True)
+            p = os.path.join(d, name)
+            with io.open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            print("已写出告警文件：%s" % p)
+            break
+        except Exception:                                         # noqa: BLE001
+            continue
+    else:
+        print("[警告] 告警文件哪里都写不进去。")
+    return code
+
+
+def _safe_prev_month():
+    try:
+        return prev_month()
+    except Exception:                                             # noqa: BLE001
+        d = datetime.date.today().replace(day=1) - datetime.timedelta(days=1)
+        return "%04d-%02d" % (d.year, d.month)
 
 
 if __name__ == "__main__":

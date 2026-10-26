@@ -1233,12 +1233,19 @@ def _region_batches(summary):
     """一轮摘要里的批次汇总：[(区域, 批次汇总路径, 是不是这个国家的全部店铺)]。
 
     单个国家的一轮只有一项；好几个区域的一轮（--region ALL 或 "MX,FA-CL"）每个区域
-    一项 —— 窗口里只勾了几家店的区域 all_stores 是 False。"""
+    一项 —— 窗口里只勾了几家店的区域 all_stores 是 False。
+
+    只有真下载了（--step both / download）才可能算"全部店铺"。补取欠的报表
+    （--step collect）的摘要里店铺也记成 "all"，但它只碰了欠着报表的那几家：
+    以前它被当成一轮全店下载，于是更早那轮里"要人登录"的店从清单上消失了，
+    而那家店根本没被碰过。它覆盖的只是批次汇总里真出现的那几家。"""
+    downloaded = summary.get("step") in (None, "both", "download")   # 老记录没有 step：照旧
     if is_multi(summary.get("region")):
-        return [(r.get("region") or "MX", r.get("batch_summary"), r.get("all_stores", True))
+        return [(r.get("region") or "MX", r.get("batch_summary"),
+                 downloaded and r.get("all_stores", True))
                 for r in summary.get("regions") or [] if isinstance(r, dict)]
     return [(summary.get("region") or "MX", summary.get("batch_summary"),
-             summary.get("stores") in ("all", None))]
+             downloaded and summary.get("stores") in ("all", None))]
 
 
 def human_action_groups(run_id, log_dir=None):

@@ -381,9 +381,9 @@ def test_stale_lock_is_taken_over(env, monkeypatch):
     with io.open(run_monthly.LOCK, encoding="utf-8") as f:
         assert ("pid=%d " % os.getpid()) in f.read()
 
-    # 进程还在但锁太老：也接管
+    # 进程号还在，但锁的心跳停了太久（PID 被复用 / 那一轮卡死）：也接管
     monkeypatch.setattr(run_monthly, "alive", lambda pid: True)
-    old = time.time() - (run_monthly.STALE_HOURS + 1) * 3600
+    old = time.time() - run_monthly.LOCK_QUIET - 60
     os.utime(run_monthly.LOCK, (old, old))
     assert run_monthly.acquire(lambda lv, t: said.append(t)) is True
     assert "判为异常" in said[-1]

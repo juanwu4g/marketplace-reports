@@ -27,7 +27,16 @@ from core.paths import ROOT
 # 自己把项目根目录加进 sys.path 后导入。
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_build.py")
 from core import layout
-DOWNLOADS = layout.raw_root()
+
+
+def __getattr__(name):
+    """DOWNLOADS 按需才算（PEP 562）。以前是 import 时就算：config.json 写坏了，
+    layout 抛 StoreConfigError，连带 run_monthly 在 import 这一行就崩了 —— 没有
+    运行记录、没有告警，只有一段 traceback。本文件自己不用它，留着给老调用方。"""
+    if name == "DOWNLOADS":
+        return layout.raw_root()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
 
 # 没写出报表时的现场记录放这里，不放报表输出目录：那是财务每个月要打开的文件
 # 夹，以前每出一份报表（包括成功的）就往里面的 diagnostics/ 丢一个日志，从不
@@ -197,18 +206,10 @@ def available():
 
 
 def has_libreoffice():
-    """报表里的公式需要 LibreOffice 重算出缓存值，没有就只能跳过。"""
-    if os.environ.get("SOFFICE"):
-        return True
-    for p in (r"C:\Program Files\LibreOffice\program\soffice.exe",
-              r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"):
-        if os.path.isfile(p):
-            return True
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        for exe in ("soffice.exe", "soffice"):
-            if d and os.path.isfile(os.path.join(d, exe)):
-                return True
-    return False
+    """报表里的公式需要 LibreOffice 重算出缓存值，没有就只能跳过。和 recalc()
+    用同一个找法（report_kit.soffice_path），两边不会一个说有、一个找不到。"""
+    from core import report_kit
+    return report_kit.soffice_path() is not None
 
 
 def _usable(folder):
