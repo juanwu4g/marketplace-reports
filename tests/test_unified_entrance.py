@@ -393,6 +393,6 @@ def test_cjk_tight_removes_spaces_next_to_chinese_only():
 
 def test_config_note_text():
     assert E.config_note_text(None, []) == ""
-    assert E.config_note_text("config.json is not valid JSON", []).startswith("✗ config.json 读不了")
+    assert E.config_note_text("config.json is not valid JSON", []).startswith("✗ config.json读不了")
     text = E.config_note_text(None, [("Soon_WM", "stores.catalog 里的条目：未知平台 'WM'")])
-    assert text.startswith("⚠ config.json 里有 1 家店这一版程序跑不了") and "Soon_WM" in text
+    assert text.startswith("⚠ config.json里有1家店这一版程序跑不了") and "Soon_WM" in text

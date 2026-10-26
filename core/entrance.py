@@ -186,10 +186,11 @@ def confirm_text(step, choice, month, subset=None, latest=None, groups=None):
 def config_note_text(error, problems):
     """「范围」树下面那句关于 config.json 的话；没事就是空串。"""
     if error:
-        return "✗ config.json 读不了，所以上面没有店铺：%s" % error
+        return cjk_tight("✗ config.json 读不了，所以上面没有店铺：%s" % error)
     if problems:
-        return ("⚠ config.json 里有 %d 家店这一版程序跑不了，不在上面的清单里（别的店不受影响）：%s"
-                % (len(problems), "；".join("%s（%s）" % (n, why) for n, why in problems)))
+        # cjk_tight：Tk 只在空格处折行，"有 3 家店" 会把 "3" 单独留在上一行（VM 实测）
+        return cjk_tight("⚠ config.json 里有 %d 家店这一版程序跑不了，不在上面的清单里（别的店不受影响）：%s"
+                         % (len(problems), "；".join("%s（%s）" % (n, why) for n, why in problems)))
     return ""
 
 

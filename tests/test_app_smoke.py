@@ -427,7 +427,7 @@ def test_a_store_of_an_unknown_platform_does_not_empty_the_tree(tmp_path, monkey
         assert a.run_picker.tv.get_children("") == ("p:ML", "p:FA", "p:AZ")
         assert a.scope_var.get().endswith("共 6 家")
         note = a.config_note.get()
-        assert note.startswith("⚠ config.json 里有 1 家店这一版程序跑不了") and "Soon_WM" in note
-        assert "未知平台 'WM'" in note
+        assert note.startswith("⚠ config.json里有1家店这一版程序跑不了") and "Soon_WM" in note
+        assert "未知平台'WM'" in note
     finally:
         gen.close()
