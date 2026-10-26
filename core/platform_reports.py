@@ -42,6 +42,7 @@ import argparse
 import datetime
 import glob
 import importlib
+import json
 import os
 import sys
 import time
@@ -330,4 +331,13 @@ class ReportRunner(object):
         for n, why in unusable:
             print("  未参与：%-22s %s" % (n, why))
         print("\n  输出目录：%s" % os.path.abspath(a.out_dir))
-        return exit_code(results, usable, unusable, per_store=not a.no_per_store)
+        code = exit_code(results, usable, unusable, per_store=not a.no_per_store)
+        # 机器可读的最后一行（runlog.MARKERS）：run_monthly 用它把报表这一步的问题说准。
+        print("[REPORT_SUMMARY_JSON] " + json.dumps({
+            "written": [r["label"] for r in results if r["outcome"] in WRITTEN],
+            "missing": [r["label"] for r in results if r["outcome"] not in WRITTEN],
+            "unusable": [[n, why] for n, why in unusable],
+            "attention": [r["label"] for r in results
+                          if r["outcome"] in ("checks_failed", "formula_errors")],
+            "incomplete": []}, ensure_ascii=False))
+        return code

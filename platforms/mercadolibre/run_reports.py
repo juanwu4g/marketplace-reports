@@ -42,6 +42,7 @@ run_meta.json 记的站点与之不符的店铺会被剔除并在报表里记一
 import argparse
 from core import console  # noqa: F401  中文输出编码保护
 import datetime
+import json
 import os
 import sys
 
@@ -535,7 +536,20 @@ def main():
               % (len(incomplete), len(results)))
     if code == 0:
         print("  全部 %d 份报表生成成功" % len(results))
+    print_report_summary(results, unusable, missing, attention, incomplete)
     return code
+
+
+def print_report_summary(results, unusable, missing, attention, incomplete):
+    """最后一行：机器可读的汇总（runlog.MARKERS 里的 REPORT_SUMMARY_JSON），给
+    run_monthly 把"报表这一步出了什么问题"说准 —— 哪家店没有下载目录、哪份报表
+    没写出来，而不是笼统的"崩溃 / 超时"。"""
+    doc = {"written": [r["label"] for r in results if r not in missing],
+           "missing": [r["label"] for r in missing],
+           "unusable": [[n, why] for n, why in unusable],
+           "attention": [r["label"] for r in attention],
+           "incomplete": [r["label"] for r in incomplete]}
+    print("[REPORT_SUMMARY_JSON] " + json.dumps(doc, ensure_ascii=False))
 
 
 if __name__ == "__main__":

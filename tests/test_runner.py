@@ -583,3 +583,24 @@ def test_a_missing_report_input_still_alerts(env, tmp_path):
         ("download", child(1, "[BATCH_SUMMARY_JSON] " + s.replace("\\", "\\\\"))),
         ("report", child(0))))
     assert "TRQWH_TA01" in env.alert_text()
+
+
+def test_report_failure_names_the_store_without_a_download_folder(env):
+    """run_reports says which store had no download folder (its last line is a
+    machine-readable summary); the alert repeats that instead of guessing
+    'crash / timeout'."""
+    import json
+    summary = {"written": ["BOCINA_SM", "全店汇总"], "missing": [],
+               "unusable": [["AIS_CL", "没有下载目录"]], "attention": [], "incomplete": []}
+    line = "[REPORT_SUMMARY_JSON] " + json.dumps(summary, ensure_ascii=False)
+    assert env.run(["--step", "report"], plan(("report", child(2, line)))) == 2
+    text = env.alert_text()
+    assert "AIS_CL（没有下载目录）" in text and "先给这几家跑一次下载" in text
+    assert "其余 2 份报表已写出" in text
+    assert "崩溃 / 超时" not in text
+    assert env.last()[1]["report_summary"] == summary
+    # a report that was not written is named too
+    summary["missing"] = ["EWTTO_SM"]
+    line = "[REPORT_SUMMARY_JSON] " + json.dumps(summary, ensure_ascii=False)
+    env.run(["--step", "report"], plan(("report", child(2, line))))
+    assert "1 份报表没有写出来" in env.alert_text() and "EWTTO_SM" in env.alert_text()

@@ -849,6 +849,43 @@ def _cause_text(code):
         return "原因见日志"
 
 
+def report_summary(text):
+    """run_reports 最后那行 [REPORT_SUMMARY_JSON]（见 runlog.MARKERS）-> dict；读不到
+    或读不出来返回 None（老版本的 run_reports、崩在半路）。"""
+    if not text:
+        return None
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def report_failure_lines(code, summary):
+    """报表这一步退出码 >= 2 时写进告警的话：按 run_reports 自己的汇总说准是哪家店
+    没有下载目录、哪份报表没写出来；没有汇总时才笼统地说。"""
+    if code >= 3 or not summary:
+        why = {2: "至少有一份报表没有生成（崩溃 / 超时），或者没有一家店有可用的"
+                  "下载目录"}.get(code, HARD.get(code, ""))
+        return ["报表步骤失败（退出码 %d）：%s。" % (code, why)]
+    out = []
+    unusable = summary.get("unusable") or []
+    missing = summary.get("missing") or []
+    written = summary.get("written") or []
+    if unusable:
+        out.append("%d 家店铺这个月没有可用的下载目录，没有它们的单店报表，汇总里也不含它们：%s。"
+                   "先给这几家跑一次下载（「立即运行」里只勾它们），再「只出报表」。"
+                   % (len(unusable), "；".join("%s（%s）" % (n, why) for n, why in unusable)))
+    if missing:
+        out.append("%d 份报表没有写出来（生成时出错或超时，细节看日志里这几份的那一段）：%s。"
+                   % (len(missing), "、".join(missing)))
+    if not unusable and not missing:
+        out.append("报表步骤失败（退出码 %d）：没有一家店有可用的下载目录。" % code)
+    elif written:
+        out.append("其余 %d 份报表已写出。" % len(written))
+    return out
+
+
 def alert_path(out_dir, month, region="MX"):
     return os.path.join(os.path.abspath(alert_dir(out_dir, month)), alert_name(month, region))
 
@@ -978,11 +1015,25 @@ def header(log, args, month, run_id, plan, out_dir, out_src):
                 "全部（config.json 里%s的店铺）"
                 % region_label(args.region))
     log.info(S, "店铺　　：%s" % what)
+    config_notes(log)
     log.info(S, "步骤　　：%s" % " → ".join(s["label"] for s in plan))
     for i, s in enumerate(plan, 1):
         log.info(S, "命令 %d　：%s" % (i, show(s["cmd"])))
     _header_tail(log, args, out_dir, out_src,
                  any(s["key"] in ("download", "collect") for s in plan))
+
+
+def config_notes(log):
+    """config.json 里这一版程序跑不了的店（平台还没合并进来、条目写错、没登记）：
+    一行警告，说出店名和原因。它们不参与这一轮；别的店照常。"""
+    try:
+        from core import store_config
+        problems = store_config.config_problems()
+    except Exception:
+        return
+    if problems:
+        log.warn(runlog.STEP_START, "config.json 里有 %d 家店这一版程序跑不了，这一轮不含它们："
+                 "%s" % (len(problems), "；".join("%s（%s）" % (n, why) for n, why in problems)))
 
 
 def _header_tail(log, args, out_dir, out_src, downloads, per_region=False):
@@ -1086,15 +1137,16 @@ def run_steps(log, args, plan, run_id, stores, rec, st, save):
                 urgent.extend(u)
                 bad.extend(u + a)
         else:
+            summary = report_summary(r["markers"].get("REPORT_SUMMARY_JSON"))
+            rec["report_summary"] = summary
             if code == 1:
                 # 报表都写出来了，只是校验或 Ventas 源数据要人核对。不告警。
                 bad.append("报表都生成了，但需要核对：有校验未过，或 Ventas "
                            "源数据不完整。看报表【⑩ 数据缺口与待办】。")
             elif code >= 2:
-                why = {2: "至少有一份报表没有生成（崩溃 / 超时），或者没有"
-                          "一家店有可用的下载目录"}.get(code, HARD.get(code, ""))
-                urgent.append("报表步骤失败（退出码 %d）：%s。" % (code, why))
-                bad.append(urgent[-1])
+                for line in report_failure_lines(code, summary):
+                    urgent.append(line)
+                    bad.append(line)
         save()
 
 
@@ -1465,6 +1517,7 @@ def execute_all(args, plans=None):
             if it["stores"] else "（定不了，见下）"))
     for r in skipped:
         log.info(S, "店铺　　：%s config.json 里没有店铺，跳过" % region_label(r))
+    config_notes(log)
     if lineup and lineup[0]["plan"]:
         log.info(S, "步骤　　：每个国家 %s" % " → ".join(
             s["label"] for s in lineup[0]["plan"]))

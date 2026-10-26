@@ -71,7 +71,7 @@ NO_STORE = "-"
 COMBINED = "全店汇总"          # run_reports 给汇总表起的名字，当作一家"店"来筛
 
 # 契约里约定的机器可读行：只给程序看，不进人看的日志。
-MARKERS = ("BATCH_SUMMARY_JSON", "REPORT_CHECKS_JSON")
+MARKERS = ("BATCH_SUMMARY_JSON", "REPORT_CHECKS_JSON", "REPORT_SUMMARY_JSON")
 
 # 多久没有心跳就认为那一轮已经不在了。PID 会被系统复用：断电重启后
 # current.json 还在，里面那个 PID 可能恰好分给了别的程序，只看 PID 的话

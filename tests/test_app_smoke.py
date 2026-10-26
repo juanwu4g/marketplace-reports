@@ -411,3 +411,23 @@ def test_last_run_column(app3, tmp_path):
     app3._on_run_state({"state": "finished"})
     assert app3.run_picker.tv.item("u:FA-CL")["values"][1] == "10-15 ⚠ 需关注"
     assert app3.sched_picker.tv.item("u:FA-CL")["values"][1] == "10-15 ⚠ 需关注"
+
+
+def test_a_store_of_an_unknown_platform_does_not_empty_the_tree(tmp_path, monkeypatch):
+    """A config with one store of a platform this version does not know (e.g. a
+    platform being built on another branch) still shows every other store, and
+    says under the tree which store is left out and why."""
+    cfg = json.loads(json.dumps(MULTI))
+    cfg["allowed"].append("Soon_WM")
+    cfg["catalog"]["Soon_WM"] = {"platform": "WM", "country": "MX"}
+    cfg["batches"]["WM-MX"] = ["Soon_WM"]
+    gen = _app(tmp_path, monkeypatch, cfg)
+    a = next(gen)
+    try:
+        assert a.run_picker.tv.get_children("") == ("p:ML", "p:FA", "p:AZ")
+        assert a.scope_var.get().endswith("共 6 家")
+        note = a.config_note.get()
+        assert note.startswith("⚠ config.json 里有 1 家店这一版程序跑不了") and "Soon_WM" in note
+        assert "未知平台 'WM'" in note
+    finally:
+        gen.close()
