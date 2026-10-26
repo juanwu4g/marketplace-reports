@@ -380,13 +380,21 @@ def derive(S):
 # ------------------------------------------------------------------ outside the bill
 
 OUTSIDE_KEYS = ("discount", "subsidy", "withheld")
+# a sales-export state of an exchange: its Total gap is the exchange's shipping
+EXCHANGE = re.compile(r"solicitud de cambio|\bcambio\b", re.I)
 WH_SETTLEMENT, WH_VENTAS, WH_NONE, WH_NA = "settlement", "ventas", "none", "n/a"
 
 
 def _outside(S, v_by_sale, v_single):
     """Per sale, the amounts the bill does not carry (② sign):
     discount  seller-funded discounts: the negative part of Ventas "Descuentos y
-              bonificaciones";
+              bonificaciones", plus — because the export leaves that column blank in
+              Mexico and Chile — the order's coupon derived from its own money columns:
+              Total − (products + charge and taxes + shipping income + shipping cost +
+              refunds + that column), when negative. The bill has no line for it
+              (EWTTO_SM 2026-09: 46 orders of −40.00, commission billed on the full
+              price). An exchange order ("… solicitud de cambio") is left out: its gap
+              is the exchange's shipping, not a discount;
     subsidy   platform subsidies (e.g. Peru's Flex shipping bonus): its positive part;
     withheld  taxes MercadoPago withheld on the payment (Mexico): TAXES_AMOUNT of the
               settlement rows of the sale's Pago that charge it (SETTLEMENT*,
@@ -435,8 +443,24 @@ def _outside(S, v_by_sale, v_single):
     for sale_no, s in sales.items():
         v, share = money_row(s)
         d = (v.v_discount or 0.0) * share if v is not None else 0.0
-        o = dict(in_ventas=v is not None, discount=min(d, 0.0), subsidy=max(d, 0.0), withheld=0.0,
-                 wh_src=WH_NA, given_back=0.0)
+        coupon, gap_kind = 0.0, ""
+        if v is not None and getattr(v, "v_total_given", False):
+            gap = v.v_total - (v.v_products + v.v_charge + v.v_ship_income + v.v_ship_cost
+                               + v.v_refund + v.v_discount)
+            if abs(gap) > prof.tol:
+                if EXCHANGE.search(v.estado) or EXCHANGE.search(v.estado_desc):
+                    gap_kind = "exchange"
+                elif gap < 0:
+                    coupon, gap_kind = gap * share, "coupon"
+                else:
+                    gap_kind = "positive"
+                    coupon = 0.0
+            d_gap = gap * share
+        else:
+            d_gap = 0.0
+        o = dict(in_ventas=v is not None, discount=min(d, 0.0) + coupon, subsidy=max(d, 0.0), withheld=0.0,
+                 wh_src=WH_NA, given_back=0.0, coupon=coupon, gap_kind=gap_kind,
+                 gap=d_gap if gap_kind else 0.0)
         if prof.withholding:
             if s["pago"] in charged:
                 peers = by_pago[s["pago"]]
@@ -688,6 +712,13 @@ def _pl(S):
             no_ventas[1] += s["total"]
     m["wh_sources"] = src
     m["no_ventas"] = no_ventas
+    gaps = collections.OrderedDict((k, [0, 0.0]) for k in ("coupon", "exchange", "positive"))
+    for s in S["cohort"]:
+        o = out[s["sale_no"]]
+        if o["gap_kind"]:
+            gaps[o["gap_kind"]][0] += 1
+            gaps[o["gap_kind"]][1] += o["gap"]
+    m["ventas_gaps"] = gaps
     # MercadoPago's own give-back of withheld tax on the in-period reversals (evidence)
     m["wh_given_back_mp"] = sum(out[sn]["given_back"] for sn in set(
         e["sale_no"] for e in S["revs"] if e["in_period"]) if sn in out)
@@ -946,6 +977,17 @@ def validate(S):
         ck("outside_ventas", st, "本月计费的销售都在销售报表里（优惠/补贴）", not nv[0],
            "%d 笔（计费 GMV %s）不在销售报表里：它们的卖家优惠与平台补贴取不到，按 0 计" % (
                nv[0], "{:,.2f}".format(nv[1])) if nv[0] else "是", severity="warn")
+    g = m["ventas_gaps"]
+    if S["ventas"] is not None:
+        ck("derived_discount", st, "销售报表倒推的卖家优惠（Total 与各金额列之差）", not g["positive"][0],
+           ("本月计费的销售里 %d 笔有卖家优惠，合计 %s，已计入②“减：卖家承担的优惠”（销售报表的 Descuentos "
+            "y bonificaciones 列是空的，按 Total 倒推）" % (g["coupon"][0], "{:,.2f}".format(g["coupon"][1]))
+            if g["coupon"][0] else "没有倒推出卖家优惠") +
+           ("；%d 笔换货单的差额（%s）是换货运费，不计" % (g["exchange"][0], "{:,.2f}".format(g["exchange"][1]))
+            if g["exchange"][0] else "") +
+           ("；%d 笔 Total 比各列之和多（%s），原因不明，没有计入 —— 请核对这些订单" % (
+               g["positive"][0], "{:,.2f}".format(g["positive"][1])) if g["positive"][0] else ""),
+           severity="warn")
     if prof.withholding:
         ws = m["wh_sources"]
         weak = ws[WH_VENTAS][0] + ws[WH_NONE][0]

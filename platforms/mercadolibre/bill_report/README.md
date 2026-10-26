@@ -89,8 +89,19 @@ so they go to the sale's SKU and the ⑦ columns tie to ② (`model._outside`).
 
 * A pack's money is on the export's pack row: each item takes its share of units ×
   unit price. A Pago shared by several sales is split by their totals.
-* The export's other identity (Total − the other money columns) is **not** used: on
-  the golden stores it is 0 except for exchange orders, so it is not a discount.
+* **Coupons derived from Total** (2026-10-26, owner's decision).
+  - **Why:** the Mexican and Chilean exports leave "Descuentos y bonificaciones"
+    blank, so a seller coupon only shows as a gap: Total − (products + charge and
+    taxes + shipping income + shipping cost + refunds + that column).
+  - **Evidence:** EWTTO_SM 2026-09 has 46 billed orders at −40.00 and 7 smaller
+    ones. The bill has no line for them, and the commission is billed on the full
+    price.
+  - **Rule:** a negative gap counts as the sale's seller discount (on a pack's row,
+    split like the column).
+  - **Exchange orders** ("solicitud de cambio") are left out: their gap is the
+    exchange's shipping.
+  - **A positive gap** is not counted; the warn check `derived_discount` lists it.
+  - **The golden stores** have no coupons, and their figures are unchanged.
 * Checks (warn): `outside_ventas` — billed sales not in the export (no discount
   known, 0); `withheld_source` (MX) — sales whose tax is derived or unknown.
 * ② memo `withheld_given_back` (MX): MercadoPago's actual tax give-back on the

@@ -319,7 +319,10 @@ VENTAS_COLS = {
 # money columns this report takes (headers end in the currency, "(MXN)"; the discount
 # column has none).
 # A pack's money is on its parent row; its items carry only units and unit price.
-VENTAS_MONEY = {"Cargo por venta e impuestos": "v_charge", "Descuentos y bonificaciones": "v_discount"}
+VENTAS_MONEY = {"Cargo por venta e impuestos": "v_charge", "Descuentos y bonificaciones": "v_discount",
+                "Ingresos por productos": "v_products", "Ingresos por envío": "v_ship_income",
+                "Costos de envío": "v_ship_cost", "Anulaciones y reembolsos": "v_refund",
+                "Total (": "v_total"}
 
 
 def read_ventas(path):
@@ -341,6 +344,9 @@ def read_ventas(path):
     for prefix, dst in VENTAS_MONEY.items():
         col = next((c for c in df.columns if c.startswith(prefix)), None)
         out[dst] = df[col].map(num) if col else 0.0
+        if dst == "v_total":
+            # a blank Total (child rows of a pack, some cancelled orders) says nothing
+            out["v_total_given"] = df[col].map(lambda x: text(x) != "") if col else False
     out = out[out["sale_no"].map(idstr) != ""].copy()
     out["sale_no"] = out["sale_no"].map(idstr)
     out["listing"] = out["listing"].map(idstr)
