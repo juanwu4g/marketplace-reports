@@ -21,6 +21,7 @@ data - so nothing here asserts a fixed number.
 Files land in core/layout.run_folder(store, <timestamp>) .
 """
 import argparse
+import contextlib
 import datetime
 import io
 import json
@@ -456,6 +457,114 @@ def sales_window(args, today=None):
     return SALES_WINDOWS[-1]
 
 
+def _to_launcher(session, why):
+    """把浏览器停回紫鸟的启动页。失败只警告、不抛。
+
+    这一步只是"让浏览器停在一个正常页面"，和报表无关。以前它不在 _guard 里：
+    代理慢、启动页超时、窗口已经关了，异常就直接冲出 run_store —— 整家店被记成
+    每张报表都缺，诊断、run_meta、REPORT.md 都没写，已经申请的 MercadoPago
+    报表也没进登记簿，再没人去取。
+    """
+    try:
+        page = session.launcher_page
+        if page:
+            session.driver.get(page)
+        return True
+    except Exception as e:
+        print("  [警告] 回到启动页失败（%s）：%s: %s"
+              % (why, e.__class__.__name__, str(e)[:120]))
+        return False
+
+
+def page_blocked(driver):
+    """浏览器现在停在登录 / 验证 / 浏览器错误页上吗？是就返回说明，否则 None。
+
+    判据和归因用的同一套（download_diag 的 BLOCKED_URL / BLOCKED_TITLE），只看
+    地址和标题：这样提前拦下的店，和以前跑完全程才归成 PAGE_BLOCKED 的店，
+    结论一字不差。读不到地址（浏览器没了）不算被挡 —— 那是另一种失败。
+    """
+    try:
+        ev = {"url": driver.current_url or "", "title": driver.title or ""}
+    except Exception:
+        return None
+    return download_diag._blocked(ev)
+
+
+def _expected_here(args, site):
+    return download_diag.expected_forms(
+        args, has_full=meli_site.get(site or meli_site.DEFAULT).get("has_full", True))
+
+
+def _stop_routes(result, diag, driver, args, step, exc_class, why):
+    """整家店的路线都不跑了：每条应有的路线记一份同样的现场。
+
+    现场只拍一次（一张截图、一份地址和标题），其余路线抄同一份证据 —— 原因是
+    同一个，拍六张一样的登录页没有意义。记在路线上（ventas / mercadopago /
+    billing / stock），诊断那一步按路线把它分给每张报表。
+    """
+    routes = download_diag.dedupe(
+        download_diag.route_of(f) for f in _expected_here(args, result.get("site")))
+    first = None
+    for route in routes:
+        if route in diag.items:
+            continue
+        if first is None:
+            first = download_diag.give_up(diag, driver, route, "exception",
+                                          step=step, exception_class=exc_class,
+                                          exception=why)
+            if first is not None:
+                continue
+        diag.items.setdefault(route, {"evidence": dict(first or {
+            "signal": "exception", "step": step, "exception_class": exc_class,
+            "exception": why}), "period": None, "required": True})
+
+
+def _still_owed(pending, result):
+    """申请过、还没取到、也没有终态回答的条目（保持原来的顺序）。"""
+    done = result.get("collected") or {}
+    gone = list(result.get("no_data") or []) + list(result.get("retry_later") or [])
+    return [p for p in pending
+            if label_of(p) not in done and not any(p is q for q in gone)]
+
+
+@contextlib.contextmanager
+def _keep_what_ran(result, diag, args, session, pending, state, defer_slow):
+    """店铺打开之后出的任何异常，都不让它冲出 run_store。
+
+    和 open_store 写在同一个 with 里、排在它后面，所以只包住"店已经开了"之后
+    的事：店铺根本打不开的异常照旧抛给调用方（那是 STORE_OPEN_FAILED，批次
+    那边有专门的处理）。
+
+    为什么要接住：异常一旦冲出去，已经下到的文件不进诊断、不写 run_meta 和
+    REPORT.md，**已经申请的 MercadoPago 报表也进不了登记簿** —— 它们在平台上
+    照样生成，却再没人去取。这里把异常记成一条错误和整店的现场，把还欠着的
+    条目放进 result["deferred"]（批量）或 result["pending"]（单店），然后让
+    run_store 照常收尾。
+    """
+    try:
+        yield
+    except Exception as e:
+        msg = "store: %s: %s" % (e.__class__.__name__, str(e)[:200])
+        print("  [错误] 店铺中途出错，已下到的文件和已申请的报表照常记下：%s" % msg)
+        result["errors"].append(msg)
+        d = getattr(session, "driver", None)
+        ev = download_diag.exception_evidence(e, step="store", driver=d)
+        for f in _expected_here(args, result.get("site")):
+            if f in diag.items or download_diag.route_of(f) in diag.items:
+                continue
+            diag.items[f] = {"evidence": dict(ev), "period": None, "required": True}
+        if state.get("owed") is None:
+            left = _still_owed(pending, result)
+            if defer_slow:
+                result["deferred"] = list(left)
+            else:
+                result["pending"].extend(
+                    "ventas" if p["kind"] == "ventas"
+                    else "mercadopago/%s (%s)" % (p.get("report"), p.get("range"))
+                    for p in left)
+            state["owed"] = left + list(result.get("retry_later") or [])
+
+
 def run_store(client, store_name, args, out_dir=None, close_when_done=True,
               defer_slow=False):
     """Open one store, run the requested routes, return what was collected.
@@ -480,7 +589,10 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     began = time.time()
     # 这家店自己的诊断收集器，显式传给每条路线。不放模块级：批量跑时会串店。
     diag = download_diag.Collector(out_dir, store_name)
-    owed = []
+    # 阶段一申请到的条目。建在 with 外面：店铺中途出错时 _keep_what_ran 要靠它
+    # 找出还欠着的报表。state["owed"] 是正常走到收尾时算好的欠账。
+    pending = []
+    state = {"owed": None}
 
     store = client.find_store(store_name)
     print("店铺：%s（%s）" % (store.get("browserName"), store.get("platform_name")))
@@ -497,7 +609,10 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     result["site"] = site_code
     print("站点：%s（%s）" % (site_code, meli_site.get(site_code)["name"]))
 
-    with client.open_store(store, close_when_done=close_when_done) as session:
+    # 两个上下文写在一起：open_store 在外，_keep_what_ran 在内。店铺打不开的异常
+    # 从 open_store 直接抛出去；店铺开了之后的异常由 _keep_what_ran 接住。
+    with client.open_store(store, close_when_done=close_when_done) as session, \
+            _keep_what_ran(result, diag, args, session, pending, state, defer_slow):
         print("调试端口：%s | 内核 %s"
               % (session.info.get("debuggingPort"), session.info.get("core_version")))
 
@@ -508,7 +623,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                 result["errors"].append("ip check failed")
                 diag.flag("ip_check_failed", True)
         else:
-            session.driver.get(session.launcher_page)
+            _to_launcher(session, "进店")
 
         d = session.driver
         meli_forms.set_download_dir(d, out_dir)
@@ -523,10 +638,35 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
         # 必须排在所有路线之前：整个下载层按西语文字定位元素，导出文件的列名
         # 也是西语，而导出语言跟着账号的界面语言走。放在后面就来不及了 ——
         # 账期页的月份名核对会静默跳过整期，费用少算而毫无提示。
+        #
+        # 关卡没过就不跑任何路线（only = None）：
+        #   * 停在登录 / 验证页上 —— 每条路线都会对着登录页烧满自己的超时
+        #     （Ventas 180 秒、库存 4×72 秒、6 张 MercadoPago、账单），一家店
+        #     白耗 12-15 分钟，补收再耗一遍，最后的结论照样是 PAGE_BLOCKED；
+        #   * 语言改不回来 —— 继续跑必然产出列名是错语言的导出。
+        # Falabella / Amazon 遇到这两种情况也是整店停下。
+        only = args.only
         if not args.skip_lang_check:
             got = _guard(result, "language", meli_forms.ensure_language, d,
                          _diag=diag)
-            if got is not FAILED:
+            blocked = page_blocked(d)
+            if blocked:
+                only = None
+                print("  [错误] 页面被挡住（%s），需要人进店登录 / 验证。"
+                      "这家店的路线全部跳过。" % blocked)
+                result["errors"].append("blocked: %s" % blocked)
+                result["blocked"] = blocked
+                _stop_routes(result, diag, d, args, "blocked", "Blocked",
+                             "进店后停在登录/验证页：%s" % blocked)
+            elif got is FAILED:
+                only = None
+                why = ((diag.items.get("language") or {}).get("evidence") or {}
+                       ).get("exception") or "语言检查出错"
+                print("  [错误] 界面语言不对且改不回来，这家店的路线全部跳过"
+                      "（继续跑只会下到错语言的导出）。")
+                _stop_routes(result, diag, d, args, "language", "LanguageWrong",
+                             "界面语言检查失败：%s" % why)
+            else:
                 was, changed = got
                 result["locale"] = was
                 diag.flag("locale", was)
@@ -539,8 +679,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
         # ---------------- PHASE 1: request everything that generates slowly ---
         # These sit in a server-side queue while phase 2 does real work, so the
         # wait costs almost nothing. Nothing here downloads.
-        pending = []
-        if args.only in ("ventas", "all"):
+        if only in ("ventas", "all"):
             _request(result, "ventas/request", pending,
                      meli_forms.request_sales_excel,
                      d, period_months=sales_window(args),
@@ -557,7 +696,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                                            budget=VENTAS_NOW_BUDGET, poll=15)
                     pending[:] = [p for p in pending
                                   if p["kind"] != "ventas"] + left
-        if args.only in ("mercadopago", "all"):
+        if only in ("mercadopago", "all"):
             # every report type under /balance/reports shares one UI
             for kind in mercadopago.REPORTS:
                 try:
@@ -586,7 +725,7 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                   % len(pending))
 
         # ---------------- PHASE 2: everything that downloads immediately ------
-        if args.only in ("billing", "all"):
+        if only in ("billing", "all"):
             # 指定了历史月份就直接访问那一期的明细页 —— resume 页只摆最近 3 期
             # 卡片，更早的账期在页面上点不到，但明细页还在。
             want = month_arg(args)
@@ -601,12 +740,12 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                              d, out_dir, months=args.months,
                              skip_current=args.skip_current, diag=diag)
             result["billing"] = got if isinstance(got, dict) else {}
-        if args.only in ("stock", "all") and not _facts.get("has_full", True):
+        if only in ("stock", "all") and not _facts.get("has_full", True):
             # 秘鲁：库存报表页是 404（没有 Full 仓）。不是失败，也不算缺报表。
             print("\n--- Publicaciones：库存报表 ---")
             print("    %s没有 Full 仓，库存报表跳过（不影响报表）" % _facts["name"])
             result["stock"] = {}
-        elif args.only in ("stock", "all"):
+        elif only in ("stock", "all"):
             got = _guard(result, "stock", meli_forms.download_stock_reports,
                          d, out_dir, months_back=2, diag=diag)
             result["stock"] = got if isinstance(got, dict) else {}
@@ -670,8 +809,8 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
             remaining = []
 
         # 还欠着的：推迟到补收的、单店模式下超时的、平台说"数据处理中"的。
-        owed = (list(result["deferred"]) + list(remaining)
-                + list(result.get("retry_later", [])))
+        state["owed"] = (list(result["deferred"]) + list(remaining)
+                         + list(result.get("retry_later", [])))
 
         for p in remaining:
             result["pending"].append(
@@ -679,8 +818,9 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
                 else "mercadopago/%s (%s)" % (p["report"], p["range"]))
 
         # leave the browser on a normal page so a later run can reattach
-        d.get(session.launcher_page)
+        _to_launcher(session, "收尾")
 
+    owed = state["owed"] or []
     result["seconds"] = int(time.time() - began)
 
     # A written record lands beside the files themselves, so the folder still
@@ -688,9 +828,14 @@ def run_store(client, store_name, args, out_dir=None, close_when_done=True,
     result["sales_window_months"] = meli_forms.SALES_PERIOD_ACTUAL.get("months")
     diagnose(result, args, diag, owed)
     write_run_meta(out_dir, result, began)
-    result["report"] = run_report.write(
-        result, args=args,
-        started=datetime.datetime.fromtimestamp(began))
+    try:
+        result["report"] = run_report.write(
+            result, args=args,
+            started=datetime.datetime.fromtimestamp(began))
+    except Exception as e:
+        # 报告写不出不能把已经下好的店铺说成失败（批次会因此丢掉登记簿条目）
+        print("  [警告] REPORT.md 写入失败：%s: %s" % (e.__class__.__name__, str(e)[:120]))
+        result["errors"].append("report: %s: %s" % (e.__class__.__name__, e))
     return result
 
 
