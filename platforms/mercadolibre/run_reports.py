@@ -56,7 +56,13 @@ from core import finalize
 from core import layout
 from core import results as RS
 from platforms.mercadolibre import results_files
-OUT_DIR = layout.reports_root()
+# 默认输出目录。import 时 config.json 读不了就先记 None，不在这里抛：run_monthly
+# 一开头就 import 本文件，抛在这里它连运行记录和告警都写不了（只剩一段
+# traceback、退出码 1）。真跑本脚本时 __main__ 会再算一次，读不了就按配置错误退 4。
+try:
+    OUT_DIR = layout.reports_root()
+except Exception:                             # noqa: BLE001
+    OUT_DIR = None
 BASES = ("bill", "order")                 # 账单基准是会计入账口径，先出、先列
 BASIS_CN = {"bill": "账单基准", "order": "订单基准"}
 
@@ -350,6 +356,7 @@ def finalize_step(args, month, bases, usable, unusable, prepared):
     try:
         out = finalize.run(unit, [n for n, _f in usable], all_stores, build_combined,
                            no_combined=args.no_combined)
+        args.publish_failed = out.get("publish_failed") or []     # main 据此把退出码至少设为 1
     except Exception as e:                    # noqa: BLE001 — the workbooks are out; say what went wrong
         import traceback
         print("\n[错误] 整理最终版本时出错：%s: %s" % (e.__class__.__name__, e))
@@ -384,7 +391,8 @@ def main():
                     default="MX",
                     help="哪个国家：MX 墨西哥（默认）/ CL 智利 / PE 秘鲁。决定不给 --stores 时"
                          "出哪些店、汇总表叫什么")
-    ap.add_argument("--out-dir", default=OUT_DIR, help="报表输出目录")
+    ap.add_argument("--out-dir", default=None,
+                    help="报表输出目录；默认：旧布局是报表目录，新布局是该月该国的月份文件夹")
     ap.add_argument("--no-per-store", action="store_true", help="不出单店报表")
     ap.add_argument("--no-combined", action="store_true", help="不出汇总报表")
     ap.add_argument("--metrics", action="store_true",
@@ -401,6 +409,9 @@ def main():
     bases = bases_from_arg(args.basis)
 
     month = args.month or prev_month()
+    if not args.out_dir:
+        # 新布局：手动出的报表也进月份文件夹，core/finalize 才会复制定稿、清理
+        args.out_dir = layout.monthly_dir(month, results_files.market_of(args.region))
     names = store_names(args.stores, args.region)
     if not names:
         raise StoreConfigError("config.json 里没有%s的店铺（白名单为空，或没有"
@@ -516,6 +527,11 @@ def main():
 
     print("\n  输出目录：%s" % os.path.abspath(args.out_dir))
     code = exit_code(results, usable, unusable, per_store=not args.no_per_store)
+    unpublished = getattr(args, "publish_failed", None) or []
+    if unpublished:
+        print("  %d 个文件没能更新进月份文件夹（正被打开？关闭后重出）：%s"
+              % (len(unpublished), "、".join(os.path.basename(p) for p in unpublished)))
+        code = max(code, 1)
     missing = [r for r in results if not financial_report.written(r)]
     attention = [r for r in results
                  if r["outcome"] in ("checks_failed", "formula_errors")]
@@ -552,12 +568,26 @@ def print_report_summary(results, unusable, missing, attention, incomplete):
     print("[REPORT_SUMMARY_JSON] " + json.dumps(doc, ensure_ascii=False))
 
 
-if __name__ == "__main__":
+def run_as_script(entry=None):
+    """命令行入口。没接住的异常一律按硬失败退 2：Python 自己的退出码 1 在
+    run_monthly 眼里是"跑完了、有要关注的项"，会把一次崩溃当成正常结束。"""
+    global OUT_DIR
     try:
-        sys.exit(main())
+        if OUT_DIR is None:
+            OUT_DIR = layout.reports_root()   # import 时没算出来：再算一次，坏了就抛配置错误
+        sys.exit((entry or main)())
     except StoreConfigError as e:
         print("\n配置错误：%s" % e)
         sys.exit(4)
     except StoreNotAllowed as e:
         print("\n店铺不在白名单：%s" % e)
         sys.exit(3)
+    except Exception:                         # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        print("\n出报表时程序出错（见上面的错误信息），按硬失败退出。")
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    run_as_script()
