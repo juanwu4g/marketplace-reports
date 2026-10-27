@@ -192,6 +192,38 @@ def set_download_dir(driver, path):
         return False
 
 
+PARTIAL_SUFFIXES = (".crdownload", ".tmp")
+
+# 下载目录 -> 上一次等待超时时还没写完的文件（去掉 .crdownload / .tmp 的名字）。
+# 它们迟早会被 Chrome 改名成完整文件，那时出现在**下一条路线**的等待里，会被
+# 当成下一条路线的文件。见 _late_names。
+LATE_PARTIALS = {}
+
+
+def _partial_stem(name):
+    for suf in PARTIAL_SUFFIXES:
+        if name.endswith(suf):
+            return name[:-len(suf)]
+    return None
+
+
+def _late_names(path, before):
+    """这次等待不能算作"新文件"的完整文件名。
+
+    快照里一个文件还是 export.xlsx.crdownload，Chrome 写完后把它改名成
+    export.xlsx —— 名字不在快照里，按"快照里没有就是新的"会被当成这一次点击
+    下到的文件。于是上一条路线迟到的文件被下一条路线收走（库存的文件记到了
+    账单名下之类），而下一条路线自己的文件反倒被当成多余的。
+
+    排除两类：快照里已经在写的（.crdownload / .tmp 去掉后缀的名字），以及
+    之前某次等待超时时还在写的（LATE_PARTIALS）。只认 Chrome 这种"原名 +
+    后缀"的命名；"Unconfirmed 12345.crdownload" 那种对不上最终文件名，管不到。
+    """
+    late = set(LATE_PARTIALS.get(os.path.abspath(path), ()))
+    late.update(s for s in (_partial_stem(n) for n in before or ()) if s)
+    return late
+
+
 def wait_for_downloads(path, before, min_files=1, timeout=240, settle=12, label="",
                        start_timeout=None):
     """Block until downloads have *settled*, and return the new filenames.
@@ -219,15 +251,25 @@ def wait_for_downloads(path, before, min_files=1, timeout=240, settle=12, label=
     began = time.time()
     seen = set()
     last_change = time.time()
+    late = _late_names(path, before)
+    key = os.path.abspath(path)
+    pending = []
     while time.time() < deadline:
         time.sleep(2)
         new = set(snapshot_dir(path)) - set(before)
+        landed = new & late
+        if landed:
+            # 上一条路线迟到的文件，不是这一次点击下到的
+            new -= landed
+            left = LATE_PARTIALS.get(key)
+            if left:
+                left.difference_update(landed)
         if start_timeout and not new and time.time() - began >= start_timeout:
             print("  [警告] %s：%d 秒内没有任何下载开始，平台可能没响应，放弃等待"
                   % (label or "download", start_timeout))
             return []
-        pending = [k for k in new if k.endswith((".crdownload", ".tmp"))]
-        done = {k for k in new if not k.endswith((".crdownload", ".tmp"))}
+        pending = [k for k in new if k.endswith(PARTIAL_SUFFIXES)]
+        done = {k for k in new if not k.endswith(PARTIAL_SUFFIXES)}
         if done != seen:
             seen = done
             last_change = time.time()
@@ -236,6 +278,10 @@ def wait_for_downloads(path, before, min_files=1, timeout=240, settle=12, label=
                 (len(seen) >= min_files and quiet >= settle)
                 or quiet >= settle * 3):
             return sorted(seen)
+    if pending:
+        # 超时了还有没写完的：记下来，它写完时别让后面的等待把它认领走
+        LATE_PARTIALS.setdefault(key, set()).update(
+            _partial_stem(k) for k in pending)
     if len(seen) < min_files:
         print("  [警告] %s：预期至少 %d 个文件，等了 %d 秒实际只有 %d 个"
               % (label or "download", min_files, timeout, len(seen)))

@@ -183,6 +183,8 @@ def make_folder(tmp_path):
     write_stock(str(d / "Product_details_1.xlsx"))
     (d / "run_meta.json").write_text(json.dumps({
         "platform": "FA", "month": MONTH, "downloaded_at": "2026-10-16T12:00:00",
+        "expected": ["order", "billing", "liq", "stock", "billing1/2026-08-21_2026-09-20",
+                     "billing1/2026-09-21_2026-10-20"],
         "missing": [{"form": "billing1/2026-09-21_2026-10-20", "cause": "NOT_AVAILABLE",
                      "explain": "账期还没结束", "action": "无需处理", "in_report": True}]}),
         encoding="utf-8")

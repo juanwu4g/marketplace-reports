@@ -71,7 +71,7 @@ NO_STORE = "-"
 COMBINED = "全店汇总"          # run_reports 给汇总表起的名字，当作一家"店"来筛
 
 # 契约里约定的机器可读行：只给程序看，不进人看的日志。
-MARKERS = ("BATCH_SUMMARY_JSON", "REPORT_CHECKS_JSON")
+MARKERS = ("BATCH_SUMMARY_JSON", "REPORT_CHECKS_JSON", "REPORT_SUMMARY_JSON")
 
 # 多久没有心跳就认为那一轮已经不在了。PID 会被系统复用：断电重启后
 # current.json 还在，里面那个 PID 可能恰好分给了别的程序，只看 PID 的话
@@ -1233,12 +1233,19 @@ def _region_batches(summary):
     """一轮摘要里的批次汇总：[(区域, 批次汇总路径, 是不是这个国家的全部店铺)]。
 
     单个国家的一轮只有一项；好几个区域的一轮（--region ALL 或 "MX,FA-CL"）每个区域
-    一项 —— 窗口里只勾了几家店的区域 all_stores 是 False。"""
+    一项 —— 窗口里只勾了几家店的区域 all_stores 是 False。
+
+    只有真下载了（--step both / download）才可能算"全部店铺"。补取欠的报表
+    （--step collect）的摘要里店铺也记成 "all"，但它只碰了欠着报表的那几家：
+    以前它被当成一轮全店下载，于是更早那轮里"要人登录"的店从清单上消失了，
+    而那家店根本没被碰过。它覆盖的只是批次汇总里真出现的那几家。"""
+    downloaded = summary.get("step") in (None, "both", "download")   # 老记录没有 step：照旧
     if is_multi(summary.get("region")):
-        return [(r.get("region") or "MX", r.get("batch_summary"), r.get("all_stores", True))
+        return [(r.get("region") or "MX", r.get("batch_summary"),
+                 downloaded and r.get("all_stores", True))
                 for r in summary.get("regions") or [] if isinstance(r, dict)]
     return [(summary.get("region") or "MX", summary.get("batch_summary"),
-             summary.get("stores") in ("all", None))]
+             downloaded and summary.get("stores") in ("all", None))]
 
 
 def human_action_groups(run_id, log_dir=None):
@@ -1259,6 +1266,39 @@ def human_action_groups(run_id, log_dir=None):
     return out
 
 
+# 出报表那一步发现某家店这个月没有下载目录（从没下载过、或下载硬失败）：也是要人
+# 动手的事 —— 勾上这家店跑一次下载。批次汇总里没有它（没有下载这一步），所以从
+# 运行摘要里的 report_summary（run_reports 最后那行 REPORT_SUMMARY_JSON）取。
+NO_FOLDER = "NO_DOWNLOAD_FOLDER"
+
+
+def _region_report_summaries(summary):
+    """一轮摘要里每个区域的报表汇总：[(区域, report_summary dict)]。"""
+    if is_multi(summary.get("region")):
+        return [(r.get("region") or "MX", r.get("report_summary"))
+                for r in summary.get("regions") or []
+                if isinstance(r, dict) and isinstance(r.get("report_summary"), dict)]
+    rs = summary.get("report_summary")
+    return [(summary.get("region") or "MX", rs)] if isinstance(rs, dict) else []
+
+
+def no_folder_actions(run_id, log_dir=None):
+    """某一轮出报表时没有下载目录的店：[{run_id, month, region, covered, actions}]。
+    covered = 这一步看过的全部店铺（写出了的 + 没目录的），用来让更早的同类待办过时。"""
+    summary = read_json(run_paths(run_id, log_dir)["json"]) or {}
+    out = []
+    for region, rs in _region_report_summaries(summary):
+        unusable = [u for u in rs.get("unusable") or [] if isinstance(u, (list, tuple)) and u]
+        covered = [u[0] for u in unusable] + list(rs.get("written") or [])
+        acts = [{"store": u[0], "cause": NO_FOLDER, "title": "本月没有下载目录",
+                 "how": "这家店 %s 还没有可用的下载目录（%s）：在「立即运行」里只勾它跑一次"
+                        "「下载并出报表」，或者在这里点「重跑」" % (summary.get("month") or "", u[1]),
+                 "rerun": True, "forms": [], "evidence": ""} for u in unusable]
+        out.append({"run_id": run_id, "month": summary.get("month"), "region": region,
+                    "covered": covered, "actions": acts})
+    return out
+
+
 def pending_human_actions(log_dir=None, look_back=30):
     """现在还有哪些店需要人处理：每家店以**最近一次**下载到它的那一轮为准。
 
@@ -1272,9 +1312,17 @@ def pending_human_actions(log_dir=None, look_back=30):
     """
     seen, actions, month = set(), [], None
     full = set()                        # 已经见过一轮全店下载的区域
+    seen_report = set()                 # 更晚的出报表那一步看过的店（写出了或没目录）
     for run in list_runs(log_dir, limit=look_back):
         if read_json(run_paths(run["run_id"], log_dir)["json"]) is None:
             continue
+        # 出报表时没有下载目录的店：以最近一次出报表为准；更晚下载过它就不算了。
+        for got in no_folder_actions(run["run_id"], log_dir):
+            for a in got["actions"]:
+                if a["store"] not in seen and a["store"] not in seen_report:
+                    actions.append(dict(a, run_id=got["run_id"], region=got["region"]))
+                    month = month or got["month"]
+            seen_report.update(got["covered"])
         # --region ALL 的一轮里每个国家各算一段，和单独跑那个国家一样对待。
         for got in human_action_groups(run["run_id"], log_dir):
             region = got["region"]

@@ -136,3 +136,22 @@ def test_forms_that_do_not_change_the_money_figures():
                                                   "in_report": True}])["level"] == "gaps"
     # open bill still outranks a non-blocking form
     assert G.grade("ML", "bill", True, missing=stock, provisional=["Oct"])["level"] == "provisional"
+
+
+# ------------------------------------------------------------------ a download whose completeness is unknown
+
+def test_download_unknown_without_run_meta_or_expected():
+    assert "没有 run_meta.json" in G.download_unknown({})
+    assert "没有 run_meta.json" in G.download_unknown(None)
+    # update_run_meta after a killed run: "missing" but no "expected"
+    assert "应下载的报表清单" in G.download_unknown({"missing": []})
+    assert G.download_unknown({"expected": [], "missing": []}) is None
+
+
+def test_unknown_download_is_at_most_provisional():
+    why = G.download_unknown({})
+    g = G.grade("FA", "main", True, [ck("pl_tie", ok=True)], unknown_download=why)
+    assert g == {"level": R.PROVISIONAL, "reasons": [why]}
+    g = G.grade("ML", "bill", True, [], provisional=["B1"], unknown_download=why)
+    assert g["level"] == R.PROVISIONAL and len(g["reasons"]) == 2
+    assert level("ML", "bill", True, [ck("residuals")], unknown_download=why) == R.GAPS     # a gap still wins

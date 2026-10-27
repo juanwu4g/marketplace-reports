@@ -73,11 +73,15 @@ def save(entries, path=PATH):
     try:
         if not os.path.isdir(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
-        with io.open(path, "w", encoding="utf-8") as f:
+        # 先写临时文件再改名：写到一半被掐（run_monthly 到点杀进程）不会留下半个
+        # 文件 —— 半个文件下次 load 会当坏文件挪走，所有欠着的报表就都忘了。
+        tmp = path + ".tmp"
+        with io.open(tmp, "w", encoding="utf-8") as f:
             # utf-8 + ensure_ascii=False: store names are Chinese on this
             # account (GUIDE.md 6.4).
             f.write(json.dumps({"entries": list(entries)},
                                ensure_ascii=False, indent=2))
+        os.replace(tmp, path)
         return True
     except (IOError, OSError) as e:
         print("  [警告] 无法写入 %s（%s），待取报表记录将不会保留到"

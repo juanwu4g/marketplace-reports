@@ -280,3 +280,168 @@ def test_missing_invoice_pdfs_by_type_and_by_number():
                                              "505871_NOTA_DE_CREDITO.pdf"]) == []
     assert forms.missing_invoice_pdfs([("", "Factura")], []) == ["FACTURA"]
     assert forms.missing_invoice_pdfs([], []) == []
+
+
+# ------------------------------------------------------------------ robustness (2026-10 review)
+
+class _Drv(object):
+    """Just enough driver for the language gate: an address and the page-load timeout."""
+    def __init__(self, url):
+        self.current_url = url
+        self.caps = []
+
+        class T(object):
+            page_load = 300
+        self.timeouts = T()
+
+    def set_page_load_timeout(self, s):
+        self.caps.append(s)
+
+
+def test_language_gate_signs_in_when_the_first_page_hangs_on_the_login_loop(monkeypatch):
+    from selenium.common.exceptions import TimeoutException
+    from platforms.falabella import login
+    from platforms.falabella import page_kit as pk
+    sso = "https://access-key-corp.falabella.tech/auth/realms/x/protocol/openid-connect/auth?a=1"
+    drv = _Drv(sso)
+    gone = []
+
+    class C(_Ctx):
+        def go(self, path, settle=0):
+            gone.append(path)
+            if len(gone) == 1:
+                raise TimeoutException("timeout: Timed out receiving message from renderer")
+    ctx = C()
+    ctx.d = drv
+    signed = []
+    monkeypatch.setattr(login, "sign_in", lambda c: signed.append(1) or True)
+    monkeypatch.setattr(pk, "page_locale", lambda d: {"locale": "es-CL"})
+    forms.check_language(ctx)
+    assert signed == [1] and len(gone) == 2
+    assert drv.caps == [forms.FIRST_LOAD_CAP, 300]          # capped, then put back
+
+
+def test_language_gate_slow_page_that_is_not_login_just_goes_on(monkeypatch):
+    from selenium.common.exceptions import TimeoutException
+    from platforms.falabella import login
+    from platforms.falabella import page_kit as pk
+
+    class C(_Ctx):
+        def go(self, path, settle=0):
+            raise TimeoutException("slow")
+    ctx = C()
+    ctx.d = _Drv("https://sellercenter.falabella.com" + forms.PAYMENTS)
+    monkeypatch.setattr(login, "sign_in", lambda c: pytest.fail("not a login page"))
+    monkeypatch.setattr(pk, "page_locale", lambda d: {"locale": "es-CL"})
+    forms.check_language(ctx)
+    assert ctx.flags["locale"] == "es-CL"
+
+
+def test_late_file_of_the_previous_chunk_is_not_this_chunk():
+    before = {"Ordenes_a.xlsx", "orders_export.xlsx.crdownload"}
+    ours, late = forms.own_new_files(before, ["orders_export (1).xlsx", "orders_export.xlsx"])
+    assert ours == ["orders_export (1).xlsx"] and late == ["orders_export.xlsx"]
+    assert forms.own_new_files(set(), ["a.xlsx"]) == (["a.xlsx"], [])
+
+
+class _Landing(_Ctx):
+    def __init__(self, out_dir):
+        _Ctx.__init__(self)
+        self.out_dir = out_dir
+        self.gave, self.renamed = [], []
+
+    def give_up(self, form, signal, **kw):
+        self.gave.append((form, signal))
+
+    def rename(self, name, new):
+        self.renamed.append((name, new))
+        return new
+
+
+def test_orders_chunk_refuses_to_guess_between_two_new_files(tmp_path):
+    a, b = D(2026, 9, 15), D(2026, 9, 28)
+    ctx = _Landing(str(tmp_path))
+    forms.land_order_export(ctx, "order/x", a, b, set(), ["x.xlsx", "y.xlsx"], 0)
+    assert ctx.gave == [("order/x", "file-rejected")] and not ctx.renamed
+    c = run_downloads.Collector(str(tmp_path), "S")
+    c.locale = "es-CL"
+    c.give_up(None, "order/x", "file-rejected", files=["x.xlsx", "y.xlsx"], step="2", shot=False)
+    assert download_diag.diagnose_store(["order/x"], collector=c)[0]["cause"] == "FILE_REJECTED"
+    # one file: named for the period
+    ctx = _Landing(str(tmp_path))
+    forms.land_order_export(ctx, "order/x", a, b, set(), ["x.xlsx"], 0)
+    assert ctx.renamed == [("x.xlsx", "Ordenes_2026-09-15_2026-09-28.xlsx")]
+
+
+def test_orders_chunk_waits_for_its_own_file_after_a_late_one(tmp_path, monkeypatch):
+    from platforms.falabella import page_kit as pk
+    a, b = D(2026, 9, 15), D(2026, 9, 28)
+    seen = []
+    monkeypatch.setattr(pk, "wait_new_files",
+                        lambda out, before, **k: seen.append(set(before)) or ["mine.xlsx"])
+    ctx = _Landing(str(tmp_path))
+    forms.land_order_export(ctx, "order/x", a, b, {"prev.xlsx.crdownload"}, ["prev.xlsx"], 0)
+    assert "prev.xlsx" in seen[0]
+    assert ctx.renamed == [("mine.xlsx", "Ordenes_2026-09-15_2026-09-28.xlsx")]
+
+
+def _epoch(*a):
+    return datetime.datetime(*a, tzinfo=datetime.timezone.utc).timestamp()
+
+
+OCT = "NewReportTransaction_2026-10-05T12_00_00.xlsx 05-10-2026 Listo"
+OCT_LATER = "NewReportTransaction_2026-10-06T09_00_00.xlsx 06-10-2026 Listo"
+SEP = "NewReportTransaction_2026-09-05T12_00_00.xlsx 05-09-2026 Listo"
+
+
+def test_owed_transacciones_takes_only_a_row_made_after_the_request():
+    asked = _epoch(2026, 10, 5, 11, 59)
+    # never seen while waiting: the row that came after the one newest before
+    e = {"route": "billing", "row": None, "seen_before": SEP, "requested_at": asked}
+    assert forms.owed_tx_row(e, [OCT, SEP]) == OCT
+    # nothing new yet: the old September report must not be taken (it was before)
+    assert forms.owed_tx_row(e, [SEP]) is None
+    # the table was empty before; an old report listed now is still too old
+    e2 = dict(e, seen_before=None)
+    assert forms.owed_tx_row(e2, [SEP]) is None
+    # a later run's request above ours: ours is the oldest of the new ones
+    assert forms.owed_tx_row(e, [OCT_LATER, OCT, SEP]) == OCT
+    # seen while waiting: by file name, as before
+    e3 = {"route": "billing", "row": "NewReportTransaction_2026-10-05T12_00_00.xlsx Procesando"}
+    assert forms.owed_tx_row(e3, [OCT_LATER, OCT]) == OCT
+    # entries written before seen_before existed behave as before
+    assert forms.owed_tx_row({"route": "billing", "row": None}, [SEP]) == SEP
+
+
+def test_an_older_request_turning_listo_is_not_the_new_one(monkeypatch):
+    from platforms.falabella import page_kit as pk
+    asked = _epoch(2026, 10, 5, 11, 59)
+    before = "NewReportTransaction_2026-10-05T11_50_00.xlsx 05-10-2026 Procesando"
+    now = "NewReportTransaction_2026-10-05T11_50_00.xlsx 05-10-2026 Listo"
+    assert forms.new_tx_rows([now], before, asked) == []
+    assert forms.new_tx_rows([OCT, now], before, asked) == [OCT]
+    # downloads table not rendered when "before" was read: an old Listo row is not new
+    monkeypatch.setattr(pk, "download_rows", lambda d: [SEP])
+    monkeypatch.setattr(pk, "refresh_downloads", lambda d: None)
+    monkeypatch.setattr(pk.time, "sleep", lambda s: None)
+    row, state = pk.wait_new_ready_row(None, None, timeout=0, prefix="NewReportTransaction",
+                                       select=lambda rows: forms.new_tx_rows(rows, None, asked))
+    assert (row, state) == (None, "absent")
+
+
+def test_row_timestamp_reads_both_spellings():
+    from platforms.falabella import page_kit as pk
+    assert pk.row_timestamp(OCT) == _epoch(2026, 10, 5, 12, 0, 0)
+    assert pk.row_timestamp("NewReportTransaction_2026-10-16T07:24:06.469Z.xlsx Listo") == \
+        _epoch(2026, 10, 16, 7, 24, 6)
+    assert pk.row_timestamp("FSC_LIQ_2026-09-01_2026-09-30.xlsx Listo") is None
+    assert pk.row_not_older_than("FSC_LIQ_x.xlsx", _epoch(2026, 10, 5))     # no time: no verdict
+
+
+def test_owed_stock_takes_only_an_export_newer_than_the_request():
+    e = {"route": "stock", "seen_before": "https://h/fby-exports/Product_details_1.xlsx"}
+    old = ("Products Export Finalizado", "https://h/fby-exports/Product_details_1.xlsx")
+    new = ("Products Export Finalizado", "https://h/fby-exports/Product_details_2.xlsx")
+    assert forms.owed_stock_row(e, [new, old]) == new
+    assert forms.owed_stock_row(e, [old]) is None
+    assert forms.owed_stock_row({"route": "stock"}, [old]) == old       # old entry: as before

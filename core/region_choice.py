@@ -46,6 +46,24 @@ def split_units(region):
     return [u for u in str(region or "").split(",") if u]
 
 
+def config_problems():
+    """config.json 里这一版程序跑不了的店：[(店名, 原因)]；config 读不了返回 []。"""
+    try:
+        return store_config.config_problems()
+    except Exception:
+        return []
+
+
+def config_error():
+    """config.json 整个读不了（JSON 坏了、文件不在）时的原因，正常时 None。窗口里
+    店铺树是空的时候要把这句话摆出来，不能空着不说。"""
+    try:
+        store_config.allowed_stores()
+        return None
+    except Exception as e:
+        return str(e)
+
+
 def label(region):
     """界面上的字：墨西哥 / 智利 / 全部国家；一串区域用顿号连起来。"""
     if region == ALL:

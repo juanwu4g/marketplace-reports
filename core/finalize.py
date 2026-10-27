@@ -21,13 +21,19 @@ New layout (core/layout.mode() == V2); out_dir is layout.monthly_dir(month, mark
     gets _未定稿 (and the other name is removed);
   * <out_dir>/版本说明.txt: per store and basis the final version, its grade, why
     every other version is not final, and what was cleaned;
-  * clean-up of a store-month that has a final for every basis it produces:
+  * clean-up of a store-month that has a final for every basis that has
+    versions (every basis in results.BASES, not only the ones this step built):
     the other versions' workbooks in _versions/<version>/ (the folder once
     empty — it is shared by every store of the run), their results files, and
-    the store-month's raw run folders that no final uses; logs/pending.json
-    entries for deleted folders are dropped. A raw run folder newer than every
-    final's that has no version at all is kept (it may still be downloading or
-    not reported yet). Months without a final are never cleaned.
+    the store-month's raw run folders that no final uses; logs/pending*.json
+    entries for deleted folders are dropped. A raw run folder is kept when a
+    final uses it (by path, or by run name — results files moved by
+    tools/migrate_layout may hold old paths), when a pending*.json entry still
+    points at it, or when it is newer than the newest final (by the time in
+    its name) and has no countable version (still downloading, not reported,
+    or its report failed / has gaps: a re-download is evidence). A store whose
+    final could not be copied into the month folder is not cleaned. Months
+    without a final are never cleaned.
 
     Every deletion is checked first: inside the layout's roots, a name of the
     run / version pattern, and logged.
@@ -101,6 +107,14 @@ def state(store, month, bases, config_path=None):
     return out
 
 
+def run_stamp(name):
+    """'20261021_233002_m202609' -> '20261021_233002' (the run's start time), or
+    None. Runs are compared by this, not by name: a final may read a folder named
+    for another month (MercadoLibre takes the newest folder holding the bill)."""
+    m = re.match(r"^(\d{8}_\d{6})", os.path.basename(os.path.normpath(str(name or ""))))
+    return m.group(1) if m else None
+
+
 def why_not_final(v, fin):
     g = v["grade"]
     if g["level"] in results.COUNTABLE:
@@ -131,7 +145,8 @@ def _copy(src, dst, log):
         os.replace(tmp, dst)
         return True
     except (IOError, OSError) as e:
-        log("[未能复制] %s → %s：%s（文件正被打开？关闭后重出）" % (src, os.path.basename(dst), e))
+        log("[未能复制] %s → %s：%s（文件正被打开？关闭后重出；月份文件夹里的这个文件还是旧的）"
+            % (src, os.path.basename(dst), e), keep=True)
         if tmp and os.path.exists(tmp):
             try:
                 os.remove(tmp)
@@ -243,10 +258,43 @@ def drop_pending(folders, log, config_path=None):
     return dropped
 
 
+def pending_folders(config_path=None):
+    """The run folders the owed-report lists still point at: (set of normalised
+    paths, set of (store, run name)); None when a list cannot be read (then no
+    folder may be deleted: an owed report would lose its folder). Reads only —
+    pending_store.load would move a broken file aside."""
+    from core import pending_store
+    import json
+    logs = layout.logs_dir(config_path)
+    paths_, names = set(), set()
+    if not os.path.isdir(logs):
+        return paths_, names
+    for name in sorted(os.listdir(logs)):
+        if not (name.startswith("pending") and name.endswith(".json")) or name == pending_store.EXPIRED_NAME:
+            continue
+        try:
+            with io.open(os.path.join(logs, name), encoding="utf-8") as fh:
+                doc = json.load(fh)
+            entries = doc.get("entries") if isinstance(doc, dict) else None
+            if not isinstance(entries, list):
+                return None
+        except (ValueError, IOError, OSError):
+            return None
+        for e in entries:
+            if isinstance(e, dict) and e.get("out_dir"):
+                paths_.add(os.path.normcase(os.path.abspath(e["out_dir"])))
+                names.add((e.get("store"), os.path.basename(os.path.normpath(e["out_dir"]))))
+    return paths_, names
+
+
 # ------------------------------------------------------------------ the steps
 
 def publish_store(unit, store, st, log):
-    """Copy the final (or 未定稿) workbook of each basis into the month folder."""
+    """Copy the final (or 未定稿) workbook of each basis into the month folder.
+    Returns the copies that failed ([month-folder path]): the month folder then
+    still holds the previous file under that name, so the step must not look
+    clean and the store is not cleaned up (its older versions stay)."""
+    failed = []
     for b in unit.bases:
         s = st[b]
         name = unit.store_name(store, unit.month, b)
@@ -256,11 +304,18 @@ def publish_store(unit, store, st, log):
             if src and os.path.isfile(src):
                 if _copy(src, dst, log):
                     _remove_file(draft, log, "未定稿")
+                else:
+                    failed.append(dst)
             else:
-                log("[注意] %s 的最终版本 %s 的工作簿不在了：%s" % (store, s["final"]["version"], src))
+                # 例如迁移前生成的版本、或工作簿被人挪走了：数字仍在结果文件里，下载目录也保留
+                log("[注意] %s 的最终版本 %s 的工作簿不在了：%s（月份文件夹里的 %s 没有更新）"
+                    % (store, s["final"]["version"], src, name), keep=True)
         elif s["chosen"]:
-            _copy(s["chosen"]["workbook"], draft, log)
-            retire(unit, dst, log, "不是最终版本")
+            if _copy(s["chosen"]["workbook"], draft, log):
+                retire(unit, dst, log, "不是最终版本")
+            else:
+                failed.append(draft)
+    return failed
 
 
 def other_months_folders(store, month, config_path=None):
@@ -277,29 +332,62 @@ def other_months_folders(store, month, config_path=None):
 
 
 def clean_store(unit, store, st, log, config_path=None):
-    """Clean one store-month once every basis it produces has a final. Returns the
-    deleted run folders."""
-    produced = [b for b in unit.bases if st[b]["versions"]]
-    if not produced or any(st[b]["final"] is None for b in produced):
+    """Clean one store-month once every basis that has versions has a final —
+    every basis of results.BASES, not only unit.bases: a step that builds only
+    the bill basis (config reports.ml_basis, run_reports --basis bill) must not
+    delete the folder the order basis' final reads. Returns the deleted run
+    folders."""
+    full = dict(st)
+    missing_bases = [b for b in results.BASES if b not in full]
+    if missing_bases:
+        full.update(state(store, unit.month, missing_bases, config_path))
+    produced = [b for b in results.BASES if full[b]["versions"]]
+    if not produced or any(full[b]["final"] is None for b in produced):
         return []
-    finals = [st[b]["final"] for b in produced]
-    keep_versions = dict((b, st[b]["final"]["version"]) for b in produced)
-    for b in produced:
-        for v in st[b]["versions"]:
-            if v["version"] == keep_versions[b]:
+    finals = [full[b]["final"] for b in produced]
+    # 只删本步骤所出基准的旧版本文件；别的基准只用来判断“定稿了没有”和“哪些下载目录在用”
+    for b in [b for b in unit.bases if b in produced]:
+        for v in full[b]["versions"]:
+            if v["version"] == full[b]["final"]["version"]:
                 continue
             remove_version_workbook(unit, v, log)
             remove_results_file(v, log, config_path)
     used = set(os.path.normcase(os.path.abspath(f)) for d in finals for f in d.get("source_folders") or ())
-    used |= other_months_folders(store, unit.month, config_path)
-    reported = set(v["run"] for b in produced for v in st[b]["versions"])
-    newest_final_run = max(d["run"] for d in finals)
+    others = other_months_folders(store, unit.month, config_path)
+    used |= others
+    # 按下载目录名再认一遍：迁移（tools/migrate_layout）前写的结果文件里是旧路径，
+    # 同名的目录就是它用的那个，绝不能因为路径对不上而删掉
+    used_names = set(d["run"] for d in finals if d.get("run"))
+    used_names |= set(os.path.basename(os.path.normpath(f)) for d in finals for f in d.get("source_folders") or ())
+    used_names |= set(os.path.basename(os.path.normpath(f)) for f in others)
+    pending = pending_folders(config_path)
+    if pending is None:
+        log("[跳过清理下载目录] %s：待取报表清单（logs/pending*.json）读不出来，不知道哪些目录还在等报表"
+            % store, keep=True)
+        return []
+    pend_paths, pend_names = pending
+    countable_runs = set(v["run"] for b in produced for v in full[b]["versions"]
+                         if v["grade"]["level"] in results.COUNTABLE)
+    stamps = [run_stamp(d["run"]) for d in finals] + [
+        run_stamp(f) for d in finals for f in d.get("source_folders") or ()]
+    newest_final = max(stamps) if stamps and all(stamps) else None
     gone = []
     for name, path in layout.run_folders_for_month(store, unit.month, config_path=config_path):
-        if os.path.normcase(os.path.abspath(path)) in used:
+        key = os.path.normcase(os.path.abspath(path))
+        if key in used:
             continue
-        if name not in reported and name > newest_final_run:
-            log("保留 %s：比最终版本新，还没有出过报表" % path)
+        if name in used_names:
+            log("保留 %s：最终版本用的就是这个下载目录（结果文件里记的是旧路径）" % path, keep=True)
+            continue
+        if key in pend_paths or (store, name) in pend_names:
+            log("保留 %s：还有待取的报表指向这个目录" % path, keep=True)
+            continue
+        stamp = run_stamp(name)
+        newer = newest_final is None or stamp is None or stamp > newest_final
+        if newer and name not in countable_runs:
+            # 比最终版本新、又没有可以定稿的版本：可能还在下载、还没出报表，或报表失败/有缺口
+            # （例如 MercadoPago 还在生成）。重下一次要几个小时，留着补出报表
+            log("保留 %s：比最终版本新，还没有可以定稿的版本" % path, keep=True)
             continue
         if remove_run_folder(store, unit.month, path, log, config_path):
             gone.append(path)
@@ -307,14 +395,18 @@ def clean_store(unit, store, st, log, config_path=None):
     return gone
 
 
-def build_summaries(unit, states, build_combined, log):
-    """The 全店汇总 of each basis from the chosen versions. Returns the build results."""
+def build_summaries(unit, states, build_combined, log, absent=None):
+    """The 全店汇总 of each basis from the chosen versions. absent: {basis: [stores
+    of the unit's store list without any version]} — the summary then lacks them
+    and is 未定稿. Returns the build results."""
     out = []
+    absent = absent or {}
     for b in unit.bases:
         pairs = [(store, st[b]["chosen"]) for store, st in states if st[b]["chosen"]]
         if not pairs:
             continue
-        complete = all(st[b]["final"] is not None for _s, st in states if st[b]["versions"])
+        complete = (all(st[b]["final"] is not None for _s, st in states if st[b]["versions"])
+                    and not absent.get(b))
         name = unit.combined_name(unit.month, b)
         dst = os.path.join(unit.out_dir, name if complete else draft_name(name))
         other = os.path.join(unit.out_dir, draft_name(name) if complete else name)
@@ -323,19 +415,24 @@ def build_summaries(unit, states, build_combined, log):
         r["basis"] = b
         r["stores_final"] = [s for s, st in states if st[b]["final"] is not None]
         r["stores_draft"] = [s for s, st in states if st[b]["versions"] and st[b]["final"] is None]
+        r["stores_absent"] = list(absent.get(b) or [])
         if r.get("outcome") in ("ok", "checks_failed", "formula_errors", "data_incomplete") and os.path.isfile(dst):
             if complete:
                 _remove_file(other, log, "旧的未定稿汇总表")
             else:
                 retire(unit, other, log, "不是由最终版本汇总的")
+            why = []
+            if r["stores_draft"]:
+                why.append("未定稿：%s" % "、".join(r["stores_draft"]))
+            if r["stores_absent"]:
+                why.append("没有任何版本：%s" % "、".join(r["stores_absent"]))
             log("汇总表%s：%s（%d 家店%s）" % ("" if complete else "（未定稿）", dst, len(pairs),
-                                          "" if complete else "，未定稿：%s" % "、".join(r["stores_draft"])),
-                keep=True)
+                                          "，" + "，".join(why) if why else ""), keep=True)
         out.append(r)
     return out
 
 
-def notes_text(unit, states, log_lines):
+def notes_text(unit, states, log_lines, absent=None):
     lines = ["%s %s 版本说明（自动生成，每次出报表后重写）" % (unit.market, unit.month), "",
              "规则：每个版本都有等级；只有“完整”“完整·有提醒”可以定稿；可以定稿的版本里最新生成的那个就是最终版本。",
              "没有最终版本的店铺，月份文件夹里放的是它最新版本的工作簿，文件名带“%s”。" % DRAFT, ""]
@@ -357,6 +454,8 @@ def notes_text(unit, states, log_lines):
                 if fin and v["version"] == fin["version"]:
                     continue
                 lines.append("    %s 不是最终版本：%s" % (v["version"], why_not_final(v, fin)))
+    for store in sorted(set(s for v in (absent or {}).values() for s in v)):
+        lines.append("%s：本月没有任何版本（没有可用的下载目录，或还没出过报表），全店汇总因此未定稿" % store)
     lines += ["", "本次整理："] + (["    " + x for x in log_lines] or ["    没有需要复制或删除的文件"])
     return "\n".join(lines) + "\n"
 
@@ -364,14 +463,18 @@ def notes_text(unit, states, log_lines):
 def run(unit, stores, all_stores=(), build_combined=None, no_combined=False, config_path=None, say=print):
     """Decide finals for the stores of this step; in v2 also publish, summarise,
     write 版本说明.txt and clean. Returns {"finals": {(store, basis): doc|None},
-    "combined": [build results], "cleaned": [run folders]}; never raises on a
-    file problem (each is logged)."""
+    "combined": [build results], "cleaned": [run folders], "publish_failed":
+    [month-folder files that could not be updated]}; never raises on a file
+    problem (each is logged). The runner makes its exit code at least 1 when
+    publish_failed is not empty."""
     log = Log(say)
     order = list(dict.fromkeys(list(all_stores or ()) + list(stores)))
     states = [(s, state(s, unit.month, unit.bases, config_path)) for s in order]
+    # 店铺名单里一个版本都没有的店：汇总表里没有它，不能算“完整”
+    absent = dict((b, [s for s, st in states if not st[b]["versions"]]) for b in unit.bases)
     states = [(s, st) for s, st in states if s in stores or any(st[b]["versions"] for b in unit.bases)]
     out = {"finals": dict(((s, b), st[b]["final"]) for s, st in states for b in unit.bases),
-           "combined": [], "cleaned": []}
+           "combined": [], "cleaned": [], "publish_failed": []}
     say("\n" + "=" * 62)
     say("最终版本（%s %s）" % (unit.market, unit.month))
     say("=" * 62)
@@ -388,18 +491,26 @@ def run(unit, stores, all_stores=(), build_combined=None, no_combined=False, con
             % (unit.out_dir, unit.month, layout.market_folder(unit.market)))
         return out
     os.makedirs(unit.out_dir, exist_ok=True)
+    unpublished = set()
     for s, st in states:
-        publish_store(unit, s, st, log)
+        failed = publish_store(unit, s, st, log)
+        if failed:
+            unpublished.add(s)
+            out["publish_failed"] += failed
     if build_combined is not None and not no_combined:
-        out["combined"] = build_summaries(unit, states, build_combined, log)
+        out["combined"] = build_summaries(unit, states, build_combined, log, absent)
     for s, st in states:
+        if s in unpublished:
+            # 月份文件夹里还是上一个文件：旧版本是唯一的另一份，不清理
+            log("[跳过清理] %s：定稿没能复制进月份文件夹，旧版本先留着（关闭文件后重出）" % s, keep=True)
+            continue
         if s in stores:
             out["cleaned"] += clean_store(unit, s, st, log, config_path)
     # 版本说明 lists the versions as they are after the clean-up
     states = [(s, state(s, unit.month, unit.bases, config_path)) for s, _st in states]
     try:
         with io.open(os.path.join(unit.out_dir, NOTES), "w", encoding="utf-8") as fh:
-            fh.write(notes_text(unit, states, log.lines))
+            fh.write(notes_text(unit, states, log.lines, absent))
     except (IOError, OSError) as e:
         log("[未能写入] %s：%s" % (NOTES, e))
     return out

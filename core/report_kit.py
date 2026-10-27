@@ -156,19 +156,86 @@ def alert_file_name(country, platform_code, month):
 
 # ------------------------------------------------------------------ recalculation
 
+WIN_SOFFICE = (r"C:\Program Files\LibreOffice\program\soffice.exe",
+               r"C:\Program Files (x86)\LibreOffice\program\soffice.exe")
+
+
+def soffice_path():
+    """LibreOffice 的可执行文件，找不到返回 None。
+
+    顺序：环境变量 SOFFICE > Program Files 里的标准安装位置 > PATH。has_libreoffice()
+    和 recalc() 都用它 —— 以前 recalc 只认 PATH 上的 soffice，装在 Program Files
+    但没进 PATH 的机器上，前面说"有 LibreOffice"，这里却悄悄跳过了重算。"""
+    import os
+    env = (os.environ.get("SOFFICE") or "").strip().strip('"')
+    if env:
+        return env
+    if os.name == "nt":
+        for p in WIN_SOFFICE:
+            if os.path.isfile(p):
+                return p
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        for exe in ("soffice.exe", "soffice"):
+            if d and os.path.isfile(os.path.join(d, exe)):
+                return os.path.join(d, exe)
+    return None
+
+
+def _kill_tree(p):
+    """结束 soffice 连同它起的 soffice.bin。永不抛异常。"""
+    import os
+    import signal
+    import subprocess
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                           capture_output=True, timeout=30)
+        else:
+            os.killpg(p.pid, signal.SIGKILL)
+    except Exception:                                             # noqa: BLE001
+        pass
+    try:
+        p.kill()
+    except Exception:                                             # noqa: BLE001
+        pass
+    try:
+        p.wait(timeout=10)
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
 def recalc(path, timeout=180):
     """用 LibreOffice 重算并回填公式缓存值。openpyxl 只写公式不写结果，
-    不重算的话 pandas / data_only=True 读到的全是 None。"""
+    不重算的话 pandas / data_only=True 读到的全是 None。
+
+    timeout 秒还没完就结束 soffice（连同子进程），当成"没重算"返回：卡死的
+    soffice 以前会让出报表那一步永远挂着，锁也一直不放，后面每一轮都退出码 5。"""
     import os
     import subprocess
+    import time
     out_dir = os.path.join(os.path.dirname(os.path.abspath(path)), "_recalc")
-    cmd = ["soffice", "--headless", "--norestore", "--convert-to",
+    exe = soffice_path() or "soffice"
+    cmd = [exe, "--headless", "--norestore", "--convert-to",
            "xlsx:Calc MS Excel 2007 XML", "--outdir", out_dir, path]
+    kw = {"start_new_session": True} if os.name != "nt" else {}
+    produced = os.path.join(out_dir, os.path.basename(path))
     try:
-        subprocess.call(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, **kw)
     except OSError:
         return False, "找不到 soffice，跳过重算（公式仍然正确，Excel 打开时会自动算）"
-    produced = os.path.join(out_dir, os.path.basename(path))
+    try:
+        p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(p)
+        time.sleep(0.2)
+        for leftover in (produced, out_dir):
+            try:
+                (os.remove if leftover == produced else os.rmdir)(leftover)
+            except OSError:
+                pass
+        return False, ("LibreOffice 重算超过 %g 秒没完成，已结束它，跳过重算"
+                       "（公式仍然正确，Excel 打开时会自动算）" % timeout)
     if not os.path.exists(produced):
         return False, "LibreOffice 未产出文件，跳过重算"
     try:

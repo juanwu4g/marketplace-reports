@@ -139,9 +139,12 @@ def check_stores(cfg):
     if not allowed:
         fail("stores.allowed 是空的", "在 config.json 的 stores.allowed 里列出可以打开的店铺")
         return
+    # 条目写错 / 平台这一版程序不认识 / 没登记的店：只警告，别的店照常检查。
+    # 以前一家写错整份 config 判"失败"，加一家新平台的店就把所有店拦住了。
+    for name, why in store_config.config_problems():
+        print("{} 店铺 {} 这一版程序跑不了：{}".format(WARN, name, why))
+        print("       它不会参与任何一轮；别的店不受影响。修正 config.json 的 stores.catalog")
     try:
-        for name in allowed:
-            store_config.market_of(name)
         found = store_config.markets_configured()
     except store_config.StoreConfigError as e:
         fail("店铺配置有误：{}".format(e), "修正 config.json 的 stores.catalog / batches")

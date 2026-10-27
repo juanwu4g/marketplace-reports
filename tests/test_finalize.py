@@ -95,13 +95,13 @@ def test_finals_copies_drafts_summaries_and_notes(v2):
     stale = os.path.join(md, cname(MONTH, "bill").replace(".xlsx", "_未定稿.xlsx"))
     open(stale, "w").close()
     b = Builder()
-    out = FZ.run(unit(), ["S1", "S2"], ["S1", "S2", "S3"], b)
+    out = FZ.run(unit(), ["S1", "S2"], ["S1", "S2"], b)
     assert out["finals"][("S1", "bill")]["version"] == v1b and out["finals"][("S1", "order")] is None
     # final copied under the usual name; no final -> newest version as 未定稿
     assert read(os.path.join(md, name("S1", MONTH, "bill"))) == v1b
     assert read(os.path.join(md, "S1_2026-09_未定稿.xlsx")) == v2o
     assert not os.path.exists(os.path.join(md, name("S1", MONTH, "order")))
-    # summaries from the chosen versions; 未定稿 when a store is not final; S3 (no version) left out
+    # summaries from the chosen versions; 未定稿 when a store is not final
     assert b.calls == [("bill", [("S1", v1b), ("S2", R.version_id(R2, "20261012_050000"))], cname(MONTH, "bill")),
                        ("order", [("S1", v2o), ("S2", R.version_id(R2, "20261012_050000"))],
                         "MX_ML_全店汇总_2026-09_未定稿.xlsx")]
@@ -134,7 +134,7 @@ def test_clean_up_once_every_basis_is_final(v2):
     old_o, _r, wb_old_o = make("S2", R1, "20261003_050000", R.COMPLETE, "order")
     fin_b, raw2, wb_fin_b = make("S2", R2, "20261012_050000", R.COMPLETE, "bill")
     fin_o, _r, wb_fin_o = make("S2", R2, "20261012_050000", R.COMPLETE_WARN, "order")
-    gap_b, raw3, wb_gap_b = make("S2", R3, "20261026_050000", R.GAPS, "bill")         # newer but gaps
+    gap_b, raw3, wb_gap_b = make("S2", R3, "20261026_050000", R.GAPS, "bill")         # newer but gaps: kept
     gap_o, _r, _w = make("S2", R3, "20261026_050000", R.FAILED, "order", workbook=False)
     # S1 shares the version folder of R1 and must keep its workbook there
     s1_v, _r, s1_wb = make("S1", R1, "20261003_050000", R.GAPS, "bill")
@@ -155,13 +155,16 @@ def test_clean_up_once_every_basis_is_final(v2):
     assert not os.path.exists(wb_old_b) and not os.path.exists(wb_old_o) and not os.path.exists(wb_gap_b)
     assert not os.path.isdir(os.path.dirname(wb_gap_b))               # R3's version folder emptied -> removed
     assert os.path.isfile(s1_wb) and os.path.isdir(os.path.dirname(s1_wb))   # S1's file in the shared folder
-    assert os.path.isdir(raw2) and not os.path.exists(raw1) and not os.path.exists(raw3)
+    # R3 is newer than the final and has no countable version (its report has gaps,
+    # e.g. MercadoPago still generating): the re-download is kept, so is its owed entry
+    assert os.path.isdir(raw2) and not os.path.exists(raw1) and os.path.isdir(raw3)
     assert not os.path.exists(unused_old) and os.path.isdir(unused_new) and os.path.isdir(odd)
-    assert sorted(out["cleaned"]) == sorted([raw1, raw3, unused_old])
-    assert [e["range"] for e in pending_store.load(pend)] == ["b"]
+    assert sorted(out["cleaned"]) == sorted([raw1, unused_old])
+    assert [e["range"] for e in pending_store.load(pend)] == ["a", "b"]
     assert read(os.path.join(md, name("S2", MONTH, "bill"))) == fin_b
     notes = read(os.path.join(md, FZ.NOTES))
     assert "删除没有被最终版本使用的下载目录：%s" % raw1 in notes and "删除旧版本结果文件" in notes
+    assert "保留 %s" % raw3 in notes
     # S1 untouched
     assert [v["version"] for v in R.versions("S1", MONTH)] == [s1_v]
 
@@ -338,3 +341,220 @@ def test_month_folder_keeps_only_finals_and_drafts(v2):
     retired = os.listdir(os.path.join(u.out_dir, FZ.VERSIONS, FZ.RETIRED))
     assert sorted(f.split("_", 2)[2] for f in retired) == sorted([name("S1", MONTH, "bill"), cname(MONTH, "bill")])
     assert all(read(os.path.join(u.out_dir, FZ.VERSIONS, FZ.RETIRED, f)) == "sent in September" for f in retired)
+
+
+# ------------------------------------------------------------------ clean-up never takes evidence it should keep
+
+def _bill_unit():
+    return FZ.Unit("ML", MARKET, MONTH, layout.monthly_dir(MONTH, MARKET), ("bill",), name, cname)
+
+
+def test_migrated_final_keeps_its_raw_folder(v2):
+    """F1(b): a final made before tools/migrate_layout holds the old path
+    <ROOT>/downloads/<store>/<run>; its copy in the new tree has the same run
+    name and must survive a rebuild whose new version is not countable."""
+    legacy = os.path.join(paths.ROOT, "downloads", "S1", R1)
+    os.makedirs(legacy)
+    v = R.version_id(R1, "20261003_050000")
+    R.write(R.document("ML", MARKET, "MX", "MXN", 2, "S1", MONTH, "bill", v, "2026-10-03T05:00:00",
+                       [legacy], os.path.join(paths.ROOT, "downloads", "data", "x.xlsx"),
+                       {"level": R.COMPLETE, "reasons": []},
+                       figures={"pl": [{"key": "x", "label": "X", "original": "", "kind": "d", "value": 1.0}]}))
+    migrated = layout.run_folder("S1", R1)
+    os.makedirs(migrated)
+    make("S1", R2, "20261012_050000", R.GAPS, "bill")
+    lines = []
+    out = FZ.run(_bill_unit(), ["S1"], say=lines.append)       # F1(c): the final's workbook is gone: no crash
+    assert R.final("S1", MONTH, "bill")["version"] == v
+    assert os.path.isdir(migrated) and out["cleaned"] == []
+    notes = read(os.path.join(layout.monthly_dir(MONTH, MARKET), FZ.NOTES))
+    assert "的工作簿不在了" in notes and "保留 %s" % migrated in notes
+
+
+def test_bill_only_step_keeps_the_order_final_folder(v2):
+    """F2: a step that builds only the bill basis must not delete the run folder
+    the order basis' final reads, nor clean while the order basis has no final."""
+    make("S1", R1, "20261003_050000", R.COMPLETE, "order")
+    make("S1", R2, "20261012_050000", R.FAILED, "order", workbook=False)
+    make("S1", R1, "20261003_050000", R.GAPS, "bill")
+    make("S1", R2, "20261012_050000", R.COMPLETE, "bill")
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert os.path.isdir(layout.run_folder("S1", R1)) and out["cleaned"] == []
+    assert len(R.versions("S1", MONTH, "order")) == 2          # the order basis' files are its own step's
+
+
+def test_bill_only_step_waits_for_an_order_final(v2):
+    make("S1", R1, "20261003_050000", R.GAPS, "order")
+    make("S1", R1, "20261003_050000", R.GAPS, "bill")
+    make("S1", R2, "20261012_050000", R.COMPLETE, "bill")
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert out["cleaned"] == [] and len(R.versions("S1", MONTH, "bill")) == 2
+    assert os.path.isdir(layout.run_folder("S1", R1))
+
+
+def test_newer_folder_with_only_failed_versions_is_kept(v2):
+    """F3: a re-download newer than the final whose report crashed is kept."""
+    _v, raw1, _w = make("S1", R1, "20261003_050000", R.COMPLETE, "bill")
+    _v, raw3, _w = make("S1", R3, "20261026_050000", R.FAILED, "bill", workbook=False)
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert os.path.isdir(raw1) and os.path.isdir(raw3) and out["cleaned"] == []
+
+
+def test_folder_with_owed_reports_is_kept_and_listed(v2):
+    """F3: an older folder that a pending*.json entry still points at is kept
+    and its entry stays (another platform's list counts too)."""
+    _v, raw1, _w = make("S1", R1, "20261003_050000", R.GAPS, "bill")
+    _v, raw2, _w = make("S1", R2, "20261012_050000", R.COMPLETE, "bill")
+    pend = os.path.join(layout.logs_dir(), "pending_FA.json")
+    pending_store.save([{"store": "S1", "report": "r", "range": "a", "out_dir": raw1}], pend)
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert os.path.isdir(raw1) and out["cleaned"] == []
+    assert [e["out_dir"] for e in pending_store.load(pend)] == [raw1]
+
+
+def test_unreadable_pending_list_keeps_every_folder(v2):
+    _v, raw1, _w = make("S1", R1, "20261003_050000", R.GAPS, "bill")
+    make("S1", R2, "20261012_050000", R.COMPLETE, "bill")
+    os.makedirs(layout.logs_dir(), exist_ok=True)
+    bad = os.path.join(layout.logs_dir(), "pending.json")
+    with io.open(bad, "w", encoding="utf-8") as fh:
+        fh.write("{broken")
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert os.path.isdir(raw1) and out["cleaned"] == [] and os.path.isfile(bad)   # read only, not moved
+
+
+def test_newer_is_judged_by_the_time_in_the_run_name(v2):
+    """F3: the final reads a folder named for the next month (it held this
+    month's bill); this month's folders are older or newer by their time."""
+    oct_run = "20261103_010000_m202610"
+    oct_raw = layout.run_folder("S1", oct_run)
+    os.makedirs(oct_raw)
+    R.write(R.document("ML", MARKET, "MX", "MXN", 2, "S1", MONTH, "bill", R.version_id(oct_run, "20261103_050000"),
+                       "2026-11-03T05:00:00", [oct_raw], None, {"level": R.COMPLETE, "reasons": []}))
+    older = layout.run_folder("S1", "20261020_000000_m202609")
+    newer = layout.run_folder("S1", "20261105_000000_m202609")
+    for d in (older, newer):
+        os.makedirs(d)
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert out["cleaned"] == [older] and os.path.isdir(newer) and os.path.isdir(oct_raw)
+
+
+def test_final_with_an_unreadable_run_time_keeps_every_newer_candidate(v2):
+    odd = os.path.join(os.path.dirname(layout.run_folder("S1", R1)), "manual_copy")
+    os.makedirs(odd)
+    R.write(R.document("ML", MARKET, "MX", "MXN", 2, "S1", MONTH, "bill", R.version_id(odd, "20261003_050000"),
+                       "2026-10-03T05:00:00", [odd], None, {"level": R.COMPLETE, "reasons": []}))
+    other = layout.run_folder("S1", R1)
+    os.makedirs(other)
+    out = FZ.run(_bill_unit(), ["S1"])
+    assert out["cleaned"] == [] and os.path.isdir(other)
+
+
+def test_failed_copy_is_reported_and_blocks_the_clean_up(v2, monkeypatch):
+    """F9: the final could not be copied into the month folder (open in Excel):
+    the failure is in 版本说明.txt and in the result, and the store is not
+    cleaned (the old version is the only other copy)."""
+    md = layout.monthly_dir(MONTH, MARKET)
+    _v, raw1, wb1 = make("S1", R1, "20261003_050000", R.COMPLETE, "bill")
+    _v, raw2, _w = make("S1", R2, "20261012_050000", R.COMPLETE, "bill")
+    real = shutil.copy2
+
+    def locked(src, dst, *a, **k):
+        raise PermissionError("locked")
+    monkeypatch.setattr(shutil, "copy2", locked)
+    out = FZ.run(_bill_unit(), ["S1"])
+    monkeypatch.setattr(shutil, "copy2", real)
+    assert out["publish_failed"] == [os.path.join(md, name("S1", MONTH, "bill"))]
+    assert out["cleaned"] == [] and os.path.isdir(raw1) and os.path.isfile(wb1)
+    assert len(R.versions("S1", MONTH, "bill")) == 2
+    notes = read(os.path.join(md, FZ.NOTES))
+    assert "[未能复制]" in notes and "[跳过清理] S1" in notes
+    assert not [f for f in os.listdir(md) if f.startswith(".copy_")]
+
+
+def test_runner_exit_code_is_1_when_a_copy_failed(tmp_path, monkeypatch, capsys):
+    """F9 in a real runner (Falabella's): the copy failure makes the exit code 1
+    and is in the summary line run_monthly reads."""
+    import test_fa_report as FAT
+    from core import report_kit as K
+    from platforms.falabella import run_reports
+    md = _fa_machine(tmp_path, monkeypatch, FAT, K)
+    assert run_reports.main(["--month", FAT.MONTH, "--out-dir", md, "--no-combined"]) == 0
+    monkeypatch.setattr(FZ, "_copy", lambda src, dst, log: log("[未能复制] %s" % dst, keep=True) and False)
+    capsys.readouterr()
+    assert run_reports.main(["--month", FAT.MONTH, "--out-dir", md, "--no-combined"]) == 1
+    summary = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("[REPORT_SUMMARY_JSON]")][-1]
+    assert "未能更新：%s_2026-09.xlsx" % FAT.STORE in json.loads(summary.split(" ", 1)[1])["attention"]
+
+
+def _fa_machine(tmp_path, monkeypatch, FAT, K):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"paths": {"data_root": str(tmp_path / "data")},
+                               "stores": {"allowed": [FAT.STORE], "batches": {"FA-CL": [FAT.STORE]},
+                                          "catalog": {FAT.STORE: {"platform": "FA", "country": "CL"}}}}),
+                   encoding="utf-8")
+    monkeypatch.setattr(store_config, "CONFIG_PATH", str(cfg))
+    monkeypatch.setattr(paths, "ROOT", str(tmp_path / "code"))
+    monkeypatch.setattr(K, "recalc", lambda out: (False, "跳过重算"))
+    src = FAT.make_folder(tmp_path / "src")
+    shutil.copytree(src, layout.run_folder(FAT.STORE, os.path.basename(src)))
+    return layout.monthly_dir(FAT.MONTH, "FA-CL")
+
+
+def test_hand_run_without_out_dir_lands_in_the_month_folder(tmp_path, monkeypatch):
+    """F17: in the new layout a runner started without --out-dir writes into the
+    month folder (so finalize publishes and cleans), not under <reports>/_versions."""
+    import test_fa_report as FAT
+    from core import platform_reports as PR
+    from core import report_kit as K
+    from platforms.falabella import run_reports
+    md = _fa_machine(tmp_path, monkeypatch, FAT, K)
+    assert PR.default_out_dir(FAT.MONTH, "FA-CL") == md
+    assert run_reports.main(["--month", FAT.MONTH]) in (0, 1)
+    [doc] = R.versions(FAT.STORE, FAT.MONTH, "main")
+    assert os.path.dirname(doc["workbook"]) == FZ.version_dir(md, doc["version"])
+    assert os.path.isfile(os.path.join(md, "%s_2026-09.xlsx" % FAT.STORE))
+    assert not os.path.isdir(os.path.join(layout.reports_root(), FZ.VERSIONS))
+
+
+def test_default_out_dir_in_the_legacy_layout_is_the_flat_folder(tmp_path, monkeypatch):
+    from core import platform_reports as PR
+    monkeypatch.setattr(paths, "ROOT", str(tmp_path))
+    monkeypatch.setattr(store_config, "CONFIG_PATH", str(tmp_path / "config.json"))
+    assert PR.default_out_dir("2026-09", "FA-CL") == layout.reports_root() == PR.default_out_dir()
+
+
+def test_mercadolibre_hand_run_without_out_dir(v2, tmp_path, monkeypatch):
+    """F17 for MercadoLibre's run_reports."""
+    import sys
+    import test_ml_bill_report as BT
+    from core import report_kit as K
+    from platforms.mercadolibre import run_reports
+    cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    cfg["stores"]["allowed"].append("STORE_MX")
+    cfg["stores"]["catalog"]["STORE_MX"] = {"platform": "ML", "country": "MX"}
+    (tmp_path / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.setattr(K, "recalc", lambda out, timeout=180: (False, "跳过重算"))
+    shutil.copytree(BT.make_mx_folder(tmp_path / "src"), layout.run_folder("STORE_MX", "20261013_000000_m202609"))
+    monkeypatch.setattr(sys, "argv", ["run_reports", "--month", MONTH, "--stores", "STORE_MX", "--basis", "bill"])
+    assert run_reports.main() in (0, 1)
+    [doc] = R.versions("STORE_MX", MONTH, "bill")
+    assert os.path.dirname(doc["workbook"]) == FZ.version_dir(layout.monthly_dir(MONTH, MARKET), doc["version"])
+
+
+def test_store_without_any_version_makes_the_summary_a_draft(v2):
+    """F15: S3 is in the market's store list but has no version this month: the
+    summary lacks it, so it is 未定稿, and 版本说明 says why."""
+    md = layout.monthly_dir(MONTH, MARKET)
+    make("S1", R1, "20261003_050000", R.COMPLETE, "bill")
+    b = Builder()
+    out = FZ.run(_bill_unit(), ["S1"], ["S1", "S3"], b)
+    assert b.calls == [("bill", [("S1", R.version_id(R1, "20261003_050000"))],
+                        FZ.draft_name(cname(MONTH, "bill")))]
+    assert out["combined"][0]["stores_absent"] == ["S3"]
+    notes = read(os.path.join(md, FZ.NOTES))
+    assert "S3：本月没有任何版本" in notes and "没有任何版本：S3" in notes
+    b = Builder()
+    FZ.run(_bill_unit(), ["S1"], ["S1"], b)                     # every listed store final: plain name
+    assert b.calls[0][2] == cname(MONTH, "bill")
+    assert not os.path.exists(os.path.join(md, FZ.draft_name(cname(MONTH, "bill"))))

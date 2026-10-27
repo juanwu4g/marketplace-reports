@@ -110,16 +110,33 @@ def test_catalog_requires_every_allowed_store(monkeypatch):
     d["allowed"].append("Mystery_Store")
     with pytest.raises(store_config.StoreConfigError):
         store_config.market_of("Mystery_Store")
+    # …but only that store: the others, and the whole-config views, still work
+    assert store_config.market_of("BOCINA_SM") == "ML-MX"
+    assert store_config.markets_configured() == ["ML-MX", "ML-CL", "FA-CL"]
+    assert store_config.config_problems() == [
+        ("Mystery_Store", "白名单里有，stores.catalog 里没写它属于哪个平台和国家")]
 
 
-def test_bad_catalog_entries_raise(monkeypatch):
+def test_bad_catalog_entries_are_isolated(monkeypatch):
+    """A wrong or unknown entry (e.g. a store of a platform not merged yet)
+    blocks that store, names the problem, and leaves every other store alone."""
     d = use(monkeypatch, NEW)
     d["catalog"]["AIS_CL-Fala"] = {"platform": "FA", "country": "MX"}
-    with pytest.raises(store_config.StoreConfigError):
-        store_config.market_of("BOCINA_SM")
+    d["catalog"]["Soon_WM"] = {"platform": "WM", "country": "MX"}
+    d["allowed"].append("Soon_WM")
+    d["batches"]["WM-MX"] = ["Soon_WM"]
+    assert store_config.market_of("BOCINA_SM") == "ML-MX"
+    for bad in ("AIS_CL-Fala", "Soon_WM"):
+        with pytest.raises(store_config.StoreConfigError) as e:
+            store_config.market_of(bad)
+        assert bad in str(e.value)
+    assert store_config.markets_configured() == ["ML-MX", "ML-CL", "FA-CL"]
+    assert store_config.stores_for_market("FA-CL") == ["DAB_CL-Fala (Coco)"]
+    assert store_config.problem_stores() == {"AIS_CL-Fala", "Soon_WM"}
+    assert dict(store_config.config_problems())["Soon_WM"].startswith("stores.catalog 里的条目：未知平台 'WM'")
     d["catalog"]["AIS_CL-Fala"] = "CL"
-    with pytest.raises(store_config.StoreConfigError):
-        store_config.market_of("BOCINA_SM")
+    assert "写法不对" in dict(store_config.config_problems())["AIS_CL-Fala"]
+    assert store_config.market_of("BOCINA_SM") == "ML-MX"
 
 
 def test_require_platform_and_ziniao_check(monkeypatch):

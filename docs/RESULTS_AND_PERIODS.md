@@ -73,7 +73,7 @@ download folder's run_meta.json (`core/grading.py`):
 |---|---|
 | `failed` | no workbook was written |
 | `gaps` | a form the report reads was not downloaded (cause other than NO_DATA); or a **blocking** check failed; or the platform flagged a source export incomplete (ML Ventas "No pudimos mostrar algunos datos", order basis) |
-| `provisional` | none of the above, but a bill the month uses has not closed |
+| `provisional` | none of the above, but a bill the month uses has not closed; or the download's completeness is unknown (`run_meta.json` missing or without `expected`: a store run cut off by the deadline, a stop or a crash — `core/grading.download_unknown`) |
 | `complete_warn` | none of the above, but a non-blocking check failed |
 | `complete` | nothing failed |
 
@@ -109,17 +109,26 @@ stores and month of that step.
     name; a store-basis without a final gets its newest version copied as
     `<name>_未定稿.xlsx` (removed once a final exists);
   * the country summary is built from each store's final version (newest version
-    where there is none); if any store is not final its name gets `_未定稿`;
+    where there is none); if any store is not final, or a configured store has
+    no version at all, its name gets `_未定稿` (the reason in 版本说明.txt);
   * `<monthly_dir>/版本说明.txt` lists, per store and basis: the final version,
     its grade, and why each other version is not final; and what was cleaned;
-  * clean-up, for a store-month that has a final version for every basis it
-    produces: delete the other versions' workbooks in `_versions/<version>/`
-    (the folder is shared by every store of that run and goes once empty), their
-    results files, and the store-month's raw run folders that no final version
-    uses; drop `logs/pending.json` entries for deleted folders. A raw run folder
-    is kept when a final uses it, when any version of the store's other months
-    reads it, or when it is newer than every final and has no version yet.
-    Months without a final are never cleaned.
+  * clean-up, for a store-month that has a final version for **every basis
+    that has versions** (not only the bases this step built): delete the other
+    versions' workbooks in `_versions/<version>/` for the bases this step built
+    (the folder is shared by every store of that run and goes once empty),
+    their results files, and the store-month's raw run folders that no final
+    uses; drop `logs/pending.json` entries for deleted folders. A raw run
+    folder is **kept** when a final uses it (by path, or by run name — results
+    files written before a migration kept old paths; `migrate_layout` now
+    rewrites them), when any version of the store's other months reads it,
+    when it is newer (by the time in its run name) than every final and has no
+    countable version (a re-download whose report failed or has gaps must
+    survive until the report is fixed), or when any platform's `pending*.json`
+    still owes a report in it (an unreadable pending list keeps every folder).
+    Months without a final are never cleaned, nor is a store whose final could
+    not be copied into the month folder (`publish_failed`: listed in
+    版本说明.txt, the report step exits 1).
   * a run of a few stores still rebuilds the whole 全店汇总 from every store's
     final, so `run_monthly` does not pass `--no-combined` for store subsets in
     the new layout (it still does in the old one).
