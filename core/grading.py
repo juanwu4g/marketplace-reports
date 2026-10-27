@@ -12,7 +12,9 @@ Levels, first match wins:
                  the platform said a source export is incomplete (ML Ventas "No
                  pudimos mostrar algunos datos", order basis); or the recalculated
                  workbook holds formula errors
-  provisional    none of the above, but a bill the month uses has not closed
+  provisional    none of the above, but a bill the month uses has not closed; or
+                 the download folder cannot say it is whole (no run_meta.json, or
+                 one without "expected" — see download_unknown)
   complete_warn  none of the above, but a non-blocking check failed
   complete       nothing failed
 
@@ -86,6 +88,26 @@ CAUSE_CN = {
 }
 
 
+def download_unknown(meta):
+    """Why the download folder's completeness is unknown, or None when its
+    run_meta.json says what was expected.
+
+    run_meta.json (with "expected" and "missing") is written when a store's
+    download ends. A store run killed by the deadline, a stop or a crash after
+    some files landed leaves no run_meta.json — or, once a later run collected
+    an owed report into the folder (update_run_meta), one with "missing" but no
+    "expected". Its "missing" list then says nothing: the folder must not grade
+    complete, become final and let the clean-up delete older complete folders."""
+    meta = meta if isinstance(meta, dict) else {}
+    if not meta:
+        return ("下载目录里没有 run_meta.json：这家店的下载可能没有跑完（被截止时间、停止或出错打断），"
+                "无法确认文件是否齐全（重新下载后重出）")
+    if "expected" not in meta:
+        return ("下载目录的 run_meta.json 没有记应下载的报表清单：这家店的下载可能没有跑完，"
+                "无法确认文件是否齐全（重新下载后重出）")
+    return None
+
+
 def non_blocking_reason(platform, basis, key):
     return NON_BLOCKING.get((platform, basis, key))
 
@@ -124,10 +146,11 @@ def _failed(checks):
 
 
 def grade(platform, basis, wrote, checks=(), missing=(), data_incomplete=False, provisional=(),
-          formula_errors=False, why_not_written=None):
+          formula_errors=False, why_not_written=None, unknown_download=None):
     """See the module docstring. `checks` are this store's report_kit.check records,
     `missing` the download folder's run_meta.json "missing" records, `provisional`
-    the names of bills the month uses that have not closed."""
+    the names of bills the month uses that have not closed, `unknown_download`
+    download_unknown(run_meta) — a reason when the folder may be incomplete."""
     if not wrote:
         return {"level": results.FAILED,
                 "reasons": ["报表没有生成%s" % ("：%s" % why_not_written if why_not_written else "")]}
@@ -149,9 +172,10 @@ def grade(platform, basis, wrote, checks=(), missing=(), data_incomplete=False, 
         gaps.append("重算后工作簿里有公式错误")
     if gaps:
         return {"level": results.GAPS, "reasons": gaps}
-    if provisional:
+    if provisional or unknown_download:
         return {"level": results.PROVISIONAL,
-                "reasons": ["账单尚未关账：%s（关账后重出）" % "、".join(provisional)]}
+                "reasons": (["账单尚未关账：%s（关账后重出）" % "、".join(provisional)] if provisional else [])
+                + ([unknown_download] if unknown_download else [])}
     if soft or soft_forms:
         return {"level": results.COMPLETE_WARN,
                 "reasons": soft_forms + ["提醒（不影响金额）：%s" % (c.get("name") or c.get("key")) for c in soft]}

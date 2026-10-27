@@ -122,3 +122,22 @@ def test_exit_2_says_which_step_failed():
     t = runlog.exit2_text({"steps": [{"step": "download", "code": 2}]})
     assert t.startswith("下载失败")
     assert runlog.exit2_text({"steps": []}) is None
+
+
+def test_a_store_without_a_download_folder_is_a_human_action(env):
+    """The report step says which store had no download folder (REPORT_SUMMARY_JSON);
+    that store shows up in 需要人工处理 until a later run downloads it or a later
+    report step finds its folder."""
+    summary = {"written": ["BOCINA_SM"], "missing": [],
+               "unusable": [["AIS_CL", "没有下载目录"]], "attention": [], "incomplete": []}
+    line = "[REPORT_SUMMARY_JSON] " + json.dumps(summary, ensure_ascii=False)
+    env.run(["--step", "report"], plan(("report", child(2, line))))
+    got = runlog.pending_human_actions(env.log_dir)
+    assert [(a["store"], a["cause"], a["rerun"]) for a in got["actions"]] == [
+        ("AIS_CL", runlog.NO_FOLDER, True)]
+    assert "没有下载目录" in got["actions"][0]["how"] and got["month"] == "2026-09"
+    # a later report step that wrote its report (folder found) retires the item
+    summary2 = dict(summary, written=["BOCINA_SM", "AIS_CL"], unusable=[])
+    env.run(["--step", "report"], plan(("report", child(0, "[REPORT_SUMMARY_JSON] "
+                                                       + json.dumps(summary2, ensure_ascii=False)))))
+    assert runlog.pending_human_actions(env.log_dir)["actions"] == []

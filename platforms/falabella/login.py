@@ -99,59 +99,66 @@ def sign_in(ctx, timeout=60):
     if not addr:
         return stop("拿不到浏览器调试端口")
     try:
-        old_timeout = d.timeouts.page_load
-    except Exception:
-        old_timeout = 300
-    d.set_page_load_timeout(20)       # a looping page must not hold a command for minutes
-    try:
-        if LOGIN_PATH in current_url(d):
-            email = pk.find(d, "input[name=email]")
-            if not email or not (email[0].get_attribute("value") or "").strip():
-                return stop("登录页上没有预先填好的邮箱")
-            go = pk.find(d, "input[type=submit], button[type=submit]")
-            if not go:
-                return stop("登录页上找不到「Continuar」")
-            try:
-                pk.real_click(d, go[0])
-            except Exception:
-                pass                      # the click navigates; chromedriver may time out
-        target = None
-        end = time.time() + timeout
-        while time.time() < end and not target:
-            target = _sso_target(addr)
-            if not target:
-                time.sleep(1)
-        if not target:
-            return stop("点了 Continuar 没有出现 Falabella 的统一登录页")
-        _navigate(target, with_fix(target["url"]))
-        time.sleep(3)
-        if not pk.wait_for(lambda: pk.find(d, "input[type=password]"), timeout=30, poll=1):
-            return stop("统一登录页没有密码框（可能要验证码或改密码）")
-        user = pk.find(d, "input[name=username]")
-        if user and not (user[0].get_attribute("value") or "").strip():
-            return stop("统一登录页上邮箱是空的")
-        btn = [b for b in pk.find(d, "button, input[type=submit]")
-               if "iniciar" in ((b.text or b.get_attribute("value") or "").lower())]
-        if not btn:
-            return stop("找不到「Iniciar sesión」")
-        try:
-            pk.real_click(d, btn[0])     # a real click: the browser only releases an autofilled password to a real one
-        except Exception:
-            pass
-        ok = pk.wait_for(lambda: _back_in(d), timeout=timeout, poll=2)
-        if not ok:
-            return stop("点了 Iniciar sesión 之后没有回到 Seller Center（停在 %s）"
-                        % (current_url(d)[:80]))
-        ctx.flags["auto_login"] = "ok"
-        log("  已自动登录，回到 Seller Center")
-        return True
+        with pk.page_load_cap(d, 20):  # a looping page must not hold a command for minutes
+            return _two_clicks(ctx, addr, timeout, stop)
     except Exception as e:
         return stop("%s: %s" % (e.__class__.__name__, str(e)[:120]))
-    finally:
+
+
+def _two_clicks(ctx, addr, timeout, stop):
+    """Press "Continuar", then "Iniciar sesión" (module docstring); sign_in's answer."""
+    d, log = ctx.d, ctx.log
+    if LOGIN_PATH in current_url(d):
+        email = pk.find(d, "input[name=email]")
+        if not email or not (email[0].get_attribute("value") or "").strip():
+            return stop("登录页上没有预先填好的邮箱")
+        go = pk.find(d, "input[type=submit], button[type=submit]")
+        if not go:
+            return stop("登录页上找不到「Continuar」")
         try:
-            d.set_page_load_timeout(old_timeout)
+            pk.real_click(d, go[0])
         except Exception:
-            pass
+            pass                      # the click navigates; chromedriver may time out
+    target = None
+    back = 0
+    end = time.time() + timeout
+    while time.time() < end and not target:
+        target = _sso_target(addr)
+        if target:
+            break
+        # 统一登录（Keycloak）的会话还有效时，点了 Continuar 不会出现登录页，
+        # 而是直接跳回 Seller Center：那就是已经登录了，不能报"需要人工登录"。
+        # 连续两次都在 Seller Center 才算数，免得把跳转途中的一瞬间当成回来了。
+        back = back + 1 if _back_in(d) else 0
+        if back >= 2:
+            ctx.flags["auto_login"] = "ok"
+            log("  统一登录还有效，点了 Continuar 直接回到了 Seller Center")
+            return True
+        time.sleep(1)
+    if not target:
+        return stop("点了 Continuar 没有出现 Falabella 的统一登录页")
+    _navigate(target, with_fix(target["url"]))
+    time.sleep(3)
+    if not pk.wait_for(lambda: pk.find(d, "input[type=password]"), timeout=30, poll=1):
+        return stop("统一登录页没有密码框（可能要验证码或改密码）")
+    user = pk.find(d, "input[name=username]")
+    if user and not (user[0].get_attribute("value") or "").strip():
+        return stop("统一登录页上邮箱是空的")
+    btn = [b for b in pk.find(d, "button, input[type=submit]")
+           if "iniciar" in ((b.text or b.get_attribute("value") or "").lower())]
+    if not btn:
+        return stop("找不到「Iniciar sesión」")
+    try:
+        pk.real_click(d, btn[0])     # a real click: the browser only releases an autofilled password to a real one
+    except Exception:
+        pass
+    ok = pk.wait_for(lambda: _back_in(d), timeout=timeout, poll=2)
+    if not ok:
+        return stop("点了 Iniciar sesión 之后没有回到 Seller Center（停在 %s）"
+                    % (current_url(d)[:80]))
+    ctx.flags["auto_login"] = "ok"
+    log("  已自动登录，回到 Seller Center")
+    return True
 
 
 def current_url(d):
@@ -163,4 +170,5 @@ def current_url(d):
 
 def _back_in(d):
     u = current_url(d)
-    return "sellercenter.falabella.com" in u and not on_login_page(u)
+    return ("sellercenter.falabella.com" in u and not on_login_page(u)
+            and "/user/auth/" not in u)

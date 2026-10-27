@@ -9,8 +9,9 @@
 plan        lists what would go where, what cannot be placed, how much space it
             needs. Writes nothing.
 copy        copies every file into the new tree, checks each copy (size and
-            SHA-256), rewrites the moved folder paths inside logs/pending*.json,
-            writes a manifest, then switches config.json to the new layout
+            SHA-256), rewrites the moved folder paths inside logs/pending*.json
+            and the moved run folders / workbooks inside results/**.json
+            (source_folders, workbook), writes a manifest, then switches config.json to the new layout
             (paths.data_root; a backup of config.json is kept). The old folders
             are left exactly as they were. Safe to run again: files already
             copied and identical are skipped; a different file already at the
@@ -254,12 +255,21 @@ def copy(plan, data_root, say=print):
     """Copy and verify every file. Returns (manifest items, conflicts).
 
     logs/pending*.json are not copied byte for byte: their out_dir values that
-    point at a moved run folder are rewritten to the folder's new place. The
-    manifest keeps both checksums (sha256 = the old file, dst_sha256 = its copy)."""
+    point at a moved run folder are rewritten to the folder's new place; so are
+    the results files' source_folders and workbook (core/finalize decides which
+    download folders a final version uses from them — an old path would get the
+    final's moved folder deleted). The manifest keeps both checksums (sha256 =
+    the old file, dst_sha256 = its copy)."""
     done, conflicts = [], []
+    file_map = dict((src, dst) for kind, src, dst in plan["items"] if kind in ("report", "old"))
     for kind, src, dst in plan["items"]:
         digest = sha256(src)
-        content = _pending_rewritten(src, plan["folder_map"], say) if _is_pending(kind, src) else None
+        if _is_pending(kind, src):
+            content = _pending_rewritten(src, plan["folder_map"], say)
+        elif _is_results(kind, src):
+            content = _results_rewritten(src, plan["folder_map"], file_map)
+        else:
+            content = None
         want = hashlib.sha256(content).hexdigest() if content is not None else digest
         if os.path.exists(dst):
             if sha256(dst) != want:
@@ -285,6 +295,37 @@ def copy(plan, data_root, say=print):
 def _is_pending(kind, path):
     name = os.path.basename(path)
     return kind == "logs" and name.startswith("pending") and name.endswith(".json")
+
+
+def _is_results(kind, path):
+    return kind == "results" and path.endswith(".json")
+
+
+def _results_rewritten(src, folder_map, file_map):
+    """The bytes of a results file whose source_folders / workbook point at
+    their new place, written as core/results.write writes (so a second copy
+    gives the same bytes), or None when nothing changes."""
+    def norm(m):
+        return dict((os.path.normcase(os.path.abspath(k)), v) for k, v in m.items())
+    folders, files = norm(folder_map), norm(file_map)
+    doc = read_json(src)
+    if not isinstance(doc, dict) or not doc:
+        return None
+    changed = False
+    srcs = doc.get("source_folders")
+    if isinstance(srcs, list):
+        new = [folders.get(os.path.normcase(os.path.abspath(f)), f) if isinstance(f, str) and f else f
+               for f in srcs]
+        if new != srcs:
+            doc["source_folders"], changed = new, True
+    wb = doc.get("workbook")
+    if isinstance(wb, str) and wb:
+        to = files.get(os.path.normcase(os.path.abspath(wb)))
+        if to and to != wb:
+            doc["workbook"], changed = to, True
+    if not changed:
+        return None
+    return json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True).encode("utf-8")
 
 
 def _pending_rewritten(src, folder_map, say):

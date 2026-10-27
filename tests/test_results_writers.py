@@ -127,6 +127,8 @@ def test_bill_basis_without_stamp_writes_no_results_file(v2, tmp_path):
 def test_order_basis_results_file_written_by_report_build(v2, tmp_path):
     from platforms.mercadolibre import report_build
     folder = OT.make_download_folder(tmp_path / "TEST" / "20260901_000000_m202608")
+    with open(os.path.join(folder, "run_meta.json"), "w", encoding="utf-8") as fh:   # a finished download
+        json.dump({"site": "mx", "month": "2026-08", "expected": ["sales", "billing"], "missing": []}, fh)
     out, metrics = tmp_path / "out" / "TEST_2026-08.xlsx", tmp_path / "m.json"
     version = R.version_id(folder, STAMP)
     rc = report_build.run(["--month", "2026-08", "--store", "TEST=%s" % folder, "--out", str(out), "--no-recalc",
@@ -149,6 +151,30 @@ def test_order_basis_results_file_written_by_report_build(v2, tmp_path):
     assert sum(f["amount"] for f in doc["fees"]) == pytest.approx(-75.0)       # the August bill: 15+10+30+20
     assert {x["sku"] for x in doc["sku"]} == {"SKU-A", "SKU-B"}
     assert doc["returns"] == [] and doc["inventory"] is None
+
+
+def test_order_basis_without_run_meta_is_provisional(v2, tmp_path):
+    """A download folder without run_meta.json (the store's run was cut off after
+    some files landed) cannot say it is whole: provisional, never final."""
+    from platforms.mercadolibre import report_build
+    folder = OT.make_download_folder(tmp_path / "TEST" / "20260901_000000_m202608")
+    report_build.run(["--month", "2026-08", "--store", "TEST=%s" % folder, "--out", str(tmp_path / "x.xlsx"),
+                      "--no-recalc", "--results-version", R.version_id(folder, STAMP)])
+    [doc] = R.versions("TEST", "2026-08", "order")
+    assert doc["grade"]["level"] == R.PROVISIONAL and "run_meta.json" in doc["grade"]["reasons"][0]
+
+
+def test_falabella_folder_without_expected_is_provisional(v2, tmp_path):
+    from platforms.falabella import run_reports
+    folder = FAT.make_folder(tmp_path / "FA" / "20261016_120000_m202609")
+    p = os.path.join(folder, "run_meta.json")
+    meta = json.load(open(p, encoding="utf-8"))
+    del meta["expected"]
+    json.dump(meta, open(p, "w", encoding="utf-8"))
+    r = {"outcome": "ok", "out": str(tmp_path / "x.xlsx"), "checks": [],
+         "results": {FAT.STORE: {"figures": {"pl": []}, "meta": meta}}}
+    doc = run_reports.RUNNER.results_document(FAT.STORE, folder, FAT.MONTH, "FA-CL", R.version_id(folder, STAMP), r)
+    assert doc["grade"]["level"] == R.PROVISIONAL and "应下载的报表清单" in doc["grade"]["reasons"][0]
 
 
 def test_order_basis_banner_is_a_gap(v2, tmp_path):

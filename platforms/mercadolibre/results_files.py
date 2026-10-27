@@ -25,6 +25,8 @@ def market_of(site):
 
 
 def _missing(meta):
+    # 下载被打断时没有 run_meta.json（或没有 expected），这里的空列表不等于“什么都不缺”：
+    # 由 grading.download_unknown 把等级压到“暂定”。
     return [r for r in ((meta or {}).get("missing") or []) if r and r.get("form")]
 
 
@@ -36,7 +38,8 @@ def order_document(S, checks, version, workbook, formula_errors=False, built_at=
     provisional = list(S.get("bill_open") or [])
     incomplete = bool(S.get("ventas_warning"))
     missing = _missing(S.get("meta"))
-    g = grading.grade(PLATFORM, "order", True, checks, missing, incomplete, provisional, formula_errors)
+    g = grading.grade(PLATFORM, "order", True, checks, missing, incomplete, provisional, formula_errors,
+                      unknown_download=grading.download_unknown(S.get("meta")))
     return results.document(
         PLATFORM, market_of(country), country, site.CUR, site.MONEY_DEC, S["store"], _month(S["p0"]), "order",
         version, built_at or datetime.datetime.now(), [S["folder"]], workbook, g,
@@ -49,7 +52,8 @@ def bill_document(S, checks, version, workbook, formula_errors=False, built_at=N
     p = S["prof"]
     provisional = list(S.get("provisional") or [])
     missing = _missing(S.get("meta"))
-    g = grading.grade(PLATFORM, "bill", True, checks, missing, False, provisional, formula_errors)
+    g = grading.grade(PLATFORM, "bill", True, checks, missing, False, provisional, formula_errors,
+                      unknown_download=grading.download_unknown(S.get("meta")))
     return results.document(
         PLATFORM, market_of(p.country), p.country, p.currency, p.decimals, S["store"], S["month"], "bill",
         version, built_at or datetime.datetime.now(), [S["folder"]], workbook, g,

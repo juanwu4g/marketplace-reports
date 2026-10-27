@@ -45,3 +45,33 @@ def test_other_errors_are_not_retried(resp, monkeypatch):
     with pytest.raises(ZiniaoError):
         c._start_browser({"action": "startBrowser"})
     assert len(calls) == 1 and slept == []
+
+
+def test_clock_skew_is_named_and_not_retried(monkeypatch):
+    """紫鸟说本地时间与服务器时间有差异：什么店都开不了，重试没用，要人同步时间。"""
+    c, calls, slept = _client([{"statusCode": -1, "err": "本地时间与服务器时间有差异，请校准"}],
+                              monkeypatch)
+    with pytest.raises(ZiniaoError) as e:
+        c._start_browser({"action": "startBrowser", "browserOauth": "x"})
+    assert e.value.ziniao_step == "clock_skew" and "同步" in str(e.value)
+    assert len(calls) == 1 and slept == []
+
+
+def test_a_failed_start_closes_the_window_it_may_have_left(monkeypatch):
+    """No answer (HTTP timeout) or -10000 retries exhausted: send stopBrowser for
+    that store, so a window Ziniao finishes opening later does not sit on the
+    proxy next to the next store. Other errors (-10003 login) send nothing."""
+    c, calls, slept = _client([None, None], monkeypatch)
+    with pytest.raises(ZiniaoError):
+        c._start_browser({"action": "startBrowser", "browserOauth": "oa1"})
+    assert [d["action"] for d in calls] == ["startBrowser", "stopBrowser"]
+    assert calls[1]["browserOauth"] == "oa1"
+    n = len(ZiniaoClient.START_RETRY_WAITS) + 1
+    c, calls, slept = _client([dict(UNKNOWN) for _ in range(n)] + [{"statusCode": 0}], monkeypatch)
+    with pytest.raises(ZiniaoError):
+        c._start_browser({"action": "startBrowser", "browserOauth": "oa2"})
+    assert calls[-1]["action"] == "stopBrowser"
+    c, calls, slept = _client([{"statusCode": -10003, "err": "login"}], monkeypatch)
+    with pytest.raises(ZiniaoError):
+        c._start_browser({"action": "startBrowser", "browserOauth": "oa3"})
+    assert [d["action"] for d in calls] == ["startBrowser"]

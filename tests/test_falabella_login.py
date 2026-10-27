@@ -72,3 +72,41 @@ def test_stops_when_email_not_prefilled_and_never_clicks():
     c = Ctx(d)
     assert login.sign_in(c, timeout=1) is False
     assert "邮箱" in c.flags["auto_login"] and not d.clicked
+
+
+class StillSignedIn(object):
+    """Keycloak's session is still valid: "Continuar" goes straight back to
+    Seller Center (through one /user/auth/ hop), no sign-in page ever appears."""
+    capabilities = {"goog:chromeOptions": {"debuggerAddress": "127.0.0.1:1"}}
+
+    def __init__(self):
+        self.urls = ["https://sellercenter.falabella.com/user/auth/login"]
+
+    @property
+    def current_url(self):
+        return self.urls.pop(0) if len(self.urls) > 1 else self.urls[0]
+
+    def set_page_load_timeout(self, s):
+        pass
+
+
+def test_still_signed_in_after_continuar_counts_as_logged_in(monkeypatch):
+    from platforms.falabella import page_kit as pk
+    d = StillSignedIn()
+    monkeypatch.setattr(login, "_sso_target", lambda addr: None)
+    monkeypatch.setattr(login.time, "sleep", lambda s: None)
+    monkeypatch.setattr(pk, "find", lambda drv, sel, *a, **k: [Field("a@b.cl")])
+
+    def click(drv, el):
+        drv.urls = ["https://sellercenter.falabella.com/user/auth/callback?code=x",
+                    "https://sellercenter.falabella.com/report/transaction/statement#/x"]
+    monkeypatch.setattr(pk, "real_click", click)
+    c = Ctx(d)
+    assert login.sign_in(c, timeout=30) is True
+    assert c.flags["auto_login"] == "ok"
+
+
+def test_a_redirect_hop_alone_is_not_back_in():
+    class D(object):
+        current_url = "https://sellercenter.falabella.com/user/auth/callback?code=x"
+    assert not login._back_in(D())

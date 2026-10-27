@@ -289,22 +289,65 @@ def same_dir(a, b):
                                     == os.path.normcase(os.path.normpath(b)))
 
 
-def newest_run(folders):
+ANY_MONTH = object()
+
+
+def month_key(folder):
+    """一个下载目录是为哪个会计月下的：'2026-09'（--month 跑的，目录名带
+    _m202609），None（常规运行）。两个目录只有这个键相同才能互相替代。"""
+    return layout.month_of_run(folder) if folder else None
+
+
+def _month_folder(name):
+    return name == layout.NO_MONTH or (
+        len(name) == 7 and name[:4].isdigit() and name[4] == "-"
+        and name[5:].isdigit())
+
+
+def _store_parents(folders):
+    """装着这家店各趟目录的上级目录。
+
+    老布局一家店一个目录（downloads/<店>/<各趟>），新布局按月分开
+    （raw/…/<店>/<月份或「其他」>/<各趟>）。只看给定目录的上一级的话，新布局下
+    看到的只是那一个月份文件夹 —— 两种布局对"最新一趟"的回答就不一样了。所以
+    遇到月份文件夹，就把这家店所有月份文件夹都算上。
+    """
+    out = []
+    for f in folders:
+        if not f:
+            continue
+        parent = os.path.dirname(os.path.normpath(f))
+        if _month_folder(os.path.basename(parent)):
+            store = os.path.dirname(parent)
+            try:
+                out.extend(os.path.join(store, m) for m in sorted(os.listdir(store))
+                           if _month_folder(m)
+                           and os.path.isdir(os.path.join(store, m)))
+            except OSError:
+                out.append(parent)
+        else:
+            out.append(parent)
+    return download_diag.dedupe(out)
+
+
+def newest_run(folders, month=ANY_MONTH):
     """这家店磁盘上最新的那一趟：(目录, 它应有的报表)。找不到返回 (None, None)。
 
     目录名以时间戳开头，按名字排序就是按时间排序。只认写了 expected 的目录
     （这个版本之前的目录没有，没法拿来判断"是不是已经下到了"）。
+    给了 `month`（见 month_key）就只在同一个会计月的目录里找：8 月那一趟欠的
+    报表，9 月那一趟下到再多也替代不了它。
     """
-    parents = download_diag.dedupe(
-        os.path.dirname(os.path.normpath(f)) for f in folders if f)
     best = None
-    for parent in parents:
+    for parent in _store_parents(folders):
         try:
             names = [n for n in os.listdir(parent)
                      if os.path.isdir(os.path.join(parent, n)) and n[:8].isdigit()]
         except OSError:
             continue
         for n in names:
+            if month is not ANY_MONTH and month_key(n) != month:
+                continue
             if best is None or n > os.path.basename(best):
                 best = os.path.join(parent, n)
     if not best:
@@ -326,8 +369,11 @@ def settle_carried(row, recs, carried, live, ref, expected):
     """
     lacking = set(r.get("form") for r in recs)
     delivered = set(expected or []) - lacking
+    # 只有同一个会计月的才算"同一种报表"：--month 2026-08 之后跑 --month
+    # 2026-09，8 月那一趟还欠着的 MercadoPago 报表不能因为 9 月下到了就撤掉。
     moot = [e for e in live
             if e.get("out_dir") and not same_dir(e.get("out_dir"), ref)
+            and month_key(e["out_dir"]) == month_key(ref)
             and download_diag.form_of_entry(e) in delivered]
     if moot:
         pending_store.remove(moot)
@@ -336,7 +382,8 @@ def settle_carried(row, recs, carried, live, ref, expected):
                  "、".join(sorted(set(download_diag.form_of_entry(e)
                                      for e in moot))), len(moot)))
     for r in carried:
-        r["superseded"] = r.get("form") in delivered
+        r["superseded"] = (r.get("form") in delivered
+                           and month_key(r.get("carried_from")) == month_key(ref))
     row["pending"] = [
         "%s%s - [%s] %s" % (r["form"],
                             " (%s)" % r["period"] if r.get("period") else "",
@@ -415,10 +462,13 @@ def drop_superseded(entries):
     """
     by_store = {}
     for e in entries:
-        by_store.setdefault(e.get("store"), []).append(e)
+        # 按（店铺, 会计月）分组：只和同一个月最新的那一趟比，见 newest_run
+        by_store.setdefault((e.get("store"), month_key(e.get("out_dir"))),
+                            []).append(e)
     moot = []
-    for store, es in by_store.items():
-        ref, expected = newest_run([e.get("out_dir") for e in es if e.get("out_dir")])
+    for (store, month), es in by_store.items():
+        ref, expected = newest_run(
+            [e.get("out_dir") for e in es if e.get("out_dir")], month=month)
         if not ref:
             continue
         meta = run_downloads.read_run_meta(ref) or {}
@@ -436,8 +486,59 @@ def drop_superseded(entries):
                   % (e.get("store"), download_diag.form_of_entry(e),
                      os.path.basename(os.path.normpath(e["out_dir"])),
                      os.path.basename(os.path.normpath(newest_run(
-                         [e["out_dir"]])[0] or "?"))))
+                         [e["out_dir"]], month=month_key(e["out_dir"]))[0]
+                         or "?"))))
     return [e for e in entries if e not in moot]
+
+
+def client_gone(exc):
+    """紫鸟客户端本身没了（ziniao.exe 中途退出）：send() 收不到任何回应。
+
+    这时后面每一家店都会以同一句 "no response from client" 失败 —— 不是店铺
+    的问题，重启客户端就好。
+    """
+    return (isinstance(exc, ZiniaoError)
+            and "no response from client" in str(exc))
+
+
+def revive_client(client):
+    """重启紫鸟客户端一次。成功返回 None，失败返回异常。"""
+    print("%s  [警告] 紫鸟客户端没有回应（多半是中途退出了），正在重启…" % NEWLINE)
+    try:
+        client.start(restart=True)
+        print("  紫鸟客户端已重启")
+        return None
+    except Exception as e:
+        print("  [错误] 紫鸟客户端重启失败：%s: %s" % (e.__class__.__name__, e))
+        return e
+
+
+def failed_row(name, args, exc, note=None):
+    """整家店没跑成的一行：应有的报表全部缺失，原因是同一个。没有浏览器可截图，
+    现场就是异常本身。"""
+    expected = download_diag.expected_forms(args)
+    return {"store": name, "status": "failed", "files": 0,
+            "errors": [note or "%s: %s" % (exc.__class__.__name__, exc)],
+            "pending": [], "empty": [], "out_dir": None, "seconds": 0,
+            "expected": expected,
+            "missing": download_diag.store_failure_records(exc, expected)}
+
+
+def write_progress(log_path, stamp, rows, names):
+    """每家店跑完就把汇总写一遍。
+
+    run_monthly 到点（5 小时）会直接杀掉这个进程；以前汇总只在最后写，被杀时
+    连 batch_*.json 都没有，分不清哪些店已经下完。Falabella / Amazon 的批次
+    （core/platform_batch.py）一直是每家店写一次。最后那次完整的写入照旧，
+    in_progress 字段到那时就没了。写不出只警告 —— 不能因此停下批次。
+    """
+    try:
+        extra = batch_verdict(rows)
+        extra["in_progress"] = True
+        extra["stores_planned"] = list(names)
+        write_summary(log_path, stamp, rows, extra=extra)
+    except Exception as e:
+        print("  [警告] 批次进度写入失败：%s" % str(e)[:120])
 
 
 def collect_pass(client, names, args, rows):
@@ -475,109 +576,213 @@ def collect_pass(client, names, args, rows):
     for e in mine:
         by_store.setdefault(e["store"], []).append(e)
 
+    revived = False
     for name in names:                      # same order as the download loop
         entries = by_store.get(name)
         if not entries:
             continue
         row = next((r for r in rows if r["store"] == name), None)
+        if (row is not None and row.get("blocked")
+                and not any(same_dir(e.get("out_dir"), row.get("out_dir"))
+                            for e in entries)):
+            # 这一趟进店就停在登录/验证页上：现在重开，只会对着同一个登录页
+            # 再耗满补收预算。条目原样留在登记簿里，有人登录之后下一趟再取。
+            print("%s--- 补收：跳过 %s —— 这一趟进店时被挡在登录/验证页（%s），"
+                  "%d 张旧欠账留给下一趟"
+                  % (NEWLINE, name, row["blocked"], len(entries)))
+            continue
         print("%s--- 补收：%s（%d 张报表）"
               % (NEWLINE, name, len(entries)))
+        result, keep, late_dir, by_dir, e = _late_collect_store(
+            client, name, entries, args)
+        if e is not None and client_gone(e) and not revived:
+            revived = True
+            if revive_client(client) is None:
+                print("    重试补收 %s" % name)
+                result, keep, late_dir, by_dir, e = _late_collect_store(
+                    client, name, entries, args)
+        _settle_late_store(name, entries, row, result, keep, late_dir, by_dir)
 
-        result = {"store": name, "sales": [], "mp": [], "pending": [],
-                  "empty": [], "errors": [], "retry_later": [], "no_data": []}
-        late_dir = None
-        keep = []
-        by_dir = {}                 # 目录 -> 这一趟补收落在那里的文件
-        try:
-            store = client.find_store(name)
-            with client.open_store(store, close_when_done=True) as session:
-                d = session.driver
-                d.get(session.launcher_page)
-                # Entries from different runs land in different folders, and the
-                # download directory is a per-SESSION CDP setting - so it has to
-                # be re-applied here, once per folder. Forgetting this is how a
-                # route ends up reporting "got 0 files" while clicking correctly.
-                folders = {}
-                for e in entries:
-                    folders.setdefault(e.get("out_dir"), []).append(e)
-                for home, group in folders.items():
-                    out_dir = home
-                    if not out_dir or not os.path.isdir(out_dir):
-                        # the run folder is gone; put the file with this batch
-                        out_dir = run_downloads.run_folder(name, args._stamp,
-                                                           args.out)
-                        if not os.path.isdir(out_dir):
-                            os.makedirs(out_dir)
-                        print("    原下载目录已不存在，改存到 %s" % out_dir)
-                    meli_forms.set_download_dir(d, out_dir)
-                    late_dir = out_dir
-                    n_sales, n_mp = len(result["sales"]), len(result["mp"])
-                    left = run_downloads.collect_pending(
-                        d, group, out_dir, result,
-                        budget=args.late_timeout, poll=args.collect_poll)
-                    keep.extend(left)
-                    by_dir[home] = {"sales": result["sales"][n_sales:],
-                                    "mp": result["mp"][n_mp:]}
-                d.get(session.launcher_page)
-        except Exception as e:
-            # A store that will not open must not cost the other stores' reports.
-            # Its entries stay in the registry, so nothing is lost.
-            print("    [失败] %s: %s" % (e.__class__.__name__, e))
-            result["errors"].append("late collect: %s: %s"
-                                    % (e.__class__.__name__, e))
-            # 已经确认没有数据的不必再欠着；其余全部照旧欠着
-            keep = [x for x in entries
-                    if not any(x is y for y in result.get("no_data", []))]
-            # 没有浏览器可截图：异常类、卡在哪一步、紫鸟的原话就是全部现场
-            for x in keep:
-                download_diag.note_failure(x, e)
 
-        # Still generating when the budget ran out. Separated from retry_later
-        # because that one already has its own summary line ("datos en proceso")
-        # and would otherwise be counted twice.
-        waiting = list(keep)
-        keep.extend(x for x in result.get("retry_later", [])
-                    if not any(x is k for k in keep))
-        collected = len(entries) - len(keep)
-        print("    已取回 %d 张，仍欠 %d 张" % (collected, len(keep)))
+def _late_collect_store(client, name, entries, args):
+    """补收一家店。返回 (result, 仍欠的, 落盘目录, 按目录的文件, 异常或 None)。"""
+    result = {"store": name, "sales": [], "mp": [], "pending": [],
+              "empty": [], "errors": [], "retry_later": [], "no_data": []}
+    late_dir = None
+    keep = []
+    by_dir = {}                 # 目录 -> 这一趟补收落在那里的文件
+    failure = None
+    try:
+        store = client.find_store(name)
+        with client.open_store(store, close_when_done=True) as session:
+            d = session.driver
+            # 只是把浏览器停到正常页面，失败不该让已取回的文件又算成欠着
+            run_downloads._to_launcher(session, "补收进店")
+            # Entries from different runs land in different folders, and the
+            # download directory is a per-SESSION CDP setting - so it has to
+            # be re-applied here, once per folder. Forgetting this is how a
+            # route ends up reporting "got 0 files" while clicking correctly.
+            folders = {}
+            for e in entries:
+                folders.setdefault(e.get("out_dir"), []).append(e)
+            for home, group in folders.items():
+                out_dir = home
+                if not out_dir or not os.path.isdir(out_dir):
+                    # the run folder is gone; put the file with this batch
+                    out_dir = run_downloads.run_folder(name, args._stamp,
+                                                       args.out)
+                    if not os.path.isdir(out_dir):
+                        os.makedirs(out_dir)
+                    print("    原下载目录已不存在，改存到 %s" % out_dir)
+                meli_forms.set_download_dir(d, out_dir)
+                late_dir = out_dir
+                n_sales, n_mp = len(result["sales"]), len(result["mp"])
+                left = run_downloads.collect_pending(
+                    d, group, out_dir, result,
+                    budget=args.late_timeout, poll=args.collect_poll)
+                keep.extend(left)
+                by_dir[home] = {"sales": result["sales"][n_sales:],
+                                "mp": result["mp"][n_mp:]}
+            run_downloads._to_launcher(session, "补收收尾")
+    except Exception as e:
+        # A store that will not open must not cost the other stores' reports.
+        # Its entries stay in the registry, so nothing is lost.
+        failure = e
+        print("    [失败] %s: %s" % (e.__class__.__name__, e))
+        result["errors"].append("late collect: %s: %s"
+                                % (e.__class__.__name__, e))
+        # 已经确认没有数据的不必再欠着；其余全部照旧欠着
+        keep = [x for x in entries
+                if not any(x is y for y in result.get("no_data", []))]
+        # 没有浏览器可截图：异常类、卡在哪一步、紫鸟的原话就是全部现场
+        for x in keep:
+            download_diag.note_failure(x, e)
+    return result, keep, late_dir, by_dir, failure
 
-        # Everything not kept is done with - downloaded, or a range that will
-        # never produce a report. Removing it is what stops the registry growing
-        # without bound.
-        done = [e for e in entries if not any(e is k for k in keep)]
-        if done:
-            pending_store.remove(done)
-        if keep:
-            # 把这一趟探测到的东西（次数、首末时间、最后状态、证据、原因）
-            # 写回登记簿：下一趟、以及批次末尾的诊断，都从这里读。
-            for e in keep:
+
+def _settle_late_store(name, entries, row, result, keep, late_dir, by_dir):
+    """补收一家店之后：登记簿增删、这家店那一行的更新。"""
+    # Still generating when the budget ran out. Separated from retry_later
+    # because that one already has its own summary line ("datos en proceso")
+    # and would otherwise be counted twice.
+    waiting = list(keep)
+    keep.extend(x for x in result.get("retry_later", [])
+                if not any(x is k for k in keep))
+    collected = len(entries) - len(keep)
+    print("    已取回 %d 张，仍欠 %d 张" % (collected, len(keep)))
+
+    # Everything not kept is done with - downloaded, or a range that will
+    # never produce a report. Removing it is what stops the registry growing
+    # without bound.
+    done = [e for e in entries if not any(e is k for k in keep)]
+    if done:
+        pending_store.remove(done)
+    if keep:
+        # 把这一趟探测到的东西（次数、首末时间、最后状态、证据、原因）
+        # 写回登记簿：下一趟、以及批次末尾的诊断，都从这里读。
+        for e in keep:
+            e["cause"] = download_diag.record_from_entry(e)["cause"]
+        pending_store.add(keep)
+
+    if row is not None:
+        if result["sales"] and late_dir:
+            # ventas arrived late, so this store has no workbook yet
+            row["ventas"] = list(row.get("ventas", [])) + [
+                rel_to_downloads(late_dir, f) for f in result["sales"]]
+        row["files"] = row.get("files", 0) + len(result["mp"]) + len(result["sales"])
+        row["late_collected"] = len(result["mp"]) + len(result["sales"])
+        row["empty"] = list(row.get("empty", [])) + result["empty"]
+        # Report what is still owed. The registry knowing about it is not
+        # enough: a summary that says pending=[] while a report is still
+        # generating is the same "silence reads as success" failure that
+        # once let six failed requests pass as `ok, 13 files`.
+        row["pending"] = (
+            [p for p in row.get("pending", [])
+             if run_downloads.DELAYED_MARK not in p]
+            + result["pending"]
+            + [owed_label(e) for e in waiting])
+        row["_late"] = {"no_data": list(result.get("no_data") or []),
+                        "by_dir": by_dir}
+        if result["errors"]:
+            row["errors"] = list(row.get("errors", [])) + result["errors"]
+            if row["status"] == "ok":
+                row["status"] = "partial"
+
+
+def download_store(client, name, args, stamp):
+    """批次里跑一家店，返回汇总里的那一行。不抛异常。
+
+    紫鸟客户端没有回应时，行上带 _client_gone=True，由调用方决定要不要重启
+    客户端重跑。
+    """
+    row = {"store": name, "status": "failed", "files": 0,
+           "errors": [], "pending": [], "empty": [],
+           "out_dir": None, "seconds": 0}
+    t0 = time.time()
+    try:
+        out_dir = run_downloads.run_folder(name, stamp, args.out)
+        # close_when_done is not negotiable in a batch: the next store
+        # needs the browser slot, and a store left open would still be
+        # holding its proxy.
+        result = run_downloads.run_store(client, name, args,
+                                         out_dir=out_dir,
+                                         close_when_done=True,
+                                         defer_slow=True)
+        run_downloads.print_summary(result)
+        # Keep the ventas export's path RELATIVE TO the pipeline's raw root, which is
+        # what the cleaner's matcher wants. A bare filename would also match,
+        # but against every copy in the tree.
+        row["ventas"] = [rel_to_downloads(result["out_dir"], f)
+                         for f in result.get("sales", [])]
+        deferred = result.get("deferred", []) + result.get("retry_later", [])
+        if deferred:
+            entries = []
+            for p in deferred:
+                e = dict(p)
+                e["store"] = name
+                e["out_dir"] = result["out_dir"]
+                e.setdefault("requested_at", time.time())
                 e["cause"] = download_diag.record_from_entry(e)["cause"]
-            pending_store.add(keep)
-
-        if row is not None:
-            if result["sales"] and late_dir:
-                # ventas arrived late, so this store has no workbook yet
-                row["ventas"] = list(row.get("ventas", [])) + [
-                    rel_to_downloads(late_dir, f) for f in result["sales"]]
-            row["files"] = row.get("files", 0) + len(result["mp"]) + len(result["sales"])
-            row["late_collected"] = len(result["mp"]) + len(result["sales"])
-            row["empty"] = list(row.get("empty", [])) + result["empty"]
-            # Report what is still owed. The registry knowing about it is not
-            # enough: a summary that says pending=[] while a report is still
-            # generating is the same "silence reads as success" failure that
-            # once let six failed requests pass as `ok, 13 files`.
-            row["pending"] = (
-                [p for p in row.get("pending", [])
-                 if run_downloads.DELAYED_MARK not in p]
-                + result["pending"]
-                + [owed_label(e) for e in waiting])
-            row["_late"] = {"no_data": list(result.get("no_data") or []),
-                            "by_dir": by_dir}
-            if result["errors"]:
-                row["errors"] = list(row.get("errors", [])) + result["errors"]
-                if row["status"] == "ok":
-                    row["status"] = "partial"
-
+                entries.append(e)
+            # Written NOW, while the store is fresh in hand. A crash between
+            # this store and the late pass would otherwise leave reports
+            # generating on MercadoPago that nobody knows to collect.
+            pending_store.add(entries)
+        if result.get("blocked"):
+            # 进店就停在登录/验证页：补收阶段不要再为旧欠账重开这家店
+            row["blocked"] = result["blocked"]
+        row.update(
+            status="partial" if result["errors"] else "ok",
+            files=run_downloads.count_files(result),
+            errors=result["errors"],
+            pending=result["pending"],
+            empty=result.get("empty", []),
+            out_dir=result["out_dir"],
+            expected=result.get("expected", []),
+            missing=result.get("missing", []),
+            flags=result.get("flags", {}),
+            cautions=result.get("cautions", []),
+            _result=result,
+            _started=datetime.datetime.fromtimestamp(t0))
+    except StoreNotAllowed as e:
+        row["status"] = "not-allowed"
+        row["errors"] = [str(e)]
+        print("  [跳过] %s" % e)
+    except Exception as e:
+        # Deliberately broad. The point of a batch is that store 7 dying in
+        # a way nobody predicted still leaves stores 8-25 to run.
+        row["errors"] = ["%s: %s" % (e.__class__.__name__, e)]
+        print("  [失败] %s: %s" % (e.__class__.__name__, e))
+        traceback.print_exc()
+        # 整家店没跑成：应有的报表全部缺失，原因是同一个。没有浏览器可
+        # 截图，现场就是异常本身。
+        row["expected"] = download_diag.expected_forms(args)
+        row["missing"] = download_diag.store_failure_records(
+            e, row["expected"])
+        if client_gone(e):
+            row["_client_gone"] = True
+    row["seconds"] = int(time.time() - t0)
+    return row
 
 
 def main():
@@ -640,8 +845,23 @@ def main():
                   % (i, n, run_downloads.run_folder(n, stamp, args.out)))
         return 0
 
-    client = ZiniaoClient()
-    client.start(restart=not args.no_restart)
+    log_path = os.path.join(LOG_DIR, "batch_%s.json" % stamp)
+    try:
+        client = ZiniaoClient()
+        client.start(restart=not args.no_restart)
+    except Exception as e:
+        # 和 core/platform_batch.py 一样：客户端起不来是硬失败（退出码 2）。
+        # 以前 KeyError('user_info')、Popen 找不到 ziniao.exe 之类直接冲出去，
+        # 以 Python 默认的 1 退出 —— run_monthly 把 1 读成"跑完了、要人看"，
+        # 接着拿更早的目录出报表。每家店写一行失败，汇总照常写。
+        print("[错误] 紫鸟客户端起不来：%s: %s" % (e.__class__.__name__, e))
+        traceback.print_exc()
+        rows = [failed_row(n, args, e) for n in names]
+        verdict = batch_verdict(rows)
+        verdict["exit_code"] = 2
+        write_summary(log_path, stamp, rows, extra=verdict)
+        print("[BATCH_SUMMARY_JSON] %s" % os.path.abspath(log_path))
+        return 2
 
     rows = []
     began = time.time()
@@ -662,76 +882,38 @@ def main():
                  "pending": [], "empty": [], "out_dir": None, "seconds": 0}
                 for n in names]
 
-    for i, name in enumerate([] if args.collect_only else names, 1):
+    todo = [] if args.collect_only else names
+    client_dead = None
+    for i, name in enumerate(todo, 1):
         print("\n" + "#" * 60)
         print("# [%d/%d] %s" % (i, len(names), name))
         print("#" * 60)
-        row = {"store": name, "status": "failed", "files": 0,
-               "errors": [], "pending": [], "empty": [],
-               "out_dir": None, "seconds": 0}
-        t0 = time.time()
-        try:
-            out_dir = run_downloads.run_folder(name, stamp, args.out)
-            # close_when_done is not negotiable in a batch: the next store
-            # needs the browser slot, and a store left open would still be
-            # holding its proxy.
-            result = run_downloads.run_store(client, name, args,
-                                             out_dir=out_dir,
-                                             close_when_done=True,
-                                             defer_slow=True)
-            run_downloads.print_summary(result)
-            # Keep the ventas export's path RELATIVE TO the pipeline's raw root, which is
-            # what the cleaner's matcher wants. A bare filename would also match,
-            # but against every copy in the tree.
-            row["ventas"] = [rel_to_downloads(result["out_dir"], f)
-                             for f in result.get("sales", [])]
-            deferred = result.get("deferred", []) + result.get("retry_later", [])
-            if deferred:
-                entries = []
-                for p in deferred:
-                    e = dict(p)
-                    e["store"] = name
-                    e["out_dir"] = result["out_dir"]
-                    e.setdefault("requested_at", time.time())
-                    e["cause"] = download_diag.record_from_entry(e)["cause"]
-                    entries.append(e)
-                # Written NOW, while the store is fresh in hand. A crash between
-                # this store and the late pass would otherwise leave reports
-                # generating on MercadoPago that nobody knows to collect.
-                pending_store.add(entries)
-            row.update(
-                status="partial" if result["errors"] else "ok",
-                files=run_downloads.count_files(result),
-                errors=result["errors"],
-                pending=result["pending"],
-                empty=result.get("empty", []),
-                out_dir=result["out_dir"],
-                expected=result.get("expected", []),
-                missing=result.get("missing", []),
-                flags=result.get("flags", {}),
-                cautions=result.get("cautions", []),
-                _result=result,
-                _started=datetime.datetime.fromtimestamp(t0))
-        except StoreNotAllowed as e:
-            row["status"] = "not-allowed"
-            row["errors"] = [str(e)]
-            print("  [跳过] %s" % e)
-        except Exception as e:
-            # Deliberately broad. The point of a batch is that store 7 dying in
-            # a way nobody predicted still leaves stores 8-25 to run.
-            row["errors"] = ["%s: %s" % (e.__class__.__name__, e)]
-            print("  [失败] %s: %s" % (e.__class__.__name__, e))
-            traceback.print_exc()
-            # 整家店没跑成：应有的报表全部缺失，原因是同一个。没有浏览器可
-            # 截图，现场就是异常本身。
-            row["expected"] = download_diag.expected_forms(args)
-            row["missing"] = download_diag.store_failure_records(
-                e, row["expected"])
-        row["seconds"] = int(time.time() - t0)
+        row = download_store(client, name, args, stamp)
+        if row.get("_client_gone"):
+            # ziniao.exe 中途退出：这家店不是自己坏了，后面每一家也都会以同一句
+            # "no response from client" 失败。重启一次客户端、这家店重跑一次；
+            # 重启不了就把剩下的店都记成失败、说清楚原因，然后停下。
+            dead = revive_client(client)
+            if dead is None:
+                print("  重跑 %s" % name)
+                row = download_store(client, name, args, stamp)
+            else:
+                note = ("紫鸟客户端中途退出，重启失败（%s: %s），这家店及之后的店铺"
+                        "都没有跑。确认紫鸟能正常打开后重跑这些店。"
+                        % (dead.__class__.__name__, dead))
+                for rest in todo[i - 1:]:
+                    r = failed_row(rest, args, dead, note=note)
+                    rows.append(r)
+                print("  [错误] %s" % note)
+                write_progress(log_path, stamp, rows, names)
+                client_dead = dead
+                break
+        row.pop("_client_gone", None)
         # The workbook is written HERE, per store, not batched to the end.
         if args.workbooks:
             make_workbook(row, stamp, args)
         rows.append(row)
+        write_progress(log_path, stamp, rows, names)
 
         if row["status"] not in ("ok", "partial") and args.stop_on_error:
             print("\n--stop-on-error：在 %s 之后中止批次" % name)
@@ -745,7 +927,11 @@ def main():
     # 这些目录，清洗时它们和本轮目录一样算"这一次的文件"。
     touched = set(os.path.basename(e["out_dir"]) for e in pending_store.load()
                   if e.get("out_dir"))
-    if not args.no_late_collect:
+    if client_dead is not None:
+        # 客户端都起不来，补收只会每家店再失败一次；欠账原样留在登记簿里
+        print("%s>>> 紫鸟客户端已不可用，跳过补收阶段，仍欠：%s"
+              % (NEWLINE, pending_store.describe()))
+    elif not args.no_late_collect:
         collect_pass(client, names, args, rows)
     elif pending_store.load():
         print("%s>>> 已跳过补收阶段（--no-late-collect），仍欠：%s"
@@ -801,7 +987,6 @@ def main():
         traceback.print_exc()
 
     verdict = batch_verdict(rows, tr, expired)
-    log_path = os.path.join(LOG_DIR, "batch_%s.json" % stamp)
     write_summary(log_path, stamp, rows, transform_result=tr, extra=verdict)
 
     elapsed = int(time.time() - began)
@@ -882,4 +1067,9 @@ if __name__ == "__main__":
         sys.exit(3)
     except ZiniaoError as e:
         print("\n紫鸟客户端错误：%s" % e)
+        sys.exit(2)
+    except Exception:
+        # 没料到的异常是硬失败（2），不能用 Python 默认的 1 退出：run_monthly
+        # 把 1 读成"跑完了、要人看"，会接着拿更早的目录出报表。
+        traceback.print_exc()
         sys.exit(2)

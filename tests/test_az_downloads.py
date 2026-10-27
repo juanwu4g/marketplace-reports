@@ -120,3 +120,156 @@ def test_site_facts():
     s = site.get("mx")
     assert s["host"].startswith("https://sellercentral.amazon.com.mx")
     assert s["currency"] == "MXN" and s["vat"] == 0.16 and s["locale"].startswith("es")
+
+
+# ------------------------------------------------------------------ robustness (2026-10 review)
+
+import pytest  # noqa: E402
+
+from core import browser_kit as bk  # noqa: E402
+
+
+class Page(object):
+    def __init__(self, url, title):
+        self.current_url, self.title = url, title
+
+
+REPO = "https://sellercentral.amazon.com.mx/payments/reports-repository"
+
+
+def test_a_5xx_page_is_retryable_not_blocked():
+    for title in ("503 Service Unavailable", "Error 500", "502 Bad Gateway",
+                  "Internal Server Error"):
+        with pytest.raises(forms.ServerDown) as e:
+            forms.blocked(Page(REPO, title))
+        assert isinstance(e.value, bk.PageError) and not isinstance(e.value, forms.Blocked)
+    with pytest.raises(forms.ServerDown):
+        forms.blocked(Page("chrome-error://chromewebdata/", "sellercentral.amazon.com.mx"))
+    with pytest.raises(forms.ServerDown):
+        forms.blocked(Page("about:blank", ""))
+
+
+def test_real_sign_in_pages_are_still_blocked():
+    assert forms.blocked(Page("https://sellercentral.amazon.com.mx/ap/signin?openid.x=1",
+                              "Amazon Sign-In"))
+    assert forms.blocked(Page("https://sellercentral.amazon.com.mx/ap/mfa?arb=1",
+                              "Verificación en dos pasos"))
+    assert forms.blocked(Page("https://sellercentral.amazon.com.mx/somewhere", "Iniciar sesión"))
+    assert not forms.blocked(Page(REPO, "Biblioteca de documentos de pagos"))
+
+
+class _Drv(object):
+    def __init__(self, titles):
+        self.titles, self.gets = list(titles), 0
+        self.current_url = REPO
+
+    def get(self, url):
+        self.gets += 1
+
+    @property
+    def title(self):
+        return self.titles[min(self.gets, len(self.titles)) - 1]
+
+
+def _ctx(d):
+    return forms.Ctx(d, ".", None, "2026-09", site.get("mx"), log=lambda *a: None)
+
+
+def test_go_reloads_once_after_a_5xx_then_raises_server_down(monkeypatch):
+    monkeypatch.setattr(forms.time, "sleep", lambda s: None)
+    d = _Drv(["503 Service Temporarily Unavailable", "Seller Central"])
+    _ctx(d).go(forms.REPOSITORY)
+    assert d.gets == 2
+    d = _Drv(["503 Service Unavailable"] * 3)
+    with pytest.raises(forms.ServerDown):
+        _ctx(d).go(forms.REPOSITORY)
+    assert d.gets == 2
+    # the page left open is diagnosed as the platform's hiccup, not as "needs login"
+    ev = {"signal": "exception", "url": REPO, "title": "503 Service Unavailable",
+          "exception_class": "ServerDown", "exception": "x"}
+    assert download_diag.classify(ev)["cause"] == "PLATFORM_ERROR"
+
+
+def test_retried_tries_again_on_server_down_but_never_on_blocked(monkeypatch):
+    monkeypatch.setattr(bk.time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky(ctx):
+        calls.append(1)
+        if len(calls) == 1:
+            raise forms.ServerDown("503")
+        return "ok"
+    assert forms.retried(_ctx(None), "x", flaky) == "ok" and len(calls) == 2
+
+    def signin(ctx):
+        calls.append(2)
+        raise forms.Blocked("signin")
+    with pytest.raises(forms.Blocked):
+        forms.retried(_ctx(None), "x", signin)
+    assert calls.count(2) == 1
+
+
+def _stock_row(when, fmt=".csv", ready=True):
+    return [["Inventario de Logística de Amazon", when, when, fmt], object() if ready else None]
+
+
+def test_owed_stock_takes_only_a_csv_newer_than_the_request():
+    old, new = _stock_row("19/10/26, 2:07 a.m."), _stock_row("01/11/26, 0:05 a.m.")
+    e = {"route": "stock", "seen_before": forms.stock_row_id(old)}
+    assert forms.owed_stock_row(e, [new, old]) is new
+    assert forms.owed_stock_row(e, [old]) is None
+    assert forms.owed_stock_row(e, [_stock_row("01/11/26", ready=False), old]) is None
+    assert forms.owed_stock_row({"route": "stock"}, [old]) is old         # old entry: as before
+
+
+class _SelfClosingTab(object):
+    """'Ver' opens a tab that triggers the download and closes itself at once:
+    the handle shows up, then every call on it says the window is gone."""
+    def __init__(self):
+        self.calls, self.current = 0, "main"
+        self.switch_to = self
+
+    @property
+    def window_handles(self):
+        self.calls += 1
+        return ["main", "tab"] if self.calls == 2 else ["main"]   # 1: before; 2: after the click
+
+    @property
+    def current_window_handle(self):
+        return self.current
+
+    def window(self, h):
+        from selenium.common.exceptions import NoSuchWindowException
+        if h != "main":
+            raise NoSuchWindowException("no such window: target window already closed")
+        self.current = h
+
+    @property
+    def current_url(self):
+        from selenium.common.exceptions import NoSuchWindowException
+        raise NoSuchWindowException("no such window: target window already closed")
+
+    def close(self):
+        pass
+
+
+def test_a_document_tab_that_closes_itself_is_a_page_error_not_a_dead_browser(tmp_path, monkeypatch):
+    from core import browser_kit as bk
+    d = _SelfClosingTab()
+    ctx = type("Ctx", (), {})(); ctx.d, ctx.out_dir = d, str(tmp_path)
+    monkeypatch.setattr(forms.bk, "real_click", lambda d, b: None)
+    monkeypatch.setattr(forms.bk, "wait_for", lambda fn, timeout=0, poll=0: (lambda r: r if r else None)(_try(fn)))
+    monkeypatch.setattr(forms.bk, "wait_new_files", lambda *a, **k: [])
+    with pytest.raises(bk.PageError) as e:
+        forms.fetch_document(ctx, object())
+    assert "自己关掉了" in str(e.value)
+    assert d.current == "main"                                   # back on the main window
+    # the diagnosis must not call this a dead browser
+    assert not download_diag.DEAD_SESSION.search(str(e.value))
+
+
+def _try(fn):
+    try:
+        return fn()
+    except Exception:
+        return None

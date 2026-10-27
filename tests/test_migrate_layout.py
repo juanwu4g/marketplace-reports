@@ -135,3 +135,32 @@ def test_undo_drops_the_new_default_report_folder_setting(machine):
     ML.undo()
     assert "out_dir" not in json.load(open(str(root / "gui_settings.json"), encoding="utf-8"))
     assert layout.reports_root() == str(root / "downloads" / "data" / "reports" / "financial")
+
+
+def test_results_files_follow_the_moved_folders_and_workbooks(machine):
+    """F1(a): a results file written in the old layout names the old run folder
+    and the old flat workbook; its copy names their new places (core/finalize
+    decides from source_folders which download folder a final uses)."""
+    root, data = machine / "code", machine / "data"
+    dl = root / "downloads"
+    old_raw = str(dl / "BOCINA_TA02" / RUN)
+    old_wb = str(dl / "data" / "reports" / "financial" / "BOCINA_TA02_2026-09_账单基准.xlsx")
+    rel = os.path.join("ML", "MX", "BOCINA_TA02", "2026-09", RUN + "__20261022_010000.bill.json")
+    doc = {"schema": 1, "store": "BOCINA_TA02", "month": "2026-09", "basis": "bill", "run": RUN,
+           "source_folders": [old_raw, "/somewhere/else/20260101_000000_m202601"], "workbook": old_wb,
+           "grade": {"level": "complete", "reasons": []}, "pl": []}
+    write(str(dl / "data" / "results" / rel), json.dumps(doc, ensure_ascii=False))
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    new = json.load(open(str(data / "results" / rel), encoding="utf-8"))
+    assert new["source_folders"] == [layout.run_folder("BOCINA_TA02", RUN), "/somewhere/else/20260101_000000_m202601"]
+    assert new["workbook"] == str(data / "reports" / "monthly" / "2026-09" / "ML-MX" /
+                                  "BOCINA_TA02_2026-09_账单基准.xlsx")
+    assert new["grade"] == doc["grade"] and new["run"] == RUN
+    # the old file is untouched; copying again finds the identical rewritten file
+    assert json.load(open(str(dl / "data" / "results" / rel), encoding="utf-8")) == doc
+    ML.undo()
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    # remove-old accepts the rewritten copy (its checksum is the one recorded)
+    manifest = sorted(os.listdir(str(data / "logs" / "migration")))[-1]
+    removed, kept = ML.remove_old(os.path.join(str(data / "logs" / "migration"), manifest))
+    assert not (dl / "data" / "results").exists() and not [k for k, why in kept if "results" in k]

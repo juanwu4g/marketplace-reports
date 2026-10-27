@@ -962,7 +962,11 @@ reproduced from the window. The runner now **always** passes an explicit
 What lives in the runner, once, for every entrance:
 
 - **The lock** (`logs/monthly.lock`, created with `O_EXCL`). A second run exits
-  5. A lock whose PID is gone is taken over at once.
+  5. A lock whose PID is gone is taken over at once; a lock whose holder has not
+  sent a heartbeat for 30 minutes (the runner touches the lock with every
+  child-process heartbeat) is taken over too — so a long `ALL` run is never
+  taken over while it is alive, and a leftover lock after a power cut blocks
+  for at most 30 minutes. `release()` only removes its own lock.
 - **No report after a hard download failure.** Download exit 0 or 1 → reports
   are built (gaps show on sheet ⑩). Exit 2 / 3 / 4 → they are not: building
   then would produce a normal-looking workbook from an older folder.

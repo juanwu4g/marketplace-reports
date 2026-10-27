@@ -105,7 +105,20 @@ def batch_stores():
         return stores_for_market(markets.market_id(markets.DEFAULT_PLATFORM,
                                                    markets.DEFAULT_COUNTRY))
     # 旧配置（没有 catalog）：和以前一样是整份白名单。
-    return [n for n in allowed_stores() if platform_of(n) == markets.DEFAULT_PLATFORM]
+    return [n for n in _resolvable(allowed_stores())
+            if platform_of(n) == markets.DEFAULT_PLATFORM]
+
+
+def _resolvable(names):
+    """names 里能定出市场的店（config 写错的那几家跳过：config_problems 会说出来）。"""
+    out = []
+    for n in names:
+        try:
+            market_of(n)
+        except StoreConfigError:
+            continue
+        out.append(n)
+    return out
 
 
 def is_allowed(name):
@@ -187,27 +200,66 @@ def region_name(region):
     return markets.country_name(region)
 
 
-def _catalog_entries():
-    """config 里写明了市场的店：{店名: (平台, 国家)}，已校验。"""
+def _catalog_scan():
+    """config 里写明了市场的店，和写得有问题的店。
+
+    返回 ({店名: (平台, 国家)}, {店名: 一句原因})。一家店的条目写错（平台这一版程序
+    不认识、国家不支持、格式不对）只影响这家店：它进"问题"那一份，别的店照常。以前
+    一条写错整份 config 都拒收，于是别的平台、别的国家那一个月全都不跑，窗口里的
+    店铺树也是空的 —— 加一家还没合并进来的新平台的店就能把整台机器停掉。
+    """
     cfg = _stores()
-    out = {}
+    out, bad = {}, {}
     regions = cfg.get("regions")
     if isinstance(regions, dict):
         for name, country in regions.items():
             if not country:
                 continue
-            out[name] = _checked(name, markets.DEFAULT_PLATFORM, country,
-                                 "stores.regions")
+            _place(out, bad, name, markets.DEFAULT_PLATFORM, country, "stores.regions")
     cat = cfg.get("catalog")
     if isinstance(cat, dict):
         for name, entry in cat.items():
             if not isinstance(entry, dict):
-                raise StoreConfigError(
-                    "config.json stores.catalog[%r] 应该写成 "
-                    '{"platform": "ML", "country": "MX"}' % name)
-            out[name] = _checked(name, entry.get("platform"), entry.get("country"),
-                                 "stores.catalog")
+                bad[name] = ('stores.catalog 里的写法不对，应该写成 '
+                             '{"platform": "ML", "country": "MX"}')
+                out.pop(name, None)
+                continue
+            _place(out, bad, name, entry.get("platform"), entry.get("country"),
+                   "stores.catalog")
+    return out, bad
+
+
+def _place(out, bad, name, platform, country, where):
+    try:
+        out[name] = markets.check(platform, country)
+        bad.pop(name, None)
+    except markets.UnknownMarket as e:
+        bad[name] = "%s 里的条目：%s" % (where, e)
+        out.pop(name, None)
+
+
+def _catalog_entries():
+    """config 里写明了市场的店：{店名: (平台, 国家)}，已校验（写错的不在里面）。"""
+    return _catalog_scan()[0]
+
+
+def config_problems():
+    """config.json 里这一版程序跑不了的店：[(店名, 原因)]，按 config 的顺序。
+
+    写错的 catalog 条目，和白名单里有、catalog 里没写的店（用了 catalog 的配置）。
+    运行器、窗口、bootstrap 都用它把这些店说出来，而不是整份 config 拒收。
+    """
+    entries, bad = _catalog_scan()
+    out = list(bad.items())
+    if _uses_catalog():
+        for name in allowed_stores():
+            if name not in entries and name not in bad:
+                out.append((name, "白名单里有，stores.catalog 里没写它属于哪个平台和国家"))
     return out
+
+
+def problem_stores():
+    return set(n for n, _ in config_problems())
 
 
 def catalog_option(store, key, default=None):
@@ -238,23 +290,19 @@ def companion_store(store, key):
     return name
 
 
-def _checked(name, platform, country, where):
-    try:
-        return markets.check(platform, country)
-    except markets.UnknownMarket as e:
-        raise StoreConfigError("config.json %s 里的 %s：%s" % (where, name, e))
-
-
 def _uses_catalog():
     cat = _stores().get("catalog")
     return isinstance(cat, dict) and bool(cat)
 
 
 def market_parts(store):
-    """(平台, 国家)。没写明的店：旧配置算 ML-MX；用了 catalog 的配置报错。"""
-    known = _catalog_entries()
+    """(平台, 国家)。没写明的店：旧配置算 ML-MX；用了 catalog 的配置报错。
+    条目写错的店报错，说出原因（别的店不受影响）。"""
+    known, bad = _catalog_scan()
     if store in known:
         return known[store]
+    if store in bad:
+        raise StoreConfigError("config.json 里的 %s：%s" % (store, bad[store]))
     if _uses_catalog():
         raise StoreConfigError(
             "config.json stores.catalog 里没有 %r：请写明它属于哪个平台和国家，"
@@ -326,7 +374,7 @@ def stores_for_market(market):
                 % (market, markets.label(market), "、".join(
                     "%s（%s）" % (n, market_of(n)) for n in wrong), where))
         return names
-    return [n for n in allowed_stores() if market_of(n) == market]
+    return [n for n in _resolvable(allowed_stores()) if market_of(n) == market]
 
 
 def stores_for_region(region):
@@ -344,13 +392,16 @@ def stores_for_region(region):
 def markets_configured():
     """有店铺的市场，美客多墨西哥排第一，其余按白名单里第一次出现的顺序。"""
     cfg = _stores()
-    found = [market_of(n) for n in allowed_stores()]
+    found = [market_of(n) for n in _resolvable(allowed_stores())]
     found += [markets.market_id(*v) for v in _catalog_entries().values()]
     batches = cfg.get("batches")
     if isinstance(batches, dict):
         for k, v in batches.items():
             if v:
-                found.append(markets.normalize(k))
+                try:
+                    found.append(markets.normalize(k))
+                except markets.UnknownMarket:
+                    continue             # 这一版程序不认识的市场：config_problems 说出来
     first = markets.market_id(markets.DEFAULT_PLATFORM, markets.DEFAULT_COUNTRY)
     out = [first] if (first in found or not found) else []
     for m in found:

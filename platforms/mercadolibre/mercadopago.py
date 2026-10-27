@@ -469,6 +469,17 @@ return 'not-found';
 """
 
 
+def clicked_ok(res):
+    """点击脚本的返回值是不是"真的点了"。
+
+    表格 / 向导两种页面的脚本没点到时回 null，点到了回行内容；折叠面板那段
+    （JS_ACCT_CLICK_FORMAT）不管点没点到都回字符串，只有 'clicked:…' 才是点了。
+    """
+    if isinstance(res, str):
+        return res.startswith("clicked")
+    return bool(res)
+
+
 def _month_key(period_label):
     """'Agosto de 2026' -> 'agosto 2026', which is what the accordion header
     ('1 agosto 2026 - 31 agosto 2026') contains."""
@@ -586,7 +597,15 @@ def _collect_account_statement(driver, pending, download_dir, timeout, poll,
             action=(st or {}).get("action"), head=(st or {}).get("head"))
         return []
 
-    print("    %s" % driver.execute_script(JS_ACCT_CLICK_FORMAT, month_key, want))
+    res = driver.execute_script(JS_ACCT_CLICK_FORMAT, month_key, want)
+    print("    %s" % res)
+    if not clicked_ok(res):
+        # 没点到就不等那 150 秒（见 clicked_ok）
+        download_diag.give_up(
+            diag, driver, "mercadopago/account_statement", "ui-missing",
+            period=pending.get("range"), row_state="ready",
+            step="下载入口没点到：%s" % res)
+        return []
     files = mf.wait_for_downloads(download_dir, before, min_files=1,
                                   timeout=150, settle=5,
                                   label="mercadopago/account_statement")
@@ -1417,9 +1436,14 @@ def fetch(driver, pending, download_dir):
         res = driver.execute_script(JS_AC_CLICK_ROW, pending["range"], fmt)
     else:
         res = driver.execute_script(JS_CLICK_ROW, pending["range"], fmt)
-    if not res:
-        print("      [警告] %s 没有可点击的下载入口" % pending.get("label"))
-        pending["_fetch"] = "no-click-target"
+    # 折叠面板那段 JS 没点到时回的是 'not-found' / 'no-panel' / 'no-link' ——
+    # 都是非空字符串。以前只看真假，这三种都被当成"点了"，白等 150 秒，最后
+    # 归成"文件没落盘"，把人引去查磁盘和下载拦截，而真相是页面上没找到入口。
+    if not clicked_ok(res):
+        print("      [警告] %s 没有可点击的下载入口%s" % (
+            pending.get("label"), "（%s）" % res if isinstance(res, str) else ""))
+        pending["_fetch"] = ("no-click-target: %s" % res if isinstance(res, str)
+                             else "no-click-target")
         return []
     pending["_fetch"] = "clicked"
 

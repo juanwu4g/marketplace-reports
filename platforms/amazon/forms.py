@@ -24,6 +24,7 @@ import traceback
 from core import browser_kit as bk
 from core import download_diag
 from platforms.amazon import periods
+from selenium.common.exceptions import WebDriverException
 
 REPOSITORY = "/payments/reports-repository"
 FEE_INVOICES = "/tax/seller-fee-invoices"
@@ -61,6 +62,13 @@ class Blocked(RuntimeError):
     given up with the page as evidence (PAGE_BLOCKED)."""
 
 
+class ServerDown(bk.PageError):
+    """Amazon answered with a 5xx / browser error page instead of Seller Central.
+    The platform is having a moment: worth another try (a PageError, so retried()
+    tries again), never a reason to send a person to sign in. The page stays
+    open, so download_diag reads its title and says PLATFORM_ERROR."""
+
+
 class Ctx(object):
     """Everything one store's routes share. One per store (never module state)."""
 
@@ -81,12 +89,22 @@ class Ctx(object):
         self.errors = []         # route-level failures, one line each
         self.flags = {}
 
-    def go(self, path, settle=0):
-        self.d.get(self.host + path)
-        if settle:
-            time.sleep(settle)
-        if blocked(self.d):
-            raise Blocked("页面被带到了登录/验证页：%s" % self.d.current_url[:120])
+    def go(self, path, settle=0, tries=2, pause=20):
+        """Open a page. A 5xx page is loaded once more after a pause (it is
+        usually gone by then); a sign-in page raises Blocked at once."""
+        for i in range(tries):
+            self.d.get(self.host + path)
+            if settle:
+                time.sleep(settle)
+            try:
+                if blocked(self.d):
+                    raise Blocked("页面被带到了登录/验证页：%s" % self.d.current_url[:120])
+                return
+            except ServerDown as e:
+                if i == tries - 1:
+                    raise
+                self.log("  %s（%s），%d 秒后重新打开" % (e, path, pause))
+                time.sleep(pause)
 
     def got(self, form, names):
         names = [n for n in names if n]
@@ -127,13 +145,28 @@ class Ctx(object):
         return new
 
 
+# 真正要人去处理的：登录、两步验证、验证码。download_diag.BLOCKED_TITLE 还收了
+# 404/50x/ERR_ 这些错误页的标题，在这里不能用 —— 2026-10 审查发现一个临时的
+# 「503 Service Unavailable」会让整家店变成"需要人工登录"，而且不会重试。
+SIGN_IN_TITLE = re.compile(
+    r"\bsign-?in\b|\blog ?in\b|iniciar sesi[oó]n|inicia sesi[oó]n|ingresa a tu cuenta|"
+    r"verifica|captcha|autenticaci[oó]n|two-step|dos pasos", re.I)
+# 页面没打开：浏览器自己的错误页、一片空白。重新打开就好。
+NOT_LOADED = re.compile(r"^about:blank|^chrome-error://|^data:,", re.I)
+
+
 def blocked(d):
+    """True on a sign-in / verification / captcha page. Raises ServerDown on a
+    5xx or browser error page (retryable, not a sign-in problem)."""
     try:
         url, title = d.current_url or "", d.title or ""
     except Exception:
         return False
-    return bool(download_diag.BLOCKED_URL.search(url) or
-                download_diag.BLOCKED_TITLE.search(title))
+    if download_diag.SERVER_ERROR.search(title):
+        raise ServerDown("亚马逊返回了错误页「%s」" % title[:60])
+    if NOT_LOADED.search(url) or re.search(r"\bERR_", title):
+        raise ServerDown("页面没有打开（%s %s）" % (url[:60], title[:60]))
+    return bool(download_diag.BLOCKED_URL.search(url) or SIGN_IN_TITLE.search(title))
 
 
 def guarded(ctx, route, forms, fn, *a):
@@ -501,6 +534,14 @@ def fetch_document(ctx, btn):
                           timeout=20, poll=0.5)
         if not url:
             url = "tab:" + d.current_url
+    except WebDriverException as e:
+        # 那个标签页自己关掉了（2026-10-26 实测：'Ver' 开一个标签页触发下载，然后
+        # 马上关闭）。它关掉不等于浏览器没了：主窗口还在，下面照常回到主窗口。
+        # 这里要是把 selenium 的 "no such window" 原样抛出去，会被诊断成
+        # "店铺打不开"，整家店判成要人处理。
+        # 不把 selenium 的原话（"no such window…"）带进错误信息：诊断会把那几个词当成
+        # 浏览器断开（DEAD_SESSION）。
+        url = "tab:closed:" + e.__class__.__name__
     finally:
         for h in new:
             try:
@@ -520,6 +561,9 @@ def fetch_document(ctx, btn):
             os.remove(path)
             return got[0], data
         url = url[4:]
+        if url.startswith("closed:"):
+            raise bk.PageError("'Ver' 开的标签页在读到地址之前就自己关掉了，也没有文件落盘（%s）"
+                               % url[7:])
         if not url.startswith("http"):
             raise bk.PageError("document tab opened %r" % url[:120])
     d.set_script_timeout(90)
@@ -602,7 +646,9 @@ def stock(ctx):
     ctx.go(INVENTORY)
     btn = bk.need(d, "button[value=CSV]", timeout=60, what="'Solicitar descarga de .csv'")
     bk.wait_for(lambda: stock_rows(d), timeout=20)
-    before = len(stock_rows(d))
+    rows = stock_rows(d)
+    before = len(rows)
+    seen = stock_row_id(rows[0]) if rows else None
     bk.real_click(d, btn)
     requested = time.time()
     ready = bk.wait_for(lambda: [r for r in stock_rows(d)[:1]
@@ -611,6 +657,7 @@ def stock(ctx):
                         timeout=ctx.collect_timeout, poll=5)
     if not ready:
         ctx.owe(form, form, requested, "generating")
+        ctx.pending[-1]["seen_before"] = seen
         return
     files = _download_stock(ctx, ready[0][1])
     if not files:
@@ -618,6 +665,25 @@ def stock(ctx):
         return
     ctx.log("  库存 -> %s" % files)
     ctx.got(form, files)
+
+
+def stock_row_id(row):
+    """What tells one request apart: Tipo de reporte, Rango de fechas cubierto
+    (the request time), Fecha solicitada, Formato — the fixed cells, not the button."""
+    return " | ".join(row[0][:4])
+
+
+def owed_stock_row(entry, rows):
+    """The ready CSV of an owed stock request, or None: the newest one listed
+    above the row that was newest before the request — a CSV older than the
+    request is an old snapshot. Old entries without "seen_before": the newest."""
+    if "seen_before" in entry and entry["seen_before"]:
+        for i, r in enumerate(rows):
+            if stock_row_id(r) == entry["seen_before"]:
+                rows = rows[:i]
+                break
+    rows = [r for r in rows if r[1] is not None and r[0][3].lower() == ".csv"]
+    return rows[0] if rows else None
 
 
 def _download_stock(ctx, button):
@@ -701,8 +767,13 @@ def collect_owed(ctx, entry):
     if route == "stock":
         ctx.go(INVENTORY)
         rows = bk.wait_for(lambda: stock_rows(ctx.d), timeout=60, poll=3) or []
-        rows = [r for r in rows if r[1] is not None and r[0][3].lower() == ".csv"]
-        return _download_stock(ctx, rows[0][1]) if rows else []
+        row = owed_stock_row(entry, rows)
+        if not row:
+            return []
+        if entry.get("requested_at"):
+            # the snapshot is of the day it was requested, not of the day it is fetched
+            ctx.today = datetime.date.fromtimestamp(entry["requested_at"])
+        return _download_stock(ctx, row[1])
     if route in ("invoice", "taxcert"):
         # these pages publish documents later; the route itself fetches what is
         # missing. Still owed afterwards = not complete yet.

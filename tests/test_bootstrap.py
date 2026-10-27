@@ -42,11 +42,18 @@ def test_good_store_setup_passes(fresh, capsys):
     assert "亚马逊 墨西哥：1 家店" in out and "Falabella 智利：1 家店" in out
 
 
-def test_store_missing_from_catalog_fails(fresh):
+def test_store_missing_from_catalog_is_a_warning_not_a_failure(fresh, capsys):
+    """One unregistered store (or one of a platform this version does not know)
+    must not stop every other store: a warning names it, the check goes on."""
     d = fresh(GOOD)
     d["allowed"].append("Mystery")
+    d["catalog"]["Future_Store"] = {"platform": "ZZ", "country": "MX"}
     bootstrap.check_stores({"stores": d})
-    assert bootstrap.problems and "店铺配置有误" in bootstrap.problems[0][0]
+    out = capsys.readouterr().out
+    assert bootstrap.problems == []
+    assert "[ 警告 ] 店铺 Mystery 这一版程序跑不了" in out
+    assert "[ 警告 ] 店铺 Future_Store 这一版程序跑不了" in out and "未知平台 'ZZ'" in out
+    assert "亚马逊 墨西哥：1 家店" in out                        # the others are still checked
 
 
 def test_batch_with_another_markets_store_fails(fresh):

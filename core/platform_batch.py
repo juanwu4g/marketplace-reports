@@ -251,6 +251,18 @@ class BatchRunner(object):
         return ap
 
     def main(self, argv=None):
+        """The command line. An exception nobody caught ends with exit 2 (hard
+        failure), never Python's own 1: run_monthly reads 1 as "finished, needs
+        attention" and would build the reports from older folders."""
+        try:
+            return self._main(argv)
+        except Exception:                                         # noqa: BLE001
+            traceback.print_exc()
+            print("[错误] %s 批量下载时程序出错（见上面的错误信息），按硬失败退出。"
+                  % self.name_zh)
+            return 2
+
+    def _main(self, argv=None):
         rd = self.run_downloads
         a = self.parser().parse_args(argv)
         if a.region:

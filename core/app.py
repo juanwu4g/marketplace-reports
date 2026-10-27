@@ -271,6 +271,10 @@ class App(object):
         ttk.Label(f, textvariable=self.scope_var, style="Section.TLabel",
                   wraplength=WRAP, justify="left").grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(S.SMALL, 0))
+        self.config_note = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.config_note, foreground=S.FG["warn"],
+                  wraplength=WRAP, justify="left").grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(S.SMALL, 0))
         hint(f, "点一行勾选或取消；点左边的展开标记（⊞）看店铺。勾上一个平台就是它下面的全部国家，"
                 "勾上一个国家就是它的全部店铺。一个国家只勾了部分店铺时：新数据布局下全店汇总表"
                 "照样按各店的最终版本重出；旧布局下这个国家不出全店汇总表（避免覆盖真正的那份）。"
@@ -328,8 +332,10 @@ class App(object):
                 "该月账单。秒出，任何时候都能点。").pack(anchor="w", pady=(S.SMALL, 0))
 
     def _load_scope(self):
-        """（重新）把树和勾选摆到「立即运行」页上。"""
+        """（重新）把树和勾选摆到「立即运行」页上。config 读不了、或者有店这一版程序
+        跑不了：在树下面说出来，不能让人对着一棵空树猜。"""
         self.run_picker.load(self.tree, self.sel, self.results)
+        self.config_note.set(E.config_note_text(RC.config_error(), RC.config_problems()))
         self._scope_changed()
 
     def _scope_changed(self):

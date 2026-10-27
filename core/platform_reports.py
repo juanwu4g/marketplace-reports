@@ -42,6 +42,7 @@ import argparse
 import datetime
 import glob
 import importlib
+import json
 import os
 import sys
 import time
@@ -65,8 +66,13 @@ def downloads_dir():
     return layout.raw_root()
 
 
-def default_out_dir():
+def default_out_dir(month=None, market=None):
+    """Legacy: the flat report folder. New layout: the month folder of the market
+    (<reports>/monthly/<month>/<PF-CC>) — a hand-run report must land where
+    core/finalize publishes and cleans, not in <reports>/_versions/…"""
     from core import layout
+    if month and market and layout.mode() == layout.V2:
+        return layout.monthly_dir(month, market)
     return layout.reports_root()
 
 
@@ -192,7 +198,8 @@ class ReportRunner(object):
         checks = RS.plain(r.get("checks") or [])
         if r["outcome"] in WRITTEN and rec.get("figures") is not None:
             g = grading.grade(self.code, "main", True, checks, missing,
-                              formula_errors=r["outcome"] == "formula_errors")
+                              formula_errors=r["outcome"] == "formula_errors",
+                              unknown_download=grading.download_unknown(rec.get("meta")))
             return RS.document(self.code, market, country, cur, dec, name, month, "main", version,
                                datetime.datetime.now(), [folder], r["out"], g, checks, missing,
                                figures=rec["figures"])
@@ -240,7 +247,10 @@ class ReportRunner(object):
             r["label"] = "全店汇总"
             return r
         try:
-            return finalize.run(unit, stores, all_stores, build_combined, no_combined=a.no_combined)["combined"]
+            out = finalize.run(unit, stores, all_stores, build_combined, no_combined=a.no_combined)
+            # 定稿没能复制进月份文件夹（文件被打开）：main 把退出码至少设为 1
+            a.publish_failed = out.get("publish_failed") or []
+            return out["combined"]
         except Exception as e:                 # noqa: BLE001
             traceback.print_exc()
             print("\n[错误] 整理最终版本时出错：%s: %s" % (e.__class__.__name__, e))
@@ -255,7 +265,8 @@ class ReportRunner(object):
         ap.add_argument("--market", type=str.upper, default=self.default_market)
         ap.add_argument("--region", type=str.upper, default=None,
                         help="国家代码（= --market %s-<代码>）" % self.code)
-        ap.add_argument("--out-dir", default=default_out_dir())
+        ap.add_argument("--out-dir", default=None,
+                        help="输出目录；默认：旧布局是报表目录，新布局是该月该市场的月份文件夹")
         ap.add_argument("--no-per-store", action="store_true")
         ap.add_argument("--no-combined", action="store_true")
         ap.add_argument("--strict", action="store_true")
@@ -271,6 +282,8 @@ class ReportRunner(object):
             raise StoreConfigError("--market %s 不是 %s 的市场" % (a.market, self.name_zh))
         country = markets.split(a.market)[1]
         month = a.month or self.periods.previous_month(datetime.date.today())
+        if not a.out_dir:
+            a.out_dir = default_out_dir(month, a.market)
         if a.stores:
             names = [store_config.require_allowed(n) for n in a.stores]
         else:
@@ -330,4 +343,19 @@ class ReportRunner(object):
         for n, why in unusable:
             print("  未参与：%-22s %s" % (n, why))
         print("\n  输出目录：%s" % os.path.abspath(a.out_dir))
-        return exit_code(results, usable, unusable, per_store=not a.no_per_store)
+        code = exit_code(results, usable, unusable, per_store=not a.no_per_store)
+        unpublished = getattr(a, "publish_failed", None) or []
+        if unpublished:
+            print("  %d 个文件没能更新进月份文件夹（正被打开？关闭后重出）：%s"
+                  % (len(unpublished), "、".join(os.path.basename(p) for p in unpublished)))
+            code = max(code, 1)
+        # 机器可读的最后一行（runlog.MARKERS）：run_monthly 用它把报表这一步的问题说准。
+        print("[REPORT_SUMMARY_JSON] " + json.dumps({
+            "written": [r["label"] for r in results if r["outcome"] in WRITTEN],
+            "missing": [r["label"] for r in results if r["outcome"] not in WRITTEN],
+            "unusable": [[n, why] for n, why in unusable],
+            "attention": [r["label"] for r in results
+                          if r["outcome"] in ("checks_failed", "formula_errors")]
+            + ["未能更新：%s" % os.path.basename(p) for p in unpublished],
+            "incomplete": []}, ensure_ascii=False))
+        return code
