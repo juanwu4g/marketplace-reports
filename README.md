@@ -782,28 +782,28 @@ Ajuste 是上个月的 ISR**，本月的 ISR 以预扣税证明为准。文件�
 
 ### 3.9 多平台：利物浦 Liverpool（墨西哥）
 
-市场代码 `LV-MX`。Liverpool 一家卖家要用**两个紫鸟店铺**：供应商门户账号（报表以它命名，管账和付款）和
-Marketplace 子账号（管订单和运费）。config.json 里这样写：
+市场代码 `LV-MX`。用**一个紫鸟店铺**「Liverpool Order 子账号(Nikki)」：它的 Marketplace 登录状态保存在紫鸟里，
+供应商门户也在同一个浏览器里打开。config.json 里这样写（门户账号密码写在这家店的 `portal_login` 里）：
 
 ```json
-"allowed": [..., "Liverpool Report", "Liverpool Order 子账号(Nikki)"],
-"catalog": {..., "Liverpool Report": {"platform": "LV", "country": "MX",
-                                      "marketplace_store": "Liverpool Order 子账号(Nikki)"}},
-"batches": {..., "LV-MX": ["Liverpool Report"]}
+"allowed": [..., "Liverpool Order 子账号(Nikki)"],
+"catalog": {..., "Liverpool Order 子账号(Nikki)": {"platform": "LV", "country": "MX",
+                 "portal_login": {"user": "P00163073", "password": "<门户密码>"}}},
+"batches": {..., "LV-MX": ["Liverpool Order 子账号(Nikki)"]}
 ```
 
-Marketplace 子账号只写进 `allowed`、写在 `marketplace_store` 里，**不要**单独加进 catalog 和 batches。
+「Liverpool Report」这家店**不用**。
 
 ```
-python run_monthly.py --region LV-MX                  # 上个月，下载 + 出报表
+python run_monthly.py --region LV-MX                  # 上个月，下载 + 出报表（约 8 分钟）
 python run_monthly.py --region LV-MX --step report    # 只重出报表
 ```
 
-**开跑前要在紫鸟里做好两件事**（脚本从不输入密码）：
-1. 「Liverpool Report」这个店铺里**保存供应商门户的账号密码**（proveedores.liverpool.com.mx），紫鸟自动填入，
-   脚本只按「登录」。没存的话这家店会出现在「需要人工处理」，原因是"要人登录"。
-2. 网址 `itsproves.liverpool.com.mx` 要在紫鸟**加白**（付款和账本页面在这个网址上；2026-10-26 已批准）。
-   紫鸟批准加白后要**重启紫鸟客户端**才生效。
+**为什么门户密码写在 config.json**：紫鸟在脚本打开的浏览器里**从不自动填密码**（这是紫鸟故意的设计），
+门户的登录状态关掉店铺就没了，所以每次运行由脚本在门户登录页填入 `portal_login` 的账号密码。
+config.json 不进 git、不出现在日志里；门户改了密码，这里也要跟着改，否则这家店会出现在
+「需要人工处理」，原因是"要人登录"。另外，网址 `itsproves.liverpool.com.mx` 要在紫鸟**加白**
+（付款和账本页面在这个网址上；2026-10-26 已批准；批准后要**重启紫鸟客户端**才生效）。
 
 下载七样：门户上的账本（Cobros y Pagos）、销售单据（Ventas Marketplace）、付款（Detalle de Pagos）、
 平台费用发票（Notas de Cargo）；Marketplace 上的订单、物流费明细（Costos logísticos）、补充物流费

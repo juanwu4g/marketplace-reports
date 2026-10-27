@@ -952,7 +952,11 @@ def _rejected(files, out_dir):
     """记在账上的文件，是不是真的在、真的有内容。"""
     bad = []
     for f in files or []:
-        p = os.path.join(out_dir, os.path.basename(f))
+        # a name may carry a subfolder of the run folder ("Notas_Cargo_202609/x.xml",
+        # Liverpool's fee CFDIs); otherwise the file is directly in the run folder
+        p = os.path.join(out_dir, f) if f and not os.path.isabs(f) else None
+        if not p or not os.path.exists(p):
+            p = os.path.join(out_dir, os.path.basename(f))
         try:
             if os.path.getsize(p) == 0:
                 bad.append("%s（0 字节）" % os.path.basename(f))

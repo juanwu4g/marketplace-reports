@@ -3,26 +3,38 @@
 **Audience:** developers working on this platform, and finance reviewing the
 report's rules. Operators use `README.md` at the repository root.
 
-Market code `LV-MX` (core/markets.py). A Liverpool seller needs **two Ziniao
-stores**: the supplier-portal user (the store the report is named after) and a
-marketplace user (orders, shipping charges). Declare both in `config.json`:
+Market code `LV-MX` (core/markets.py). One Ziniao store does both sites: the
+marketplace user `Liverpool Order 子账号(Nikki)`, whose Ziniao session is signed in to
+the marketplace and which opens the supplier portal in the same browser. Declare it in
+`config.json` with the supplier portal's user and password:
 
 ```json
-"allowed": ["Liverpool Report", "Liverpool Order 子账号(Nikki)"],
-"catalog": {"Liverpool Report": {"platform": "LV", "country": "MX",
-                                 "marketplace_store": "Liverpool Order 子账号(Nikki)"}},
-"batches": {"LV-MX": ["Liverpool Report"]}
+"allowed": ["Liverpool Order 子账号(Nikki)"],
+"catalog": {"Liverpool Order 子账号(Nikki)": {"platform": "LV", "country": "MX",
+            "portal_login": {"user": "P00163073", "password": "<the portal password>"}}},
+"batches": {"LV-MX": ["Liverpool Order 子账号(Nikki)"]}
 ```
 
-The marketplace user must be on the allowlist; it is never run as a store of its
-own (it has no catalog entry). In Ziniao, the supplier-portal store needs the
-portal's user and password saved, so that Ziniao fills the sign-in form. The
-script never types a password (see FORMS.md "Signing in"). Ziniao must also allow
-`itsproves.liverpool.com.mx` (whitelisted 2026-10-26).
+**Why the password is in config.json** (owner's decision 2026-10-27): Ziniao never fills
+saved passwords in a browser started by automation. Its password script returns at
+once when the session is a WebDriver one (`password_content.js`, `isWebDriver`, set
+from a `not_verify_ip` cookie). The account saved in Ziniao (附加账号 of the Nikki store)
+is therefore never offered to the scheduled job, and the portal's sign-in cookies are
+session cookies that do not survive closing the store.
+- **When it is typed:** the script types `portal_login` into the portal's own sign-in
+  form only, and only when the form is empty.
+- **Never recorded:** the password appears in no log, run_meta.json or REPORT.md.
+- **No git:** config.json is never committed.
+- **Without it:** the portal forms are "needs login" (PAGE_BLOCKED).
+
+A catalog entry may still name a separate marketplace user (`"marketplace_store":
+"<Ziniao store>"`): that store is then opened for the marketplace forms, and the store
+itself for the portal. Ziniao must allow `itsproves.liverpool.com.mx` (whitelisted
+2026-10-26; restart the Ziniao client after an approval).
 
 | Command | What it does |
 |---|---|
-| `python -m platforms.liverpool.run_batch --month YYYY-MM --stores "Liverpool Report"` | download the month's forms (both Ziniao stores) |
+| `python -m platforms.liverpool.run_batch --month YYYY-MM --stores "Liverpool Order 子账号(Nikki)"` | download the month's forms |
 | `python -m platforms.liverpool.run_batch --market LV-MX --month YYYY-MM` | every store of the market |
 | `python -m platforms.liverpool.run_downloads --store … --only ledger sales` | one store, some routes |
 | `python -m platforms.liverpool.run_reports --month YYYY-MM` | per-store workbooks + `MX_LV_全店汇总_YYYY-MM.xlsx` |
@@ -36,8 +48,13 @@ Status (2026-10-26):
   `Liverpool Report`. Every bridge ties: orders → booked sales, commission per
   sale, shipping list → ledger, P&L → ledger. Tests on synthetic files are in
   `tests/test_lv_report.py`.
-- **Downloads:** implemented from the probed routes (`tests/test_lv_downloads.py`
-  covers the two-store runner).
+- **Downloads:** implemented from the probed routes (`tests/test_lv_downloads.py`).
+  Run end to end in the test VM on 2026-10-27
+  (`run_monthly --region LV-MX --stores "Liverpool Order 子账号(Nikki)" --month 2026-09`):
+  - all seven forms downloaded in 7 min 49 s;
+  - the month graded complete and made final;
+  - the country summary and the Q3 report were written;
+  - the figures are identical to the golden case.
 
 ## What the report reads
 

@@ -8,10 +8,10 @@ Same structure as `platforms/falabella/FORMS.md` and `platforms/amazon/FORMS.md`
 
 - Seller: SHEN MING SA DE CV, supplier number 0000163073, shop "Vita Hogar".
 - Ziniao stores (platform name `自定义平台`, tag `MX 商超`, proxy 216.238.92.32):
-  - `Liverpool Report`: the **supplier-portal** user (P00163073). This is the
-    store the report is named after (`stores.catalog`, platform `LV`).
-  - `Liverpool Order 子账号(Nikki)`: a **marketplace** user, named in the catalog
-    entry as `marketplace_store`. Its session stays signed in inside Ziniao.
+  - `Liverpool Order 子账号(Nikki)`: **the store**. Its marketplace session stays
+    signed in inside Ziniao. It opens the supplier portal in the same browser and
+    signs in as P00163073 with config.json's `portal_login`.
+  - `Liverpool Report`: the supplier-portal user. **Not used** (owner, 2026-10-27).
   - `Liverpool Order Admin`, `Liverpool Order 子账号(Simon)`: other marketplace
     users of the same seller, not used.
 - Last verified: **2026-10-26**, by hand-driven probes in the test VM (September
@@ -46,9 +46,12 @@ the 5th of M+1 also catches the first payment of M+1 in "Detalle de Pagos".
     Denied". Seen 2026-10-23 and 2026-10-26.
   - **The sign-in form:** fields `#logonuidfield` / `#logonpassfield` (names
     `j_username` / `j_password`), submit button name `uidPasswordLogon`.
-  - **Ziniao fills the password:** the routes submit the form only when Ziniao
-    filled the user in, i.e. the store's saved password. They never type it.
-    Otherwise the store is "needs login" (`NeedsLogin` → PAGE_BLOCKED).
+  - **Who types the password:** Ziniao never fills saved passwords in an
+    automated (WebDriver) browser, so the routes type config.json's `portal_login`
+    into this form (owner's decision 2026-10-27). Without it the store is "needs
+    login" (`NeedsLogin` → PAGE_BLOCKED).
+  - **Sign-in cookies:** `MYSAPSSO2` and `JSESSIONID` are session cookies; every
+    run signs in again.
   - **Signed-in marker:** "Salir del sistema" plus "Bienvenido SHENMING SA DE CV".
   - **Opening the portal directly:** the deep link `/irj/portal` gave "Access
     Denied" once; open the root.

@@ -15,10 +15,13 @@ When a form cannot be had it records why — ctx.give_up(form, signal, ...) — 
 of raising: download_diag turns the evidence into a cause code. Store-level
 problems (a sign-in page, a wrong language) are raised to run_downloads.
 
-Nothing is typed into a sign-in page and no password is read: the portal's sign-in
-is submitted only when Ziniao has filled the user in (its saved password goes with
-it); otherwise the store is reported as needing a person (NeedsLogin ->
-PAGE_BLOCKED).
+The supplier portal's sign-in: Ziniao never fills saved passwords in a browser
+started by automation (its password script returns early in WebDriver mode), so the
+account configured for the store in config.json (stores.catalog[store].portal_login,
+owner's decision 2026-10-27) is typed into the portal's own sign-in form — nowhere
+else, and it is never logged. Without it the store is reported as needing a person
+(NeedsLogin -> PAGE_BLOCKED). The marketplace's sign-in is never touched: its
+session lives in the Ziniao store.
 """
 import base64
 import datetime
@@ -58,8 +61,10 @@ class Ctx(object):
     """Everything one store's routes share on one site. One per site (never module state)."""
 
     def __init__(self, driver, out_dir, diag, month, site, today=None,
-                 collect_timeout=240, log=print, host=None):
+                 collect_timeout=240, log=print, host=None, login=None):
         self.d = driver
+        # the supplier portal's {"user", "password"} from config.json, or None; never logged
+        self.login = login
         self.out_dir = out_dir
         self.diag = diag
         self.month = month
@@ -195,11 +200,22 @@ def portal_login(ctx):
     if not user:
         raise bk.PageError("门户首页既不是登录页也不是已登录的页面")
     if not (user[0].get_attribute("value") or "").strip():
-        raise NeedsLogin("供应商门户登录页：紫鸟没有自动填入账号密码（请在紫鸟里给这家店保存门户的账号密码）")
+        # Ziniao never fills saved passwords in a browser started by automation:
+        # the account configured for this store (config.json portal_login) is typed in.
+        if not ctx.login:
+            raise NeedsLogin("供应商门户登录页：没有可用的账号密码（config.json 这家店的 portal_login 没有写）")
+        user[0].clear()
+        user[0].send_keys(ctx.login["user"])
+        pw = d.find_element(By.ID, "logonpassfield")
+        pw.clear()
+        pw.send_keys(ctx.login["password"])
+        ctx.flags["portal_login"] = "config"
+    else:
+        ctx.flags["portal_login"] = "ziniao"
     bk.real_click(d, d.find_element(By.NAME, "uidPasswordLogon"))
     ok = bk.wait_for(lambda: by_text(d, "Salir del sistema"), timeout=40, poll=2)
     if not ok:
-        raise NeedsLogin("供应商门户登录没有成功（密码可能已改或过期）")
+        raise NeedsLogin("供应商门户登录没有成功（config.json 里的密码可能已改或过期）")
     return True
 
 
