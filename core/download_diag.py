@@ -135,6 +135,8 @@ SERVER_ERROR = re.compile(
     r"\b50[0234]\b|service (temporarily )?unavailable|bad gateway|"
     r"gateway time-?out|internal server error", re.I)
 BLOCKED_TITLE = re.compile(
+    # "Access Denied": the edge network (Akamai) in front of a portal refusing the browser.
+    r"access denied|"
     r"ingresa a tu cuenta|iniciar sesi[oó]n|inicia sesi[oó]n|\blog ?in\b|\bsign-?in\b|"
     r"verifica|captcha|no es posible acceder|p[aá]gina no encontrada|"
     r"\b40[34]\b|\b50[023]\b|ERR_|no se puede acceder", re.I)
@@ -382,7 +384,15 @@ def _server_error(ev):
     return None
 
 
+# A platform's routes raise an exception of this class when they recognise a sign-in
+# page by its content (fields, buttons) — a page whose address and title say nothing,
+# e.g. Liverpool's SAP supplier portal ("SAP NetWeaver Portal" before and after login).
+NEEDS_LOGIN_CLASSES = ("NeedsLogin",)
+
+
 def _blocked(ev):
+    if ev.get("exception_class") in NEEDS_LOGIN_CLASSES:
+        return "要人登录：%s" % (ev.get("exception") or "")[:100]
     url, title = ev.get("url") or "", ev.get("title") or ""
     if url and BLOCKED_URL.search(url):
         return "地址是 %s" % url[:80]
@@ -950,7 +960,11 @@ def _rejected(files, out_dir):
     """记在账上的文件，是不是真的在、真的有内容。"""
     bad = []
     for f in files or []:
-        p = os.path.join(out_dir, os.path.basename(f))
+        # a name may carry a subfolder of the run folder ("Notas_Cargo_202609/x.xml",
+        # Liverpool's fee CFDIs); otherwise the file is directly in the run folder
+        p = os.path.join(out_dir, f) if f and not os.path.isabs(f) else None
+        if not p or not os.path.exists(p):
+            p = os.path.join(out_dir, os.path.basename(f))
         try:
             if os.path.getsize(p) == 0:
                 bad.append("%s（0 字节）" % os.path.basename(f))

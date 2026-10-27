@@ -262,6 +262,34 @@ def problem_stores():
     return set(n for n, _ in config_problems())
 
 
+def catalog_option(store, key, default=None):
+    """An extra field of a store's stores.catalog entry (beyond platform and
+    country), e.g. Liverpool's "marketplace_store": the second Ziniao store a
+    platform needs for the same seller. None / default when not set."""
+    cat = _stores().get("catalog")
+    entry = cat.get(store) if isinstance(cat, dict) else None
+    if not isinstance(entry, dict):
+        return default
+    value = entry.get(key)
+    return default if value in (None, "") else value
+
+
+def companion_store(store, key):
+    """The second Ziniao store named by catalog_option(store, key), checked like
+    a store before Ziniao is touched: it must be on the allowlist and must not be
+    a store of another platform. None when the option is not set."""
+    name = catalog_option(store, key)
+    if name is None:
+        return None
+    name = require_allowed(str(name))
+    known = _catalog_entries()
+    if name in known and known[name][0] != platform_of(store):
+        raise StoreConfigError(
+            "config.json stores.catalog[%r].%s = %r，但 %r 是 %s 的店"
+            % (store, key, name, name, markets.market_id(*known[name])))
+    return name
+
+
 def _uses_catalog():
     cat = _stores().get("catalog")
     return isinstance(cat, dict) and bool(cat)
