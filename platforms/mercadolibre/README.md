@@ -38,6 +38,13 @@ Per-country facts live in `meli_site.py`; a store's country comes from
   explained differences.
 - **Platform says the sales export is incomplete** ("No pudimos mostrar algunos
   datos"): the report is still built, with a warning.
+- **A downloaded .xlsx/.csv that is not one** (the platform served an error page
+  under the report's name; EWTTO_SM 2026-10-30, five stock-type files): both
+  bases treat the file as absent and record a failed check `load:<file>` in ⑩
+  (order basis: `S["load_errors"]`, `report/checks.load_error_checks`; warn level
+  for stock-type files and Cargos Full, which do not change ②; error for Pagos
+  and MercadoPago). Only Ventas and Facturación still fail loudly — the report
+  cannot exist without them.
 - The machine clock is China time; "today" for the platform is computed in the
   site's timezone (`core/site_time.py`).
 

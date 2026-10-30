@@ -62,7 +62,7 @@ def _derive_pagos_cycles(S, m, folder, B, FA, p0, p1):
     贷记单（pay_nc）取计费日在会计月内的 Notas de Crédito 行：智利的 Pagos
     汇总页把贷记单记在"用来抵哪一期"的账单下，和计费日对不上自然月。
     """
-    cyc = load_pagos_cycles(folder, S["bill_cycles"])
+    cyc = load_pagos_cycles(folder, S["bill_cycles"], S["load_errors"])
     frames, info, why = [], [], []
     in_month, types, dates = 0.0, set(), []
     for c in cyc:
@@ -124,8 +124,12 @@ def _derive_pagos_cycles(S, m, folder, B, FA, p0, p1):
 
 def derive(store, folder, p0, p1):
     """读一家店一个月的全部原始文件，算出报表需要的每一个数。"""
+    # load_errors：读不出来的**可选**文件 [(文件名, 错误)]，validate() 把每一条
+    # 记成 ⑩ 页的 load:<文件名> 校验（见 loading.unreadable）。Ventas 与账单不在
+    # 其列 —— 它们读不出来下面照旧抛异常，报表没有它们就不存在。
     S = {"store": store, "folder": folder, "files": {}, "anomalies": [],
-         "p0": p0, "p1": p1, "meta": load_run_meta(folder)}
+         "p0": p0, "p1": p1, "meta": load_run_meta(folder), "load_errors": []}
+    LE = S["load_errors"]
 
     vpath, V = load_ventas(folder)
     S["files"]["ventas"] = vpath
@@ -279,7 +283,7 @@ def derive(store, folder, p0, p1):
         # load_pagos_cycles）。墨西哥一张账单就是一个月，走下面原来的路径。
         _derive_pagos_cycles(S, m, folder, B, FA, p0, p1)
     else:
-        ppath, P = load_pagos(folder, p0.year, p0.month)
+        ppath, P = load_pagos(folder, p0.year, p0.month, LE)
         S["files"]["pagos"] = ppath
         S["pagos"] = P
         if len(P) and "Tipo de pago" in P.columns:
@@ -307,11 +311,11 @@ def derive(store, folder, p0, p1):
         # 智利：两期 Cargos Full 文件里计费日落在本月的行（见 load_cargos_full_cycles）。
         # 缺任何一期就无法核对整月，按"没有文件"跳过并说明缺哪一期。
         cpaths, csheets, ctotal, cmiss = load_cargos_full_cycles(
-            folder, S["bill_cycles"], p0, p1)
+            folder, S["bill_cycles"], p0, p1, LE)
         cpath = " + ".join(cpaths) if cpaths and not cmiss else None
         S["cargos_full_missing"] = cmiss
     else:
-        cpath, csheets, ctotal = load_cargos_full(folder, p0.year, p0.month)
+        cpath, csheets, ctotal = load_cargos_full(folder, p0.year, p0.month, LE)
     S["files"]["cargos_full"] = cpath
     S["cargos_full_sheets"] = csheets
     m["cargos_full_report_total"] = ctotal
@@ -329,7 +333,7 @@ def derive(store, folder, p0, p1):
     if S["cycle_day"] != 1:
         # 智利：仓储费报表也按账单切期日切期，只取占用日落在本月的那几天，并拿账单里
         # **同样那几天**（计费日晚一天，见 STORAGE_BILL_LAG_DAYS）的仓储费来比。
-        spaths, accrual, srange, sdays = load_storage_daily(folder, p0, p1)
+        spaths, accrual, srange, sdays = load_storage_daily(folder, p0, p1, LE)
         spath = " + ".join(spaths) if spaths else None
         m["storage_days"] = sdays
         m["storage_month_days"] = int((p1 - p0).days) + 1
@@ -343,14 +347,14 @@ def derive(store, folder, p0, p1):
         else:
             m["storage_bill_cmp"] = float(st["amount"].sum())
     else:
-        spath, accrual, srange = load_storage(folder, p0, p1)
+        spath, accrual, srange = load_storage(folder, p0, p1, LE)
     S["files"]["storage"] = spath
     m["storage_accrual"] = accrual
     m["storage_range"] = srange
     m["storage_bill"] = per_fee.get("Cargo por servicio de almacenamiento Full", 0.0)
 
     # ---- 退货质检 ----
-    rpath, R = load_returns(folder)
+    rpath, R = load_returns(folder, LE)
     S["files"]["returns"] = rpath
     S["returns_all"] = R
     if len(R):
@@ -359,18 +363,18 @@ def derive(store, folder, p0, p1):
         S["returns"] = pd.DataFrame()
 
     # ---- Full 仓库存快照 ----
-    spath, snap, ST = load_stock(folder)
+    spath, snap, ST = load_stock(folder, LE)
     S["files"]["stock"] = spath
     S["stock"] = ST
     S["stock_snap_text"] = snap
     S["stock_snap"] = stock_snapshot_date(snap, folder)
 
     # ---- MercadoPago 结算流水 ----
-    mpath, MP = load_settlement(folder, p0, p1)
+    mpath, MP = load_settlement(folder, p0, p1, LE)
     S["files"]["settlement"] = mpath
     S["mp"] = MP
     try:
-        S["mp_orders"] = mp_by_order(A, S["billing_all"], folder)
+        S["mp_orders"] = mp_by_order(A, S["billing_all"], folder, LE)
     except Exception as e:                          # 验证本身坏了不能拖垮报表
         S["mp_orders"] = None
         S["anomalies"].append("MercadoPago 逐单验证没能完成：%s" % str(e)[:120])

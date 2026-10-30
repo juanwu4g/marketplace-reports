@@ -4,6 +4,7 @@ every store, and check_hints() — where to start looking when one fails."""
 
 import glob
 import os
+import re
 
 import pandas as pd
 
@@ -21,6 +22,30 @@ from platforms.mercadolibre.report.loading import cycle_cn, cycle_day, sales_win
 # ════════════════════════════════════════════════════════════════════════
 
 _chk = report_kit.check
+
+
+# 读不出来的文件（S["load_errors"]，见 loading.unreadable）记成 load:<文件名>
+# 校验。级别按"缺了它 ② 的金额变不变"定（与 core/grading.NON_BLOCKING_FORMS 对
+# 库存类报表的口径一致）：
+#   warn  —— 库存类报表（仓储费报表、库存快照、退货质检）只进 ⑥⑨ 和备查说明，
+#            ② 的仓储费取账单口径；Cargos Full 只用来交叉核对，绝不与账单相加。
+#            评级不看 warn 级校验，所以这些文件坏了报表仍可定稿（提醒）。
+#   error —— 其余：Reporte_Pagos_Facturas（② 的"本期账单实际支付"行、桥 B）、
+#            MercadoPago 流水（订单基准用它修正部分退款，② 会变）。
+LOAD_WARN_RE = re.compile(
+    r"Costos_por_servicio_almacenamiento|^stock_general_full|^conciliation_|^Returns|"
+    r"^Reporte_Cargos_Full_", re.I)
+
+
+def load_error_checks(S):
+    out = []
+    for name, err in S.get("load_errors") or ():
+        warn = bool(LOAD_WARN_RE.search(name))
+        out.append(_chk("load:" + name, S["store"], "读取 %s" % name, False,
+                        "读不出来：%s" % err
+                        + ("（② 的金额不用这份文件，已按没有它处理）" if warn else ""),
+                        severity="warn" if warn else "error"))
+    return out
 
 
 def check_hints(c, S):
@@ -50,6 +75,9 @@ def check_hints(c, S):
         return ["排查提示：先核对本期账单及销售窗口是否完整；税率异常可能由缺账单、关联失败或税务状态变化引起。"]
     if key.startswith("cn_"):
         return ["排查提示：见报表⑩逐单异常清单；核对订单/包裹关联、冲销及现金凭证，推定调整不等于现金已证实。"]
+    if key.startswith("load:"):
+        return ["排查提示：文件多半是平台把出错网页存成了 .xlsx/.csv（用 Excel 打开看一眼）。"
+                "重新下载这家店的这份报表，再出一次即可；报表其余部分已按没有这份文件生成。"]
     return []
 
 
@@ -146,6 +174,9 @@ def validate(stores, tol=None):
     out = []
     for S in stores:
         m, name = S["m"], S["store"]
+        # 排最前面：某份文件读不出来，后面与它有关的校验都会显示"跳过/没有文件"，
+        # 这一条说明为什么。
+        out.extend(load_error_checks(S))
         if S.get("ventas_warning"):
             out.append(_chk("ventas_incomplete", name, "Ventas 导出数据不完整", False,
                             "平台提示「%s」；已用现有数据生成报表，收入和利润可能偏低。"
