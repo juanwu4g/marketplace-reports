@@ -271,3 +271,116 @@ def scan_formula_errors(path):
                     elif v is None:
                         n_none += 1
     return n_formula, n_err, n_none, bad[:20]
+
+
+# ------------------------------------------------------------------ grade banner
+#
+# Every monthly store workbook carries its grade (core/results.GRADES) on sheet ①
+# so finance sees it without opening the results file. The runner stamps it after
+# the builder saved and before LibreOffice recalculation (openpyxl drops cached
+# formula values when it reopens and saves a workbook); builders never write it,
+# so the golden tests see no banner. docs/REPORT_FAMILY.md "Grade banner (sheet ①)".
+# The five grades are spelled here as in core/results.GRADE_CN — this module must
+# stay free of project imports.
+
+GRADE_LABEL = "完整度"
+GRADE_CN = {"complete": "完整", "complete_warn": "完整·有提醒", "provisional": "暂定",
+            "gaps": "有缺口", "failed": "失败"}
+GRADE_TAB = {"complete": C_GREEN, "complete_warn": C_GREEN, "provisional": C_AMBER,
+             "gaps": C_RED, "failed": C_RED}
+GRADE_NOTE = "等级含义见 本月总览 的「说明」页；重出报表会产生新版本，以月份文件夹和本月总览为准。"
+GRADE_ROWS_MAX = 8          # label rows + the note; a shorter block clears the rows below it
+
+
+def stamp_grade(path, info):
+    """Write the grade banner on the first sheet of the saved workbook at `path`.
+
+    info: {"level": one of GRADE_CN, "reasons": [str], "version": str,
+           "downloaded_at": "YYYY-MM-DD HH:MM" or "", "built_at": "YYYY-MM-DD HH:MM",
+           "basis_cn": "账单基准" / "订单基准" / "", "final": bool}.
+
+    The block starts at row 1 of the first empty column after the sheet's content
+    (one spacer column; content in A–C -> E1:F8): a label column and a value
+    column. No row or column is inserted and no existing cell is touched.
+    Stamping again overwrites the same block (found by the GRADE_LABEL cell in row
+    1). Returns the range written ("E1:F8"), or None when the workbook has no
+    sheet."""
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    if not wb.worksheets:
+        return None
+    ws = wb.worksheets[0]
+    level = str(info.get("level") or "")
+    grade_cn = GRADE_CN.get(level, level or "—")
+    reasons_text = "；".join(str(r) for r in (info.get("reasons") or ()) if r) or "—"
+
+    col = None
+    for c in range(1, ws.max_column + 1):
+        if ws.cell(row=1, column=c).value == GRADE_LABEL:
+            col = c
+            break
+    if col is None:
+        col = ws.max_column + 2
+    L, V = get_column_letter(col), get_column_letter(col + 1)
+
+    rows = [(GRADE_LABEL, grade_cn), ("原因", reasons_text), ("报表版本", str(info.get("version") or "—")),
+            ("数据下载于", str(info.get("downloaded_at") or "—")),
+            ("报表生成于", str(info.get("built_at") or "—"))]
+    if info.get("basis_cn"):
+        rows.append(("口径", str(info["basis_cn"])))
+    rows.append(("是否最终版本", "是（可以定稿的等级，且是最新的版本）" if info.get("final")
+                 else "否（等级不够，只是未定稿）"))
+
+    for i, (label, value) in enumerate(rows, 1):
+        lc = ws.cell(row=i, column=col, value=label)
+        lc.font = F(10, True)
+        lc.fill = fill(C_SUB)
+        lc.border = BOX
+        lc.alignment = Alignment(vertical="center")
+        vc = ws.cell(row=i, column=col + 1, value=value)
+        vc.border = BOX
+        vc.alignment = Alignment(vertical="center", wrap_text=True)
+        if i == 1:
+            if level in ("gaps", "failed"):
+                vc.font = F(12, True, C_RED)
+                vc.fill = fill(C_BAD)
+            else:
+                vc.font = F(12, True)
+                vc.fill = fill(C_WARN if level == "provisional" else C_OK)
+        else:
+            vc.font = F(10)
+    last = len(rows) + 1
+    note = ws.cell(row=last, column=col, value=GRADE_NOTE)
+    note.font = F(8, False, C_GREY)
+    note.fill = PatternFill(fill_type=None)
+    note.border = Border()
+    note.alignment = Alignment(vertical="top")
+    # the value cell beside the note, and the rows below a shorter block (an
+    # earlier stamp of the same workbook had a 口径 row), are cleared
+    stale = [(last, col + 1)] + [(r, c) for r in range(last + 1, GRADE_ROWS_MAX + 1) for c in (col, col + 1)]
+    for r, c in stale:
+        cell = ws.cell(row=r, column=c)
+        cell.value = None
+        cell.fill = PatternFill(fill_type=None)
+        cell.border = Border()
+    ws.row_dimensions[2].height = max(ws.row_dimensions[2].height or 15,
+                                      est_height(reasons_text, per_line=40))
+    ws.column_dimensions[L].width = max(ws.column_dimensions[L].width or 0, 14)
+    ws.column_dimensions[V].width = max(ws.column_dimensions[V].width or 0, 60)
+
+    ws.sheet_properties.tabColor = GRADE_TAB.get(level, C_GREY)
+    wb.properties.subject = "%s：%s" % (GRADE_LABEL, grade_cn)
+    wb.properties.keywords = str(info.get("version") or "")
+    wb.properties.description = reasons_text[:255]
+    wb.save(path)
+    return "%s1:%s%d" % (L, V, last)
+
+
+def stamp_grade_safely(path, info, log=print):
+    """stamp_grade that never raises — a banner must not cost a report. Prints
+    "[提示] 完整度标记没写上：…" and returns None on any failure."""
+    try:
+        return stamp_grade(path, info)
+    except Exception as e:                                        # noqa: BLE001
+        log("[提示] 完整度标记没写上：%s: %s" % (e.__class__.__name__, e))
+        return None

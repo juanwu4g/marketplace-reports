@@ -255,6 +255,26 @@ def final_at(platform, country, store, month, basis, config_path=None):
     return None
 
 
+def months_at(platform, country, store, config_path=None):
+    """months() for a store found in the results tree under <PF>/<CC>: the
+    months ('YYYY-MM') whose folder holds at least one results file (any basis,
+    any grade), ascending. Cheap: lists folders, reads nothing."""
+    base = os.path.join(layout.results_root(config_path), platform, country, store)
+    if not os.path.isdir(base):
+        return []
+    return sorted(m for m in os.listdir(base)
+                  if MONTH_RE.match(m) and has_files_at(platform, country, store, m, None, config_path))
+
+
+def first_month_at(platform, country, store, config_path=None):
+    """The store's first data month: the earliest month with any results file
+    (any basis, any grade); None when the store has none. Months before it are
+    「未上线」 in a period report — the system was not producing results yet —
+    not missing."""
+    ms = months_at(platform, country, store, config_path)
+    return ms[0] if ms else None
+
+
 def period_label(kind, months_):
     """The period's name in folders and file names: '2026-Q3', '2026',
     '2026-07_2026-11' (kind 'quarterly' / 'annual' / 'custom')."""
@@ -278,6 +298,35 @@ def version_parts(version):
     """'<run>__<YYYYMMDD_HHMMSS>' -> (run, built stamp); (None, None) when it is not one."""
     m = VERSION_RE.match(str(version or ""))
     return (m.group("run"), m.group("built")) if m else (None, None)
+
+
+RUN_TIME_RE = re.compile(r"^(\d{8})_(\d{6})")
+
+
+def run_time_text(run):
+    """The download time a run folder's name carries, as "YYYY-MM-DD HH:MM":
+    '20261021_233002_m202609' -> '2026-10-21 23:30' (a path or a version id is
+    accepted: the basename is read). "" when the name does not start with a
+    YYYYMMDD_HHMMSS stamp."""
+    m = RUN_TIME_RE.match(os.path.basename(os.path.normpath(str(run or ""))))
+    if not m:
+        return ""
+    d, t = m.groups()
+    return "%s-%s-%s %s:%s" % (d[:4], d[4:6], d[6:8], t[:2], t[2:4])
+
+
+def stamp_info(grade, version, run, basis, built_at=None):
+    """What core/report_kit.stamp_grade writes on sheet ①: from a grade
+    ({"level", "reasons"}), the version id, the download run (folder or name)
+    and the basis ("bill" / "order" / "main"). final = the grade counts
+    (COUNTABLE); at stamping time the version is the newest of its
+    store-month-basis, so that is the whole rule."""
+    level = (grade or {}).get("level") or ""
+    built_at = built_at or datetime.datetime.now()
+    return {"level": level, "reasons": [str(r) for r in (grade or {}).get("reasons") or ()],
+            "version": str(version or ""), "downloaded_at": run_time_text(run),
+            "built_at": built_at.strftime("%Y-%m-%d %H:%M"), "basis_cn": BASIS_CN.get(basis, ""),
+            "final": level in COUNTABLE}
 
 
 def code_info():

@@ -7,7 +7,15 @@ store-month has no final). Nothing here reads platform files or workbooks.
     Period          kind ('quarterly' / 'annual' / 'custom'), label, months
     gather()        one market × basis × period -> PeriodData
     PeriodData      cells {(store, month): Cell}; the P&L spec and the sums of
-                    every section; what is missing and why
+                    every section; what is missing and why; which months are
+                    before the store's first data month
+
+A store's first data month is the earliest month with any results file for it
+(any basis, any grade). A store-month before it is 「未上线」 (not started: the
+system was not producing results yet), not missing — it is left out of the
+totals like any month without a final, but it is not a gap anyone can fill, so
+missing() leaves it out and not_started() lists it. Only a month on or after
+the first data month without a final version is missing.
 
 Money is added as the decimal numbers the results files hold (Decimal of each
 figure's shortest repr) and rounded half-up to the currency's decimals once
@@ -72,23 +80,37 @@ def basis_cn(basis):
 
 # ------------------------------------------------------------------ cells
 
+NOT_STARTED = "未上线"
+
+
+def not_started_text(first_month):
+    """'未上线（系统从 2026-09 起有数据）' — the wording of a not-started store-month."""
+    return "%s（系统从 %s 起有数据）" % (NOT_STARTED, first_month)
+
+
 class Cell(object):
     """One store-month: its final version (or None), its newest version of any
-    grade, and the files of the month that cannot be used."""
+    grade, the files of the month that cannot be used, and whether the month is
+    before the store's first data month (not_started; first_month says which)."""
 
-    def __init__(self, store, month, final, newest, problems=()):
+    def __init__(self, store, month, final, newest, problems=(), first_month=None):
         self.store, self.month = store, month
         self.final, self.newest = final, newest
         self.problems = list(problems)
+        self.first_month = first_month
+        self.not_started = bool(first_month) and month < first_month and final is None
 
     @property
     def ok(self):
         return self.final is not None
 
     def reason(self):
-        """Why there is no final version (Chinese), or '' when there is one."""
+        """Why there is no final version (Chinese), or '' when there is one.
+        A not-started month says so: '未上线（系统从 2026-09 起有数据）'."""
         if self.final:
             return ""
+        if self.not_started:
+            return not_started_text(self.first_month)
         if self.newest:
             g = self.newest["grade"]
             why = "；".join(g.get("reasons") or []) or "没有说明原因"
@@ -133,13 +155,20 @@ def _read(platform, country, store, month, basis, config_path=None):
     return final, (vs[0] if vs else None), probs
 
 
+def first_month(platform, country, store, config_path=None):
+    """The store's first data month (results.first_month_at): the earliest month
+    with any results file, any basis, any grade; None when it has none."""
+    return R.first_month_at(platform, country, store, config_path)
+
+
 def market_stores(market, months, basis, stores=None, config_path=None):
     """The stores of a market's period report.
 
     Without `stores`: every store with any version of this basis in one of the
     months (the results tree under <PF>/<CC>). With `stores`: those of them that
     belong to this market (by the results tree, else by config.json), whether
-    they have results or not — a listed store without any is reported missing."""
+    they have results or not — a listed store without any results anywhere is
+    reported missing in every month (it has no first data month)."""
     pf, cc = markets.split(markets.normalize(market))
     found = R.stores(pf, cc, config_path)
     if stores:
@@ -198,9 +227,40 @@ class PeriodData(object):
                 if self.final(s, m)]
 
     def missing(self):
-        """[Cell] without a final version, store by store."""
+        """[Cell] without a final version that should have one, store by store:
+        months on or after the store's first data month. Not-started months
+        (before it) are in not_started(), not here."""
         return [self.cell(s, m) for s in self.stores for m in self.months
-                if not self.final(s, m)]
+                if not self.final(s, m) and not self.cell(s, m).not_started]
+
+    def not_started(self):
+        """[Cell] before the store's first data month (未上线), store by store."""
+        return [self.cell(s, m) for s in self.stores for m in self.months
+                if self.cell(s, m).not_started]
+
+    def first_month(self, store):
+        """The store's first data month ('YYYY-MM'), or None when it has no results."""
+        return self.cell(store, self.months[0]).first_month
+
+    def data_months(self, store):
+        """(first data month, [months of the period before it]) for a store —
+        ([], no first month) when none of its months is not started."""
+        before = [m for m in self.months if self.cell(store, m).not_started]
+        return (self.first_month(store), before) if before else (None, [])
+
+    def not_started_stores(self):
+        """Stores with at least one not-started month, in report order."""
+        return [s for s in self.stores if self.data_months(s)[1]]
+
+    def not_started_cn(self, store, short=False):
+        """'系统从 2026-09 起有该店数据，2026-07、2026-08 不在合计内' — or, short,
+        '系统从 2026-09 起有数据，07、08 月不在合计内'; '' when nothing is not started."""
+        first, before = self.data_months(store)
+        if not before:
+            return ""
+        if short:
+            return "系统从 %s 起有数据，%s 月不在合计内" % (first, "、".join(m[5:7] for m in before))
+        return "系统从 %s 起有该店数据，%s 不在合计内" % (first, "、".join(before))
 
     def complete_stores(self, month):
         return [s for s in self.stores if self.final(s, month)]
@@ -379,7 +439,8 @@ def gather(market, period, basis=None, stores=None, config_path=None, built=None
     names = market_stores(market, period.months, basis, stores, config_path)
     cells = {}
     for s in names:
+        first = first_month(pf, cc, s, config_path)
         for m in period.months:
             final, newest, probs = _read(pf, cc, s, m, basis, config_path)
-            cells[(s, m)] = Cell(s, m, final, newest, probs)
+            cells[(s, m)] = Cell(s, m, final, newest, probs, first)
     return PeriodData(market, basis, period, names, cells, built or datetime.datetime.now())

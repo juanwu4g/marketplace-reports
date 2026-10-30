@@ -162,7 +162,13 @@ class ReportRunner(object):
 
     # ------------------------------------------------------------ building
 
-    def safe_build(self, pairs, month, out, strict=False):
+    def safe_build(self, pairs, month, out, strict=False, version=None, folder=None):
+        """Build one workbook, then recalculate it. version / folder (the store's
+        results version and download folder) come with a per-store build: the
+        workbook then gets the grade banner on sheet ① (report_kit.stamp_grade)
+        after the save and before recalculation — openpyxl drops the cached
+        formula values when it reopens a workbook. The combined workbook is not
+        graded and gets none."""
         report_build = importlib.import_module(self.package + ".report_build")
         t0 = time.time()
         try:
@@ -171,6 +177,9 @@ class ReportRunner(object):
             traceback.print_exc()
             return {"outcome": "crashed", "checks": [], "out": out, "error": str(e),
                     "seconds": int(time.time() - t0)}
+        stamp = version and len(pairs) == 1 and r["outcome"] in WRITTEN
+        if stamp:
+            self.stamp_banner(pairs[0][0], out, r, version, folder)
         if r["outcome"] in WRITTEN:
             ok, msg = report_kit.recalc(out)
             if ok:
@@ -178,37 +187,69 @@ class ReportRunner(object):
                 if n_err:
                     r["outcome"] = "formula_errors"
                     r["formula_errors"] = bad
+                    # formula errors make the grade 有缺口: stamp again, recalc again
+                    if stamp and self.stamp_banner(pairs[0][0], out, r, version, folder, formula_errors=True):
+                        print("  [重算] %s" % report_kit.recalc(out)[1])
             else:
                 print("  [提示] %s" % msg)
         r["seconds"] = int(time.time() - t0)
         return r
 
+    def stamp_banner(self, name, out, r, version, folder, formula_errors=False):
+        """The grade banner of one store workbook (same grade as the results
+        file: store_grade). Never raises; prints the grade. Range or None."""
+        from core import results as RS
+        try:
+            g = self.store_grade(name, r, formula_errors)
+            info = RS.stamp_info(g, version, folder, "main")
+        except Exception as e:                 # noqa: BLE001 — a banner must not cost the report
+            print("  [提示] 完整度标记没写上：%s: %s" % (e.__class__.__name__, e))
+            return None
+        rng = report_kit.stamp_grade_safely(out, info, log=lambda s: print("  " + s))
+        if rng:
+            print("  [完整度] %s" % RS.GRADE_CN.get(g["level"], g["level"]))
+        return rng
+
     # ------------------------------------------------------------ results files
 
-    def results_document(self, name, folder, month, market, version, r):
-        """The monthly results document of one store build (core/results)."""
-        from core import grading
+    @staticmethod
+    def _store_record(name, r):
+        """(rec, missing, checks) of one store in a build result."""
         from core import results as RS
-        rb = importlib.import_module(self.package + ".report_build")
-        country = markets.split(market)[1]
-        cur, dec = getattr(rb, "CUR", ""), getattr(rb, "DECIMALS", 2)
         rec = (r.get("results") or {}).get(name) or {}
         meta = rec.get("meta") or {}
         missing = [x for x in (meta.get("missing") or []) if x and x.get("form")]
-        checks = RS.plain(r.get("checks") or [])
+        return rec, missing, RS.plain(r.get("checks") or [])
+
+    def store_grade(self, name, r, formula_errors=False):
+        """The grade of one store build (core/grading) — the same computation
+        for the sheet ① banner (before recalculation, formula_errors False) and
+        the results file (after it). A build that wrote no workbook, or one whose
+        figures could not be read, grades failed with the reason."""
+        from core import grading
+        rec, missing, checks = self._store_record(name, r)
         if r["outcome"] in WRITTEN and rec.get("figures") is not None:
-            g = grading.grade(self.code, "main", True, checks, missing,
-                              formula_errors=r["outcome"] == "formula_errors",
-                              unknown_download=grading.download_unknown(rec.get("meta")))
-            return RS.document(self.code, market, country, cur, dec, name, month, "main", version,
-                               datetime.datetime.now(), [folder], r["out"], g, checks, missing,
-                               figures=rec["figures"])
+            return grading.grade(self.code, "main", True, checks, missing, formula_errors=formula_errors,
+                                 unknown_download=grading.download_unknown(rec.get("meta")))
         why = OUTCOME_LABELS.get(r["outcome"], r["outcome"])
         if r["outcome"] in WRITTEN:
             why = "结果数字取不出来：%s" % (rec.get("error") or "报表没有返回结果数字").splitlines()[0]
         elif r.get("error"):
             why += "：%s" % r["error"][:200]
-        g = grading.grade(self.code, "main", False, why_not_written=why)
+        return grading.grade(self.code, "main", False, why_not_written=why)
+
+    def results_document(self, name, folder, month, market, version, r):
+        """The monthly results document of one store build (core/results)."""
+        from core import results as RS
+        rb = importlib.import_module(self.package + ".report_build")
+        country = markets.split(market)[1]
+        cur, dec = getattr(rb, "CUR", ""), getattr(rb, "DECIMALS", 2)
+        rec, missing, checks = self._store_record(name, r)
+        g = self.store_grade(name, r, formula_errors=r["outcome"] == "formula_errors")
+        if r["outcome"] in WRITTEN and rec.get("figures") is not None:
+            return RS.document(self.code, market, country, cur, dec, name, month, "main", version,
+                               datetime.datetime.now(), [folder], r["out"], g, checks, missing,
+                               figures=rec["figures"])
         return RS.document(self.code, market, country, cur, dec, name, month, "main", version,
                            datetime.datetime.now(), [folder], None, g, checks, missing)
 
@@ -315,7 +356,7 @@ class ReportRunner(object):
                 where = finalize.version_dir(a.out_dir, version) if v2 else a.out_dir
                 out = os.path.join(where, report_kit.store_workbook_name(name, month))
                 print("\n单店报表：%s" % name)
-                r = self.safe_build([(name, folder)], month, out, strict=a.strict)
+                r = self.safe_build([(name, folder)], month, out, strict=a.strict, version=version, folder=folder)
                 r["label"] = name
                 results.append(r)
                 self.write_results(name, folder, month, a.market, version, r)

@@ -126,6 +126,24 @@ def _first(patterns, folder):
     return None
 
 
+def unreadable(errors, path, err):
+    """一份**可选**文件读不出来（平台把出错网页存成了 .xlsx、压缩包坏了、
+    页名不对……）：当它不存在，并把 (文件名, 错误) 记进 errors —— derive() 传
+    的是 S["load_errors"]，validate() 据此在 ⑩ 页记一条 load:<文件名> 校验，
+    和账单基准一样。errors 为 None 时只是安静跳过（老调用方）。同一个文件只记
+    一次（结算流水被三个函数各读一遍）。
+
+    2026-10-30 EWTTO_SM：五份库存类文件都是网页，订单基准在这里炸掉，整个
+    墨西哥的订单基准汇总都没写出来；账单基准同一天照常出表、评级有缺口。
+    只有 Ventas 和 Facturación **不**走这里 —— 没有它们报表就不存在，照旧报错。
+    """
+    if errors is None:
+        return
+    name = os.path.basename(path)
+    if not any(n == name for n, _ in errors):
+        errors.append((name, str(err)))
+
+
 def cell_int(v):
     """写进单元格：浮点取整，NaN/None 留空。
 
@@ -297,7 +315,7 @@ def load_billing(folder):
     return df
 
 
-def load_pagos(folder, year, month):
+def load_pagos(folder, year, month, errors=None):
     """当期的账单支付与贷记单。返回 (path, DataFrame) 或 (None, 空表)。"""
     best = None
     for p in sorted(glob.glob(os.path.join(folder, "Reporte_Pagos_Facturas_*.xlsx"))):
@@ -307,12 +325,16 @@ def load_pagos(folder, year, month):
             break
     if not best:
         return None, pd.DataFrame()
-    df = pd.read_excel(best, sheet_name="Pagos y notas de crédito",
-                       header=PAGOS_HEADER_ROW).dropna(how="all")
+    try:
+        df = pd.read_excel(best, sheet_name="Pagos y notas de crédito",
+                           header=PAGOS_HEADER_ROW).dropna(how="all")
+    except Exception as e:                      # noqa: BLE001 — 见 unreadable()
+        unreadable(errors, best, e)
+        return None, pd.DataFrame()
     return best, df
 
 
-def load_cargos_full(folder, year, month):
+def load_cargos_full(folder, year, month, errors=None):
     """Full 费用明细（七张分表）。仅用于交叉核对，绝不与账单相加。"""
     best = None
     for p in sorted(glob.glob(os.path.join(folder, "Reporte_Cargos_Full_*.xlsx"))):
@@ -322,19 +344,23 @@ def load_cargos_full(folder, year, month):
     if not best:
         return None, {}, 0.0
     sheets, total = {}, 0.0
-    xl = pd.ExcelFile(best)
-    for sn in xl.sheet_names:
-        d = pd.read_excel(best, sheet_name=sn, header=CARGOS_HEADER_ROW)
-        col = next((c for c in d.columns if "Monto del cargo" in str(c)), None)
-        if col is None:
-            continue
-        v = pd.to_numeric(d[col], errors="coerce")
-        sheets[sn] = (float(v.sum()), int(v.notna().sum()))
-        total += float(v.sum())
+    try:
+        xl = pd.ExcelFile(best)
+        for sn in xl.sheet_names:
+            d = pd.read_excel(best, sheet_name=sn, header=CARGOS_HEADER_ROW)
+            col = next((c for c in d.columns if "Monto del cargo" in str(c)), None)
+            if col is None:
+                continue
+            v = pd.to_numeric(d[col], errors="coerce")
+            sheets[sn] = (float(v.sum()), int(v.notna().sum()))
+            total += float(v.sum())
+    except Exception as e:                      # noqa: BLE001 — 见 unreadable()
+        unreadable(errors, best, e)
+        return None, {}, 0.0
     return best, sheets, total
 
 
-def load_storage(folder, p0, p1):
+def load_storage(folder, p0, p1, errors=None):
     """独立仓储费报表（按实际占用日）。挑与报表月重叠最多的那份。"""
     best, best_overlap = None, -1
     for p in sorted(glob.glob(os.path.join(folder, "*Costos_por_servicio_almacenamiento.xlsx"))):
@@ -346,7 +372,11 @@ def load_storage(folder, p0, p1):
             best, best_overlap = p, ov
     if not best or best_overlap < 0:
         return None, 0.0, None
-    s = pd.read_excel(best, sheet_name="Resumen", header=STORAGE_HEADER_ROW)
+    try:
+        s = pd.read_excel(best, sheet_name="Resumen", header=STORAGE_HEADER_ROW)
+    except Exception as e:                      # noqa: BLE001 — 见 unreadable()
+        unreadable(errors, best, e)
+        return None, 0.0, None
     col = "Total" if "Total" in s.columns else s.columns[-1]
     vals = pd.to_numeric(s[col], errors="coerce").dropna()
     accrual = float(vals.iloc[-1]) if len(vals) else 0.0
@@ -381,7 +411,7 @@ def _cycle_file(pattern, folder, y, mth):
     return None
 
 
-def load_pagos_cycles(folder, cycles):
+def load_pagos_cycles(folder, cycles, errors=None):
     """每个账单周期的 Reporte_Pagos_Facturas：汇总页 + "Detalle de Pagos del mes"。
 
     明细页逐行写着"这笔付款的哪一部分付了哪一张费用（Número del cargo /
@@ -397,8 +427,12 @@ def load_pagos_cycles(folder, cycles):
             try:
                 P = pd.read_excel(path, sheet_name="Pagos y notas de crédito",
                                   header=PAGOS_HEADER_ROW).dropna(how="all")
-            except Exception:
-                P = pd.DataFrame()
+            except Exception as e:              # noqa: BLE001 — 见 unreadable()
+                # 汇总页都读不出来 = 整份文件坏了，当没下载；只缺明细页
+                # （下面）是另一回事，_derive_pagos_cycles 自己会说明。
+                unreadable(errors, path, e)
+                P, path = pd.DataFrame(), None
+        if path:
             try:
                 D = pd.read_excel(path, sheet_name="Detalle de Pagos del mes",
                                   header=PAGOS_HEADER_ROW).dropna(how="all")
@@ -412,7 +446,7 @@ def _date_col(df, names=("Fecha de cargo", "Fecha del cargo")):
     return next((c for c in df.columns if str(c).strip() in names), None)
 
 
-def load_cargos_full_cycles(folder, cycles, p0, p1):
+def load_cargos_full_cycles(folder, cycles, p0, p1, errors=None):
     """Full 费用明细，两期文件里计费日落在会计月内的行。
 
     返回 (路径们, {分表: (金额, 行数)}, 合计, 缺的账单名)。
@@ -423,9 +457,15 @@ def load_cargos_full_cycles(folder, cycles, p0, p1):
         if not path:
             missing.append("%s %d" % (MONTH_FULL_ES[mth], y))
             continue
+        try:
+            frames = [(sn, pd.read_excel(path, sheet_name=sn, header=CARGOS_HEADER_ROW))
+                      for sn in pd.ExcelFile(path).sheet_names]
+        except Exception as e:                  # noqa: BLE001 — 见 unreadable()
+            unreadable(errors, path, e)
+            missing.append("%s %d" % (MONTH_FULL_ES[mth], y))
+            continue
         paths.append(path)
-        for sn in pd.ExcelFile(path).sheet_names:
-            d = pd.read_excel(path, sheet_name=sn, header=CARGOS_HEADER_ROW)
+        for sn, d in frames:
             col = next((c for c in d.columns if "Monto del cargo" in str(c)), None)
             dc = _date_col(d)
             if col is None or dc is None:
@@ -445,7 +485,7 @@ def load_cargos_full_cycles(folder, cycles, p0, p1):
 STORAGE_BILL_LAG_DAYS = 1
 
 
-def load_storage_daily(folder, p0, p1):
+def load_storage_daily(folder, p0, p1, errors=None):
     """仓储费报表里占用日落在会计月内的逐日费用之和。
 
     返回 (路径们, 合计, (覆盖起, 覆盖止) 或 None, 覆盖天数)。智利的仓储报表
@@ -459,7 +499,8 @@ def load_storage_daily(folder, p0, p1):
             continue
         try:
             t = pd.read_excel(p, sheet_name="Detalle", header=STORAGE_HEADER_ROW)
-        except Exception:
+        except Exception as e:                  # noqa: BLE001 — 见 unreadable()
+            unreadable(errors, p, e)
             continue
         hit = False
         for c in t.columns:
@@ -478,14 +519,15 @@ def load_storage_daily(folder, p0, p1):
     return paths, total, (days[0], days[-1]), len(days)
 
 
-def load_returns(folder):
+def load_returns(folder, errors=None):
     path = _first(["Returns*.xlsx"], folder)
     if not path:
         return None, pd.DataFrame()
     try:
         r = pd.read_excel(path, sheet_name="Triages", header=RETURNS_HEADER_ROW)
-    except Exception:
-        return path, pd.DataFrame()
+    except Exception as e:                      # noqa: BLE001 — 见 unreadable()
+        unreadable(errors, path, e)
+        return None, pd.DataFrame()
     r = r.dropna(how="all")
     if "Order" in r.columns and "Número de orden" not in r.columns:
         r = r.rename(columns=RETURNS_EN_COLUMNS)
@@ -577,7 +619,7 @@ def _hnorm(v):
     return str(v).split("\n")[0].strip().lower()
 
 
-def load_stock(folder):
+def load_stock(folder, errors=None):
     """Full 仓库存报表（stock_general_full）的 Resumen 页。
 
     这一页本身就是完整的 SKU 级主表，其余四页只是它的切片，所以只读这一页。
@@ -591,8 +633,9 @@ def load_stock(folder):
         return None, "", pd.DataFrame()
     try:
         raw = pd.read_excel(path, sheet_name=STOCK_SHEET, header=None)
-    except Exception:
-        return path, "", pd.DataFrame()
+    except Exception as e:                      # noqa: BLE001 — 见 unreadable()
+        unreadable(errors, path, e)
+        return None, "", pd.DataFrame()
 
     snap = ""
     hdr = None
@@ -684,13 +727,33 @@ def stock_snapshot_date(snap, folder):
     return pd.NaT
 
 
-def load_settlement(folder, p0, p1):
+MP_COLUMNS = ("TRANSACTION_DATE", "TRANSACTION_TYPE", "SOURCE_ID", "REAL_AMOUNT")
+
+
+def _read_mp_csv(path, errors, required=MP_COLUMNS):
+    """读一份 MercadoPago 流水（settlement_v2 / reserve-release）。读不出来、或
+    连必需的列都没有（平台把网页存成了 .csv 时就是这样）→ 记录并返回 None。"""
+    try:
+        d = pd.read_csv(path, sep=";")
+    except Exception as e:                      # noqa: BLE001 — 见 unreadable()
+        unreadable(errors, path, e)
+        return None
+    lack = [c for c in required if c not in d.columns]
+    if lack:
+        unreadable(errors, path, "缺少列 %s（不是 MercadoPago 流水的格式）" % "、".join(lack))
+        return None
+    return d
+
+
+def load_settlement(folder, p0, p1, errors=None):
     """MercadoPago 结算流水（可选）。用于第三方交叉验证；很多店没有报表权限。"""
     path = _first(["settlement_v2*.csv"], folder)
     if not path:
         return None, None
+    s = _read_mp_csv(path, errors)
+    if s is None:
+        return None, None
     try:
-        s = pd.read_csv(path, sep=";")
         s["dt"] = pd.to_datetime(s["TRANSACTION_DATE"], errors="coerce", utc=True)
     except Exception:
         return path, None
@@ -722,7 +785,7 @@ def load_settlement(folder, p0, p1):
     return path, out
 
 
-def mp_by_order(A, B, folder):
+def mp_by_order(A, B, folder, errors=None):
     """MercadoPago 逐单交叉验证：每个订单的销售报表 Total 对它自己那笔收款的净额。
 
     以前是"本月按交易日的流水合计"对"本月按下单日的销售合计"，两边不是同一批
@@ -743,8 +806,10 @@ def mp_by_order(A, B, folder):
     p = _first(["settlement_v2*.csv"], folder)
     if not p:
         return None
+    s = _read_mp_csv(p, errors)
+    if s is None:
+        return None
     try:
-        s = pd.read_csv(p, sep=";")
         dt = pd.to_datetime(s["TRANSACTION_DATE"], errors="coerce", utc=True)
     except Exception:
         return None
@@ -829,7 +894,7 @@ def _srcid(v):
     return s[:-2] if s.endswith(".0") else s
 
 
-def load_mp_cash(folder):
+def load_mp_cash(folder, errors=None):
     """MercadoPago 逐笔到账净额 {收款号: 净额}，用来给比对结论找现金凭证。
 
     两个来源都认：reserve-release（明细最全，含 mediation/refund 分解）优先，
@@ -838,9 +903,10 @@ def load_mp_cash(folder):
     """
     out = {}
     p = _first(["reserve-release-*.csv"], folder)
-    if p:
+    d = _read_mp_csv(p, errors, required=("SOURCE_ID", "NET_CREDIT_AMOUNT",
+                                           "NET_DEBIT_AMOUNT")) if p else None
+    if d is not None:
         try:
-            d = pd.read_csv(p, sep=";")
             net = (pd.to_numeric(d["NET_CREDIT_AMOUNT"], errors="coerce").fillna(0.0)
                    - pd.to_numeric(d["NET_DEBIT_AMOUNT"], errors="coerce").fillna(0.0))
             for a, b in zip(d["SOURCE_ID"].map(_srcid), net):
@@ -851,9 +917,9 @@ def load_mp_cash(folder):
     if out:
         return out
     p = _first(["settlement_v2*.csv"], folder)
-    if p:
+    d = _read_mp_csv(p, errors, required=("SOURCE_ID", "REAL_AMOUNT")) if p else None
+    if d is not None:
         try:
-            d = pd.read_csv(p, sep=";")
             amt = pd.to_numeric(d["REAL_AMOUNT"], errors="coerce").fillna(0.0)
             for a, b in zip(d["SOURCE_ID"].map(_srcid), amt):
                 if a:
@@ -892,7 +958,7 @@ def credit_note_audit(S, folder):
 
     ids = set(V["oid"]) | set(V["pid"])
     ids.discard(""); ids.discard("nan")
-    cash = load_mp_cash(folder)
+    cash = load_mp_cash(folder, S.get("load_errors"))
     res["has_cash"] = bool(cash)
 
     def okey(ks, kp):

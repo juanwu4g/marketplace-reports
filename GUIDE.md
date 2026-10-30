@@ -975,13 +975,23 @@ What lives in the runner, once, for every entrance:
   child and everything it started, **still builds the reports and writes the
   alert**, and exits 7. Task Scheduler's 6-hour limit remains only as a backstop
   for the runner itself hanging.
-- **The alert file** `！报表异常_<YYYYMM>.txt` in the report folder (plus the
-  optional webhook), for manual runs too. It is written when data will be
-  missing from the reports or a report was not written: a hard download
-  failure, stores failed / partial / still owed reports, the deadline, a report
-  step exiting ≥ 2, or the runner itself crashing. A report step exiting 1
-  (checks failed) does not alert, nor does a cleaning-only problem, an operator
-  abort or a skipped run.
+- **The month overview and the one alert file** (`core/month_overview.py`). After
+  every region and once more at the end of a run, `本月总览_<YYYY-MM>.xlsx` is
+  rebuilt in the month's alert folder (`layout.alert_dir`): one row per
+  configured store and basis with grade, final flag, version, the four headline
+  figures copied from the results files, what is missing, who acts, next step;
+  sheets 需要你处理 (only what a person must do), 版本历史 (every version with
+  deltas; a final whose figures differ from an earlier final is flagged) and 说明.
+  `！需要处理_<YYYYMM>.txt` exists only while 需要你处理 has rows — one file for
+  the whole month, all units — and lists the same items (plus the webhook, for
+  manual runs too). It replaces the per-region `！报表异常_*.txt` and the period
+  reports' `！期间报表异常_*.txt`, which are deleted as superseded. Listed: pending
+  human actions, configured stores without a version, failed / gapped versions,
+  the runner's urgent lines (hard download failure, deadline, report step ≥ 2,
+  crash, config problems), incomplete period reports. Not listed: platform
+  delays, non-blocking gaps and warnings, a cleaning-only problem, an operator
+  abort or a skipped run. A failure inside the overview never changes the exit
+  code.
 
 ### Runs do not depend on a window
 

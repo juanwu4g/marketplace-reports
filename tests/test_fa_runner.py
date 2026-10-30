@@ -95,9 +95,11 @@ def test_mercadolibre_commands_identical_with_new_config(env, capsys, monkeypatc
 
 
 def test_alert_names(monkeypatch):
-    assert run_monthly.alert_name(MONTH, "MX") == "！报表异常_202609.txt"
-    assert run_monthly.alert_name(MONTH, "CL") == "！报表异常_CL_202609.txt"
-    assert run_monthly.alert_name(MONTH, "FA-CL") == "！报表异常_CL_FA_202609.txt"
+    # one alert file per month for every unit (core/month_overview); report_kit's
+    # per-market name stays for tools/migrate_layout and old folders
+    assert run_monthly.alert_name(MONTH, "MX") == "！需要处理_202609.txt"
+    assert run_monthly.alert_name(MONTH, "CL") == "！需要处理_202609.txt"
+    assert run_monthly.alert_name(MONTH, "FA-CL") == "！需要处理_202609.txt"
 
 
 # ------------------------------------------------- Falabella unit
@@ -159,8 +161,13 @@ def test_all_regions_run_with_falabella(env, monkeypatch):
     fa = [r for r in recs if runlog.split_region(r["message"])[0] == "FA-CL"]
     assert fa and any("Falabella 智利（FA-CL）" in r["message"] for r in fa)
     assert any(r["store"] == "DAB_CL-Fala (Coco)" for r in fa)
-    assert os.path.exists(os.path.join(env.out_dir, "！报表异常_CL_FA_202609.txt"))
-    assert not os.path.exists(os.path.join(env.out_dir, "！报表异常_CL_202609.txt"))
+    # one 「！需要处理」 for the whole month; the Falabella line carries its unit name
+    p = os.path.join(env.out_dir, "！需要处理_202609.txt")
+    assert os.path.exists(p)
+    with io.open(p, encoding="utf-8") as f:
+        assert "Falabella 智利 —— 下载这一步有需要关注的项" in f.read()
+    assert not [n for n in os.listdir(env.out_dir) if n.startswith("！报表异常")]
+    assert os.path.exists(os.path.join(env.out_dir, "本月总览_2026-09.xlsx"))
     assert not os.path.exists(run_monthly.LOCK)
 
 

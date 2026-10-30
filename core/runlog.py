@@ -1339,6 +1339,20 @@ def pending_human_actions(log_dir=None, look_back=30):
     return {"month": month, "actions": actions}
 
 
+def batch_summaries_for_month(month, log_dir=None, look_back=30):
+    """这个月的下载批次汇总：[(区域, 批次汇总路径)]，最近的在前（本月总览读它来说明
+    一家没有报表的店是怎么回事）。只看摘要里 month 等于这个月的那几轮。"""
+    out = []
+    for run in list_runs(log_dir, limit=look_back):
+        summary = read_json(run_paths(run["run_id"], log_dir)["json"])
+        if not summary or summary.get("month") != month:
+            continue
+        for region, path, _full in _region_batches(summary):
+            if path and (region, path) not in out:
+                out.append((region, path))
+    return out
+
+
 def runner_argv(entrance, step="both", month=None, stores=None, out_dir=None,
                 reports_for=None, region=None):
     """给 run_monthly.py 的参数。两个窗口都用它拼，区别只有 entrance。
