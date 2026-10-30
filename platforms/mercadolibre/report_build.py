@@ -409,6 +409,9 @@ def main(argv=None):
     out = a.out or os.path.join("reports", "MercadoLibre_月度财务报表_%s.xlsx" % ctx["period_cn"])
     build_workbook(stores, ctx, out)
     print("\n[输出] %s" % out)
+    # 单店报表（run_reports 传 --results-version）：先在①页盖上完整度等级，再重算 ——
+    # openpyxl 重新打开再保存会丢掉公式缓存值，所以盖章必须在重算之前。
+    stamp_grade(a, stores, checks, out)
 
     if not a.no_recalc:
         ok, msg = recalc(out)
@@ -420,6 +423,9 @@ def main(argv=None):
                 print("       %s" % b)
             if ne:
                 print("[警告] 文件里存在公式错误，请勿直接发出。")
+                # 公式错误把等级压成“有缺口”：重新盖章，再重算一次补回缓存值
+                if stamp_grade(a, stores, checks, out, formula_errors=True):
+                    print("[重算] %s" % recalc(out)[1])
                 write_results(a, stores, checks, out, formula_errors=True)
                 return EXIT_CHECKS
 
@@ -444,6 +450,23 @@ def write_results(a, stores, checks, out, formula_errors=False):
     from platforms.mercadolibre import results_files
     return results_files.write_from(lambda: results_files.order_document(
         stores[0], checks, a.results_version, out, formula_errors), log=print)
+
+
+def stamp_grade(a, stores, checks, out, formula_errors=False):
+    """--results-version：在单店报表的①页盖上完整度等级（core/report_kit.stamp_grade），
+    等级和结果文件的算法相同（results_files.order_grade）。没给 --results-version
+    或多店汇总时什么都不做 —— 报表构建器自己从不写这块，黄金测试看到的文件不变。
+    盖不上只提示，不影响报表。返回写入的区域或 None。"""
+    if not a.results_version or len(stores) != 1:
+        return None
+    from platforms.mercadolibre import results_files
+    S = stores[0]
+    try:
+        g = results_files.order_grade(S, checks, formula_errors)
+    except Exception as e:                    # noqa: BLE001
+        print("[提示] 完整度标记没写上：%s: %s" % (e.__class__.__name__, e))
+        return None
+    return results_files.stamp_banner(out, g, a.results_version, S["folder"], "order", log=print)
 
 
 def run(argv=None):

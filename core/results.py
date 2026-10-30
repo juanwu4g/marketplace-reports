@@ -300,6 +300,35 @@ def version_parts(version):
     return (m.group("run"), m.group("built")) if m else (None, None)
 
 
+RUN_TIME_RE = re.compile(r"^(\d{8})_(\d{6})")
+
+
+def run_time_text(run):
+    """The download time a run folder's name carries, as "YYYY-MM-DD HH:MM":
+    '20261021_233002_m202609' -> '2026-10-21 23:30' (a path or a version id is
+    accepted: the basename is read). "" when the name does not start with a
+    YYYYMMDD_HHMMSS stamp."""
+    m = RUN_TIME_RE.match(os.path.basename(os.path.normpath(str(run or ""))))
+    if not m:
+        return ""
+    d, t = m.groups()
+    return "%s-%s-%s %s:%s" % (d[:4], d[4:6], d[6:8], t[:2], t[2:4])
+
+
+def stamp_info(grade, version, run, basis, built_at=None):
+    """What core/report_kit.stamp_grade writes on sheet ①: from a grade
+    ({"level", "reasons"}), the version id, the download run (folder or name)
+    and the basis ("bill" / "order" / "main"). final = the grade counts
+    (COUNTABLE); at stamping time the version is the newest of its
+    store-month-basis, so that is the whole rule."""
+    level = (grade or {}).get("level") or ""
+    built_at = built_at or datetime.datetime.now()
+    return {"level": level, "reasons": [str(r) for r in (grade or {}).get("reasons") or ()],
+            "version": str(version or ""), "downloaded_at": run_time_text(run),
+            "built_at": built_at.strftime("%Y-%m-%d %H:%M"), "basis_cn": BASIS_CN.get(basis, ""),
+            "final": level in COUNTABLE}
+
+
 def code_info():
     """{"commit", "fingerprint"} of the code that builds the report (core/runlog);
     computed once per process — the fingerprint reads every code file."""

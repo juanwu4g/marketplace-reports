@@ -30,6 +30,22 @@ def _missing(meta):
     return [r for r in ((meta or {}).get("missing") or []) if r and r.get("form")]
 
 
+def order_grade(S, checks, formula_errors=False):
+    """The order basis' grade of a written workbook (core/grading): the same
+    computation for the sheet ① banner (before recalculation) and the results
+    file (after it, formula_errors known)."""
+    return grading.grade(PLATFORM, "order", True, checks, _missing(S.get("meta")), bool(S.get("ventas_warning")),
+                         list(S.get("bill_open") or []), formula_errors,
+                         unknown_download=grading.download_unknown(S.get("meta")))
+
+
+def bill_grade(S, checks, formula_errors=False):
+    """The bill basis' grade of a written workbook; see order_grade."""
+    return grading.grade(PLATFORM, "bill", True, checks, _missing(S.get("meta")), False,
+                         list(S.get("provisional") or []), formula_errors,
+                         unknown_download=grading.download_unknown(S.get("meta")))
+
+
 def order_document(S, checks, version, workbook, formula_errors=False, built_at=None):
     """The order basis' results document for one store (S from report.derived)."""
     from platforms.mercadolibre.report import figures as OF
@@ -38,8 +54,7 @@ def order_document(S, checks, version, workbook, formula_errors=False, built_at=
     provisional = list(S.get("bill_open") or [])
     incomplete = bool(S.get("ventas_warning"))
     missing = _missing(S.get("meta"))
-    g = grading.grade(PLATFORM, "order", True, checks, missing, incomplete, provisional, formula_errors,
-                      unknown_download=grading.download_unknown(S.get("meta")))
+    g = order_grade(S, checks, formula_errors)
     return results.document(
         PLATFORM, market_of(country), country, site.CUR, site.MONEY_DEC, S["store"], _month(S["p0"]), "order",
         version, built_at or datetime.datetime.now(), [S["folder"]], workbook, g,
@@ -52,8 +67,7 @@ def bill_document(S, checks, version, workbook, formula_errors=False, built_at=N
     p = S["prof"]
     provisional = list(S.get("provisional") or [])
     missing = _missing(S.get("meta"))
-    g = grading.grade(PLATFORM, "bill", True, checks, missing, False, provisional, formula_errors,
-                      unknown_download=grading.download_unknown(S.get("meta")))
+    g = bill_grade(S, checks, formula_errors)
     return results.document(
         PLATFORM, market_of(p.country), p.country, p.currency, p.decimals, S["store"], S["month"], "bill",
         version, built_at or datetime.datetime.now(), [S["folder"]], workbook, g,
@@ -69,6 +83,18 @@ def failed_document(store, month, basis, region, version, folder, why, checks=()
         PLATFORM, market_of(region), str(region).upper(), p.currency, p.decimals, store, month, basis, version,
         datetime.datetime.now(), [folder] if folder else [], None, g, results.plain(checks),
         _missing(meta), (), False, None)
+
+
+def stamp_banner(workbook, grade, version, folder, basis, log=print):
+    """Write the grade banner on sheet ① of a saved store workbook
+    (core/report_kit.stamp_grade) — after the builder saved it, before
+    recalculation. Never raises; prints the grade. Returns the range or None."""
+    from core import report_kit
+    info = results.stamp_info(grade, version, folder, basis)
+    rng = report_kit.stamp_grade_safely(workbook, info, log=log)
+    if rng:
+        log("[完整度] %s" % results.GRADE_CN.get(grade["level"], grade["level"]))
+    return rng
 
 
 def write(doc, log=print):
