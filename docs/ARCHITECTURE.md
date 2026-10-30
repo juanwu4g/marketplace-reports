@@ -47,7 +47,9 @@ core/                  shared by every platform — no platform names in here, i
                        allowlist/platform checks, exit codes, summary JSON, owed catch-up
   platform_reports.py  the report runner of every platform but MercadoLibre: folder
                        choice, per-store + combined workbooks, exit codes
-  run_monthly.py       THE runner: lock, plan, child processes, summary, alert file
+  run_monthly.py       THE runner: lock, plan, child processes, summary, month overview + one alert file
+  month_overview.py    本月总览_<month>.xlsx and ！需要处理_<YYYYMM>.txt, rebuilt after every run
+                       from results files, run log and config (copies figures, computes none)
   app.py            the window (tkinter glue only)
   entrance.py, region_choice.py, win_tasks.py, log_view.py, ui_style.py
                        window logic that is testable without tkinter
@@ -116,7 +118,7 @@ the window (月度报表.cmd) ────────────────�
 core/run_monthly.py, per country, in this order:
   1. download   python -m platforms.mercadolibre.run_batch   --month M [--stores …]
   2. report     python -m platforms.mercadolibre.run_reports --month M [--region R] --out-dir …
-  then: summary JSON, alert file if something needs a person, exit code
+  then: summary JSON, 本月总览 rebuilt (+ ！需要处理 only if something needs a person), exit code
 ```
 
 **Layers talk through child processes and files, not imports.** A download batch
@@ -180,7 +182,7 @@ script that the runner or the window starts, start it the same way.
 | browser kit | **done** — `core/browser_kit.py`: shadow-root walk, find/need/wait_for, clicks, table rows, download folder, `wait_new_files`, `PageError`, `retried()` (the "never retry" exceptions are a parameter). Falabella's `page_kit` re-exports it and keeps only its own pop-ups, language box and downloads table. MercadoLibre's routes keep their own helpers |
 | discovery | **done** — `tools/probe_pages.py` (one look per URL) and `tools/probe_session.py` (one store kept open, scripts dropped into a folder run against it); both refuse stores off the allowlist |
 | new platform | **done** — `tools/new_platform.py` scaffolds a package that keeps the contract; `tests/test_platform_contract.py` checks every registered, importable platform against what the runner and the window actually start |
-| `core/run_monthly.py` | **done** — runs **units**: MercadoLibre's countries keep their codes (`MX`, `CL`, `PE`) and their exact commands; other platforms' units are market ids (`FA-CL`) and start `platforms.<pkg>.run_batch / run_reports --market <id>` with an explicit store list. `--region ALL` runs MercadoLibre's countries first (same order as before), then the other units; alert per unit (`！报表异常_CL_FA_<YYYYMM>.txt`) |
+| `core/run_monthly.py` | **done** — runs **units**: MercadoLibre's countries keep their codes (`MX`, `CL`, `PE`) and their exact commands; other platforms' units are market ids (`FA-CL`) and start `platforms.<pkg>.run_batch / run_reports --market <id>` with an explicit store list. `--region ALL` runs MercadoLibre's countries first (same order as before), then the other units; after each unit and at the end `core/month_overview` rebuilds `本月总览_<month>.xlsx` and the month's single `！需要处理_<YYYYMM>.txt` (the per-unit `！报表异常_*` files are gone) |
 | window | **done** — the unit list is `markets.all_units()`; the dropdown shows MercadoLibre's countries as before plus other platforms that have stores in config; preview, reruns and task arguments understand `FA-CL`. Old per-country scheduled tasks are only looked for for MercadoLibre |
 | cost of goods | **done for MercadoLibre, Falabella and Amazon** — one optional SKU cost table for every platform (`core/sku_costs.py`, `config.json` → `reports.sku_costs`; REPORT_FAMILY §7); `tools/sku_cost_template.py` lists a month's SKUs for finance |
 | runners | **done** — every platform but MercadoLibre runs on `core/platform_batch.py` (`BatchRunner`) and `core/platform_reports.py` (`ReportRunner`); its `run_batch.py` / `run_reports.py` only declare hooks (below), so a fix to the batch or report runner is made once. MercadoLibre keeps its own runners (different history: cleaning step, carried owed reports, `--region`) |

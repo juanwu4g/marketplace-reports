@@ -155,10 +155,11 @@ def test_region_flag_parses_and_defaults_to_mexico():
         run_monthly.parse_args(["--region", "AR"])
 
 
-def test_alert_file_name_per_region():
-    assert run_monthly.alert_name("2026-09") == "！报表异常_202609.txt"
-    assert run_monthly.alert_name("2026-09", "MX") == "！报表异常_202609.txt"
-    assert run_monthly.alert_name("2026-09", "CL") == "！报表异常_CL_202609.txt"
+def test_alert_file_name_is_one_per_month():
+    """整个月只有一份「！需要处理_<年月>.txt」（core/month_overview）；区域参数不再改名字。"""
+    assert run_monthly.alert_name("2026-09") == "！需要处理_202609.txt"
+    assert run_monthly.alert_name("2026-09", "MX") == "！需要处理_202609.txt"
+    assert run_monthly.alert_name("2026-09", "CL") == "！需要处理_202609.txt"
 
 
 # ------------------------------------------------------------ run_monthly：一轮
@@ -218,10 +219,12 @@ def test_chile_run_records_region_in_log_summary_and_alert(env):
     assert "区域　　：智利（CL）" in head
     assert "智利（CL）的店铺" in head
     assert doc["region"] == "CL" and doc["stores"] == "all"
-    assert os.path.exists(env.alert("CL"))
-    assert not os.path.exists(env.alert("MX"))      # 墨西哥那份不能被它占掉
+    # 整个月一份「！需要处理」：智利这一轮的话带着「智利」写在里面
+    assert env.alert("CL") == env.alert("MX") and os.path.exists(env.alert("CL"))
     with io.open(env.alert("CL"), encoding="utf-8") as f:
-        assert f.read().startswith("智利（CL） %s 月报生成异常" % MONTH)
+        text = f.read()
+    assert text.startswith("%s 需要处理的事" % MONTH)
+    assert "智利 —— 下载失败" in text and "这一轮是：定时" in text
     st = runlog.run_state(rid, env.log_dir)
     assert st["region"] == "CL"
     assert "  智利 %s  " % MONTH in runlog.run_label(
@@ -233,7 +236,8 @@ def test_mexico_run_keeps_the_old_alert_name_and_records_region(env):
         {"key": "download", "label": "d", "cmd": child(2)}]) == 2
     _, doc, recs = env.last()
     assert doc["region"] == "MX"
-    assert os.path.exists(os.path.join(env.out_dir, "！报表异常_202609.txt"))
+    assert os.path.exists(os.path.join(env.out_dir, "！需要处理_202609.txt"))
+    assert not [n for n in os.listdir(env.out_dir) if n.startswith("！报表异常")]
     assert any(r["message"] == "区域　　：墨西哥（MX）" for r in recs)
 
 

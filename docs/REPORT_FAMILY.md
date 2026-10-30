@@ -47,7 +47,8 @@ Shop, `TM` Temu, `WM` Walmart, `SH` SHEIN) and registers it in
 |---|---|---|
 | store workbook | `<store>_<YYYY-MM>.xlsx` | `DAB_CL-Fala (Coco)_2026-09.xlsx` |
 | combined per market | `<COUNTRY>_<PLATFORM>_全店汇总_<YYYY-MM>.xlsx` | `CL_FA_全店汇总_2026-09.xlsx`, `MX_ML_全店汇总_2026-09.xlsx` |
-| alert, only when a person must act | `！报表异常_<COUNTRY>_<PLATFORM>_<YYYYMM>.txt` | `！报表异常_CL_FA_202609.txt` |
+| alert, only when a person must act (one per month, all markets) | `！需要处理_<YYYYMM>.txt` (`core/month_overview`) | `！需要处理_202609.txt` |
+| month overview (one per month, all markets) | `本月总览_<YYYY-MM>.xlsx` | `本月总览_2026-09.xlsx` |
 | download folder | `downloads/<store>/<YYYYMMDD_HHMMSS>[_m<YYYYMM>]/` | `…/20261016_175632_m202609/` |
 
 MercadoLibre has two bases, written side by side every month: the bill basis
@@ -57,9 +58,11 @@ MercadoLibre has two bases, written side by side every month: the bill basis
 names above. Another platform that ever needs a second basis follows the same
 rule: the main names stay, the second basis gets a suffix.
 
-Historical exceptions kept for MercadoLibre (scheduled tasks and finance's folders
-rely on them): the Mexican alert is `！报表异常_<YYYYMM>.txt` and the other
-countries' `！报表异常_<COUNTRY>_<YYYYMM>.txt`, without the platform code.
+Historical names: until 2026-10 every market wrote its own alert
+(`！报表异常_<YYYYMM>.txt` for Mexico, `！报表异常_<COUNTRY>_<YYYYMM>.txt` for
+MercadoLibre's other countries, `！报表异常_<COUNTRY>_<PLATFORM>_<YYYYMM>.txt`
+elsewhere — `report_kit.alert_file_name` still spells the last one for
+`tools/migrate_layout`). The month overview deletes those files as superseded.
 
 Store workbooks and the combined one have the same sheets; the combined one has
 one column per store plus a total.

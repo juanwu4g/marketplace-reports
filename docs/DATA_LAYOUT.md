@@ -24,7 +24,8 @@ D:\marketplace-data\
 │   │   │   ├── 版本说明.txt                  which version is final and why
 │   │   │   └── _versions\<version>\         every generated version (cleaned once final)
 │   │   ├── ML-CL\  ML-PE\  FA-CL\  AZ-MX\
-│   │   └── ！报表异常_*.txt
+│   │   ├── 本月总览_2026-09.xlsx            every store's grade, headline figures, versions, 需要你处理
+│   │   └── ！需要处理_202609.txt            only while something needs a person (one per month)
 │   ├── quarterly\2026-Q3\ML-MX\MX_ML_2026-Q3_账单基准.xlsx
 │   ├── annual\2026\…
 │   └── custom\2026-07_2026-11\…

@@ -58,7 +58,7 @@ def test_a_broken_config_exits_4_with_an_alert_in_the_old_report_folder(tmp_path
     monkeypatch.setattr(run_monthly, "LOCK", str(tmp_path / "logs" / "monthly.lock"))
     monkeypatch.setattr(run_monthly, "config", lambda: {})
     assert run_monthly.main(["--month", MONTH]) == 4
-    p = tmp_path / "downloads" / "data" / "reports" / "financial" / "！报表异常_202609.txt"
+    p = tmp_path / "downloads" / "data" / "reports" / "financial" / "！需要处理_202609.txt"
     text = p.read_text(encoding="utf-8")
     assert "config.json 有问题" in text and "StoreConfigError" in text
 
@@ -110,7 +110,7 @@ def test_unreachable_data_folder_exits_2_with_alert_in_code_logs(tmp_path, monke
     code = run_monthly.main(["--month", MONTH, "--out-dir", str(blocker / "reports"),
                              "--step", "report"])
     assert code == 2
-    p = tmp_path / "code" / "logs" / "！报表异常_202609.txt"
+    p = tmp_path / "code" / "logs" / "！需要处理_202609.txt"
     assert "文件夹打不开或写不进去" in p.read_text(encoding="utf-8")
 
 
@@ -261,7 +261,7 @@ def test_a_clean_rerun_removes_the_old_alert(env):
     assert env.run([], plan(("download", child(0)), ("report", child(0)))) == 0
     assert not os.path.exists(env.alert)
     _, _, recs = env.last()
-    assert any("删掉了之前的告警文件" in r["message"] for r in recs)
+    assert any("没有需要处理的事，删掉了" in r["message"] for r in recs)
 
 
 def test_a_rerun_with_urgent_items_keeps_the_alert(env):
@@ -270,24 +270,20 @@ def test_a_rerun_with_urgent_items_keeps_the_alert(env):
     assert os.path.exists(env.alert)             # 笼统的"下载有要关注的项"仍是告警
 
 
-def test_a_subset_run_does_not_clear_the_month_alert(env):
+def test_clear_alert_is_a_no_op_the_overview_decides(env):
+    """以前 clear_alert 按"这一轮是不是全店"决定删不删那个区域的告警；现在整个月一份
+    「！需要处理」由 core/month_overview 按全部店铺的实际状态写或删，clear_alert 什么都不做。"""
     os.makedirs(env.out_dir)
     with io.open(env.alert, "w", encoding="utf-8") as f:
         f.write("x")
-    msgs = []
-
-    class Log(object):
-        def info(self, step, m, store=None):
-            msgs.append(m)
-
-        def warn(self, step, m, store=None):
-            msgs.append(m)
     args = run_monthly.parse_args(["--month", MONTH, "--out-dir", env.out_dir])
     args.stores = ["A"]
-    assert run_monthly.clear_alert(Log(), args, MONTH, env.out_dir, "MX") is None
+    assert run_monthly.clear_alert(None, args, MONTH, env.out_dir, "MX") is None
+    args.reports_for = "all"
+    assert run_monthly.clear_alert(None, args, MONTH, env.out_dir, "MX") is None
     assert os.path.exists(env.alert)
-    args.reports_for = "all"                     # 重跑这些店并重出全部报表：算数
-    assert run_monthly.clear_alert(Log(), args, MONTH, env.out_dir, "MX") == env.alert
+    # a clean run rebuilds the overview: nothing to do -> the file goes
+    assert env.run([], plan(("download", child(0)), ("report", child(0)))) == 0
     assert not os.path.exists(env.alert)
 
 

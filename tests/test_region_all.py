@@ -174,10 +174,15 @@ def test_all_regions_run_in_one_log_with_region_on_every_line(env):
         ("MX", "download"), ("MX", "report"), ("CL", "download"), ("CL", "report")]
     assert {c["region"] for c in doc["commands"]} == {"MX", "CL"}
 
-    # 各写各的告警：墨西哥没事不写，智利有事写自己那份
-    assert not os.path.exists(env.alert("MX"))
-    assert os.path.exists(env.alert("CL"))
+    # 整个月一份「！需要处理」（core/month_overview）：智利那条带「智利」，墨西哥没事就没有它的话
+    assert env.alert("MX") == env.alert("CL") and os.path.exists(env.alert("CL"))
+    with io.open(env.alert("CL"), encoding="utf-8") as f:
+        text = f.read()
+    assert "智利 —— 下载这一步有需要关注的项" in text
+    assert not any("墨西哥 —— " in line for line in text.splitlines())
     assert doc["regions"][1]["alert"] == os.path.abspath(env.alert("CL"))
+    assert not [n for n in os.listdir(env.out_dir) if n.startswith("！报表异常")]
+    assert os.path.exists(os.path.join(env.out_dir, "本月总览_%s.xlsx" % MONTH))
     # 收尾干净
     assert not os.path.exists(run_monthly.LOCK)
     assert runlog.active_run(env.log_dir) is None
@@ -201,7 +206,9 @@ def test_a_hard_failure_in_one_region_does_not_stop_the_next(env, tmp_path):
     _, doc, recs = env.last()
     assert [(r["region"], r["exit"]) for r in doc["regions"]] == [("MX", 2), ("CL", 0)]
     assert [s["step"] for s in doc["regions"][0]["steps"]] == ["download"]
-    assert os.path.exists(env.alert("MX")) and not os.path.exists(env.alert("CL"))
+    assert os.path.exists(env.alert("MX"))
+    with io.open(env.alert("MX"), encoding="utf-8") as f:
+        assert "墨西哥 —— 下载失败" in f.read()
     assert "墨西哥：下载失败" in recs[-1]["message"]
     assert all(u.startswith("[MX] ") for u in doc["urgent"])
 

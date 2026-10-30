@@ -147,7 +147,8 @@ stores and month of that step.
 * Basis: `--basis` (ML: `bill` default = official, or `order`); `main` elsewhere.
 * Input: `core/results.final()` per store-month only. A store-month without a
   final version is left out of every total and listed as 无完整版本 on ① (red
-  banner) and ⑩; an alert file is written for the automatic runs.
+  banner) and ⑩; after an automatic run it is also one item of the month's
+  需要你处理 list (`core/month_overview`).
 * Output: `layout.period_dir(kind, period, market)`, name
   `<CC>_<PF>_<period>[_账单基准|_订单基准].xlsx`
   (e.g. `MX_ML_2026-Q3_账单基准.xlsx`, `CL_FA_2026.xlsx`).
@@ -164,10 +165,13 @@ stores and month of that step.
   reported is the last of a quarter, that quarter is (re)generated for the units
   of the run; when it is December, the year too. MercadoLibre automatically gets
   the bill basis (official); the order basis is generated on demand. A market
-  with no results at all for the period is only logged; an incomplete one writes
-  `！期间报表异常_<CC>_<PF>_<period>[_基准].txt` in the month's alert folder,
-  which a later complete generation removes. The monthly run's exit code never
-  changes because of a period report.
+  with no results at all for the period is only logged; an incomplete or failed
+  one becomes an item of the month's 需要你处理 list — in `本月总览_<month>.xlsx`
+  and the single `！需要处理_<YYYYMM>.txt` (`core/month_overview`, fed by
+  `run_monthly.period_hook`'s results) — which a later complete generation
+  clears. (`period_report.write_alert` / `clear_alert` still exist for callers
+  that want a per-report file; the runner no longer uses them.) The monthly
+  run's exit code never changes because of a period report.
 * The workbook records each store-month's version in a hidden sheet `_版本记录`,
   which the next generation reads to list changed versions.
 * Changed versions: the period workbook records each store-month's version; a
