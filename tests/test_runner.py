@@ -30,7 +30,9 @@ def env(tmp_path, monkeypatch):
     class Env(object):
         log_dir = str(logs)
         out_dir = str(out)
-        alert = str(out / ("！报表异常_%s.txt" % MONTH.replace("-", "")))
+        # 整个月只有一份「！需要处理_<年月>.txt」（core/month_overview），这一轮 urgent 的
+        # 每一句都原样写在里面。
+        alert = str(out / ("！需要处理_%s.txt" % MONTH.replace("-", "")))
 
         def run(self, argv, plan):
             args = run_monthly.parse_args(
@@ -213,7 +215,7 @@ def test_download_exit_2_skips_reports_and_alerts(env, tmp_path):
     assert "这一轮是：手动" in text
     assert runlog.run_paths(doc["run_id"], env.log_dir)["log"] in text
     assert "monthly_" not in text
-    assert any("已写出告警文件" in r["message"] for r in recs)
+    assert any("已写出待处理清单" in r["message"] for r in recs)
     assert not os.path.exists(run_monthly.LOCK)
 
 

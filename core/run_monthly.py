@@ -72,12 +72,19 @@ run_monthly.cmd，改名会让它们全部失效。实际上它现在是**每一
 的，墨西哥和智利不能同时跑。
 
 * MX：子进程命令和区域出现之前**一字不差**（测试钉死了）。生产上的计划任务、
-  告警文件名 `！报表异常_<年月>.txt`、全店汇总表名都不变。
+  全店汇总表名都不变。
 * 其他区域：run_batch **永远**带显式的 --stores（这个区域的全部店铺，或者
   --stores 给的子集）。run_batch 不带店铺时走的是 config 里墨西哥那一批，
   智利一轮要是漏传了店铺，就会去下载墨西哥的 12 家店 —— 不能让这种事靠
-  "别忘了传"来保证。run_reports 带 --region，汇总表叫 CL_ML_全店汇总_<月>.xlsx，
-  告警文件叫 `！报表异常_CL_<年月>.txt`。
+  "别忘了传"来保证。run_reports 带 --region，汇总表叫 CL_ML_全店汇总_<月>.xlsx。
+
+本月总览与唯一的告警文件
+------------------------
+每个区域跑完、以及一轮结束时，core/month_overview 按这个月**全部店铺**的实际状态
+重建「本月总览_<月>.xlsx」（总览 / 需要你处理 / 版本历史 / 说明），并且只在有事要
+人处理时写一份「！需要处理_<年月>.txt」，没事就删掉它。以前每个区域各写一份
+「！报表异常_…」、期间报表各写一份「！期间报表异常_…」，现在都不写了（旧文件会被
+删掉）。总览出什么事都不改退出码（refresh_overview）。
 * --stores 里有不属于这个区域的店：退出码 3，什么都不跑。
 
 全部国家：--region ALL
@@ -341,14 +348,10 @@ class RegionLog(object):
 
 
 def alert_name(month, region="MX"):
-    """告警文件名。墨西哥的名字生产上有人（和脚本）在认，不能改。"""
-    ym = month.replace("-", "")
-    if "-" in str(region):                        # 别的平台：！报表异常_CL_FA_202609.txt
-        from core import markets, report_kit
-        p, c = markets.split(region)
-        return report_kit.alert_file_name(c, p, month)
-    return ("！报表异常_%s.txt" % ym if region == "MX"
-            else "！报表异常_%s_%s.txt" % (region, ym))
+    """告警文件名：整个月只有一份「！需要处理_<年月>.txt」（core/month_overview），
+    不再按区域各写一份。region 参数留着给老的调用方，不影响结果。"""
+    from core import month_overview
+    return month_overview.alert_file_name(month)
 
 
 def check_region(region, stores):
@@ -967,16 +970,10 @@ def alert(month, lines, out_dir, entrance="cli", log_path=None, say=None,
              "也可以双击 月度报表.cmd，在窗口右边的「运行日志」里挑这一轮来看。",
              "处理办法见 README.md 第 12 节《出问题先做这三步》。"]
     text = "\n".join(body)
-    out_dir = alert_dir(out_dir, month)
-    try:
-        if not os.path.isdir(out_dir):
-            os.makedirs(out_dir)
-        p = os.path.join(out_dir, alert_name(month, region))
-        with io.open(p, "w", encoding="utf-8") as f:
-            f.write(text)
-        tell(runlog.WARN, "已写出告警文件：%s" % p)
-    except Exception as e:
-        tell(runlog.WARN, "[警告] 告警文件写失败：%s" % str(e)[:120])
+    # 文件不在这里写了：这一轮结束时 core/month_overview 把全部区域要处理的事合成一份
+    # 「！需要处理_<年月>.txt」（refresh_overview）。这里只留日志和 webhook。
+    tell(runlog.WARN, "要处理的事 %d 条，会写进 %s（这一轮结束时统一更新）"
+         % (len(lines), os.path.join(os.path.abspath(alert_dir(out_dir, month)), alert_name(month, region))))
 
     url = config().get("webhook")
     if not url:
@@ -1223,30 +1220,39 @@ def conclude(log, args, month, out_dir, region, st, rec, log_path):
             alert(month, urgent, out_dir, entrance=args.entrance,
                   log_path=log_path, region=region,
                   say=lambda level, text: log.write(E, level, text))
-    if final in (0, 1) and not urgent:
-        clear_alert(log, args, month, out_dir, region)
     return final
 
 
 def clear_alert(log, args, month, out_dir, region):
-    """这个月、这个区域重跑好了：删掉之前那份「！报表异常」，不然财务打开目录
-    看到的还是上次的告警，下次真出事时这个文件已经没人信了（期间报表的告警
-    由 PR.clear_alert 同样处理）。
+    """以前这里删掉重跑好了的那个区域的「！报表异常」文件。现在整个月只有一份
+    「！需要处理」，由 core/month_overview 按这个月**全部店铺**的实际状态决定写还是删
+    （refresh_overview），所以这里什么都不做。留着这个名字给老的调用方。"""
+    return None
 
-    只跑了几家店、报表也只出这几家的一轮不删：它证明不了别的店没事。"重跑这些
-    店铺并重出全部报表"（--reports-for all）会给全部店铺重出报表，算数。"""
-    if args.stores and args.reports_for != "all":
-        return None
+
+def refresh_overview(log, args, month, out_dir, notes, period_results=(), batch_summaries=(),
+                     log_path=None):
+    """（重新）生成这个月的「本月总览_<月>.xlsx」和唯一的「！需要处理_<年月>.txt」。
+
+    每个区域 conclude 之后调一次（后面的区域中途出事，前面的进展也看得见），一轮结束
+    时再调一次。notes 是这一轮要写进清单的话（各区域的 urgent、config 问题、运行器出错）。
+    这里出什么事都只写一条警告，**不改**退出码。"""
+    E = runlog.STEP_END
     try:
-        p = alert_path(out_dir, month, region)
-        if not os.path.isfile(p):
-            return None
-        os.remove(p)
+        from core import month_overview
+
+        def say(text):
+            level = runlog.WARN if (text.startswith("已写出待处理清单") or text.startswith("[警告]")
+                                    or "写不进" in text) else runlog.INFO
+            log.write(E, level, text)
+        return month_overview.build(month, alert_dir(out_dir, month), run_notes=list(notes),
+                                    period_results=list(period_results or ()),
+                                    entrance=getattr(args, "entrance", None), log_dir=LOG_DIR,
+                                    batch_summaries=list(batch_summaries or ()), say=say,
+                                    log_path=log_path or getattr(log, "path", None))
     except Exception as e:                                        # noqa: BLE001
-        log.warn(runlog.STEP_END, "[警告] 旧的告警文件删不掉：%s" % str(e)[:120])
+        log.warn(E, "[警告] 本月总览没更新：%s: %s" % (e.__class__.__name__, str(e)[:160]))
         return None
-    log.info(runlog.STEP_END, "这一轮没有要告警的事，删掉了之前的告警文件：%s" % p)
-    return p
 
 
 def report_ran(steps):
@@ -1254,15 +1260,17 @@ def report_ran(steps):
     return any(x.get("step") == "report" for x in steps or [])
 
 
-def period_hook(log, args, month, out_dir, units, plan):
+def period_hook(log, args, month, out_dir, units, plan, rec=None):
     """出完报表以后，这个月是季度的最后一个月：把这个季度的期间报表（再）生成一遍；
     12 月还加上全年（docs/RESULTS_AND_PERIODS.md §5）。
 
     期间报表只读各月的定稿月度结果（core/period_report），几秒钟。它出什么事都
-    **不改**这一轮的退出码、不拦别的国家：写进日志，再在这个月的告警目录里写一个
-    「！期间报表异常_…」文件。这一轮没出报表（只下载 / 补取）就什么都不做。
+    **不改**这一轮的退出码、不拦别的国家：写进日志；不完整 / 出错的结果记在
+    rec["period_results"]，由本月总览（refresh_overview）列进「需要你处理」和唯一的
+    「！需要处理」文件 —— 以前每份各写一个「！期间报表异常_…」，现在不写了。
+    这一轮没出报表（只下载 / 补取）就什么都不做。
     美客多自动生成的是账单基准（会计入账口径）；订单基准在窗口里按需生成。
-    返回 [结果]（测试看），出错时返回 None。"""
+    返回 [结果]（测试看），出错时返回 None（并在 rec["period_notes"] 留一句话）。"""
     if not any(s.get("key") == "report" for s in plan or []):
         return []
     step = runlog.STEP_REPORT
@@ -1272,8 +1280,6 @@ def period_hook(log, args, month, out_dir, units, plan):
         periods = PR.auto_periods(month)
         if not periods:
             return []
-        folder = alert_dir(out_dir, month)
-        entrance_cn = runlog.ENTRANCE_ZH.get(args.entrance, args.entrance)
         done = []
         for unit in units:
             market = markets.unit_market(unit)
@@ -1289,26 +1295,21 @@ def period_hook(log, args, month, out_dir, units, plan):
                     log.write(step, runlog.WARN if bad and i == 0 else runlog.INFO,
                               ("期间报表 " if i == 0 else "") + line)
                 if bad:
-                    try:
-                        p = PR.write_alert(folder, res, month, entrance_cn)
-                        log.warn(step, "已写出期间报表告警：%s" % p)
-                    except Exception as e:                        # noqa: BLE001
-                        log.warn(step, "[警告] 期间报表告警写不进去：%s" % str(e)[:120])
-                else:
-                    gone = PR.clear_alert(folder, res)
-                    if gone:
-                        log.info(step, "期间报表已完整，删掉了旧的告警：%s" % gone)
+                    log.warn(step, "期间报表的问题会列在本月总览的「需要你处理」页和 %s 里"
+                             % alert_name(month))
+        if rec is not None:
+            # 摘要 JSON 里只记能序列化的几项；完整结果（含数据）由返回值带给本月总览。
+            rec["period_results"] = [{"market": x.get("market"), "basis": x.get("basis"),
+                                      "period": getattr(x.get("period"), "label", None),
+                                      "status": x.get("status"), "path": x.get("path"),
+                                      "message": x.get("message")} for x in done]
         return done
-    except Exception:                                             # noqa: BLE001
+    except Exception as e:                                        # noqa: BLE001
         log.warn(step, "期间报表没生成（不影响这一轮的月报）：\n" + traceback.format_exc())
-        try:
-            os.makedirs(alert_dir(out_dir, month), exist_ok=True)
-            with io.open(os.path.join(alert_dir(out_dir, month), "！期间报表异常_%s.txt"
-                                      % month.replace("-", "")), "w", encoding="utf-8") as f:
-                f.write("%s 月报跑完后自动生成期间报表时出错：\n\n%s\n完整日志：%s\n"
-                        % (month, traceback.format_exc(), log.path))
-        except Exception:                                         # noqa: BLE001
-            pass
+        if rec is not None:
+            rec.setdefault("period_notes", []).append(
+                "%s 月报跑完后自动生成期间报表时出错（不影响月报）：%s: %s —— 细节在运行日志里"
+                % (month, e.__class__.__name__, str(e)[:160]))
         return None
 
 
@@ -1397,6 +1398,7 @@ def execute(args, plan=None):
         alert(month, urgent, out_dir, entrance=args.entrance,
               log_path=paths["log"], region=region,
               say=lambda level, text: log.write(E, level, text))
+        refresh_overview(log, args, month, out_dir, [runlog.tag_region(region, x) for x in urgent])
         return finish("failed", problem[0])
 
     if not acquire(lambda level, text: log.write(S, level, text)):
@@ -1421,8 +1423,17 @@ def execute(args, plan=None):
         if not st["aborted"]:
             final = conclude(log, args, month, out_dir, region, st, doc, paths["log"])
             # 期间报表也在锁里生成（和全部国家时一样），而且只在报表那一步真跑了时。
+            periods = []
             if report_ran(steps):
-                period_hook(log, args, month, out_dir, [region], plan)   # never changes `final`
+                periods = period_hook(log, args, month, out_dir, [region], plan,
+                                      rec=doc) or []                            # never changes `final`
+            # 本月总览 + 唯一的「！需要处理」文件：按这个月全部店铺的实际状态重建。
+            # 这一轮的话带上区域标签（和全部国家时一样），清单里才看得出是哪个国家的事。
+            refresh_overview(log, args, month, out_dir,
+                             [runlog.tag_region(region, x)
+                              for x in urgent + list(doc.get("period_notes") or [])],
+                             period_results=periods,
+                             batch_summaries=[doc.get("batch_summary")])
     finally:
         release()
         runlog.clear_current(run_id, LOG_DIR)
@@ -1552,6 +1563,19 @@ def execute_all(args, plans=None):
 
     extra = []                  # 不属于哪个国家的问题（config 读不了、运行器出错）
 
+    def overview_notes():
+        """本月总览要列的话：不属于哪个国家的 + 各国的 urgent（带国家标签）+ 期间报表出错的。"""
+        return extra + [runlog.tag_region(r["region"], x) for r in regions_doc
+                        for x in r["urgent"] + list(r.get("period_notes") or [])]
+
+    live_periods = []           # 这一轮生成的期间报表的完整结果（进程内，不进摘要 JSON）
+
+    def refresh(log_=None):
+        """log_：某个国家那一段里调用时传它的 RegionLog，日志行才带 [CL] 这样的标签。"""
+        refresh_overview(log_ or log, args, month, out_dir, overview_notes(), period_results=live_periods,
+                         batch_summaries=[r.get("batch_summary") for r in regions_doc],
+                         log_path=paths["log"])
+
     def save(**kw):
         doc.update(kw)
         # 平铺的几项（steps / urgent / attention）从各国那里汇总，旧的读法
@@ -1611,10 +1635,10 @@ def execute_all(args, plans=None):
     if problem:
         log.error(S, problem[1])
         extra.append(problem[1])
-        # 哪个国家都定不了：写进墨西哥那份告警（大家看惯了的那个文件）。
         alert(month, [problem[1]], out_dir, entrance=args.entrance,
               log_path=paths["log"], region="MX",
               say=lambda level, text: log.write(E, level, text))
+        refresh_overview(log, args, month, out_dir, extra)
         return finish("failed", problem[0])
 
     if not acquire(lambda level, text: log.write(S, level, text)):
@@ -1655,6 +1679,7 @@ def execute_all(args, plans=None):
                 rec.update(status="failed", exit=code, ended=now(),
                            alert=alert_path(out_dir, month, r))
                 save()
+                refresh(rlog)
                 continue
 
             st = {"worst": 0, "cut": False, "aborted": False}
@@ -1670,7 +1695,8 @@ def execute_all(args, plans=None):
                 break
             final = conclude(rlog, args, month, out_dir, r, st, rec, paths["log"])
             if report_ran(rec["steps"]):
-                period_hook(rlog, args, month, out_dir, [r], it["plan"])   # never changes `final`
+                live_periods.extend(period_hook(rlog, args, month, out_dir, [r], it["plan"],
+                                                rec=rec) or [])                 # never changes `final`
             rec.update(status="done" if final < 2 else "failed", exit=final,
                        ended=now(), alert=alert_path(out_dir, month, r)
                        if final and rec["urgent"] else None)
@@ -1680,6 +1706,7 @@ def execute_all(args, plans=None):
                        "%s这一段结束：退出码 %d —— %s"
                        % (region_label(r), final, text))
             save()
+            refresh(rlog)           # 后面的国家中途出事，到这里为止的进展也看得见
     except Exception:
         # 国家之间的那点衔接出了错（不是哪个国家里面的）：记下，照样收尾。
         log.error(E, "运行器内部出错：\n" + traceback.format_exc())
@@ -1706,6 +1733,7 @@ def execute_all(args, plans=None):
 
     if aborted:
         return finish("aborted", 6)
+    refresh()                   # 一轮结束：本月总览 + 唯一的「！需要处理」按最终状态再建一次
     final = worst_code([rec.get("exit") for rec in regions_doc]
                        + ([2] if extra else []))
     if final == 0:

@@ -328,8 +328,12 @@ class App(object):
         self.btn_preview.pack(side="left", padx=(0, S.GAP))
         ttk.Button(row, text="打开报表目录", command=self.do_open_dir
                    ).pack(side="left", padx=(0, S.GAP))
+        self.btn_overview = ttk.Button(row, text="打开本月总览", command=self.do_open_overview)
+        self.btn_overview.pack(side="left", padx=(0, S.GAP))
         hint(f, "先看用哪批数据：不生成任何文件，只列出每家店会用哪个下载目录、缺不缺"
-                "该月账单。秒出，任何时候都能点。").pack(anchor="w", pady=(S.SMALL, 0))
+                "该月账单。秒出，任何时候都能点。\n"
+                "打开本月总览：上面选的那个月的 本月总览_<月>.xlsx —— 每家店的完整度、关键数字、"
+                "「需要你处理」清单；每跑完一轮自动更新。").pack(anchor="w", pady=(S.SMALL, 0))
 
     def _load_scope(self):
         """（重新）把树和勾选摆到「立即运行」页上。config 读不了、或者有店这一版程序
@@ -504,6 +508,21 @@ class App(object):
             messagebox.showinfo("还没有报表", "目录还不存在：\n%s\n\n先点「只出报表」。" % d)
             return
         open_path(d)
+
+    def overview_path(self):
+        """上面选的那个月的 本月总览_<月>.xlsx 应该在哪（core/month_overview）。"""
+        from core import month_overview
+        from core import run_monthly
+        month = self.month.get()
+        return os.path.join(run_monthly.alert_dir(self._out_dir(), month),
+                            month_overview.overview_file_name(month))
+
+    def do_open_overview(self):
+        p = self.overview_path()
+        if not os.path.isfile(p):
+            messagebox.showinfo("还没有生成", "还没有生成，先跑一次报表。\n\n文件会在：\n%s" % p)
+            return
+        open_path(p)
 
     # ================================================================ 需要人工处理
 

@@ -78,19 +78,28 @@ def test_quarter_end_generates_the_quarter_and_keeps_the_exit_code(env, code):
     assert not [a for a in env.alerts("2026-09") if a.startswith("！期间报表异常")]
 
 
-def test_incomplete_quarter_writes_an_alert_then_a_complete_one_removes_it(env):
+def _alert_body(env, month="2026-09"):
+    with io.open(os.path.join(env.out_dir, "monthly", month, "！需要处理_%s.txt" % month.replace("-", "")),
+                 encoding="utf-8") as f:
+        return f.read()
+
+
+def test_incomplete_quarter_is_listed_in_the_month_alert_until_complete(env):
+    """An incomplete period report is one item of the month's single 「！需要处理」
+    (core/month_overview) — no ！期间报表异常_* file any more."""
     quarter(months=("2026-07", "2026-09"))
     assert env.run("2026-09", [], plan(("report", child(0)))) == 0
-    name = "！期间报表异常_MX_ML_2026-Q3_账单基准.txt"
-    assert name in env.alerts("2026-09")
-    with io.open(os.path.join(env.out_dir, "monthly", "2026-09", name), encoding="utf-8") as f:
-        body = f.read()
-    assert "S1 2026-08 无完整版本" in body and "2026-09 月报跑完后自动生成 2026-Q3" in body
+    assert not [a for a in env.alerts("2026-09") if a.startswith("！期间报表异常")]
+    body = _alert_body(env)
+    assert "美客多 墨西哥 · 2026-Q3（账单基准）：已生成，但有店铺月份没有完整版本" in body
+    assert "S1 2026-08 无完整版本" in body and "来源：期间报表" in body
     assert "期间报表 美客多 墨西哥 · 2026-Q3（账单基准）：已生成，但有店铺月份没有完整版本" in env.log_text()
     P.put("S1", "2026-08", "20261012_000000")
     assert env.run("2026-09", ["--step", "report"], plan(("report", child(0)))) == 0
-    assert name not in env.alerts("2026-09")
-    assert "删掉了旧的告警" in env.log_text()
+    # the other configured stores still have no report, so the file stays — but
+    # the period item is gone
+    assert "无完整版本" not in _alert_body(env)
+    assert "期间报表 美客多 墨西哥 · 2026-Q3（账单基准）：完整" in env.log_text()
 
 
 def test_a_crash_while_generating_never_changes_the_run(env, monkeypatch):
@@ -102,7 +111,9 @@ def test_a_crash_while_generating_never_changes_the_run(env, monkeypatch):
     assert env.run("2026-09", [], plan(("report", child(1)))) == 1
     text = env.log_text()
     assert "期间报表没生成（不影响这一轮的月报）" in text and "disk on fire" in text
-    assert "！期间报表异常_202609.txt" in env.alerts("2026-09")
+    assert not [a for a in env.alerts("2026-09") if a.startswith("！期间报表异常")]
+    body = _alert_body(env)
+    assert "自动生成期间报表时出错" in body and "disk on fire" in body
 
 
 def test_an_error_result_alerts_without_changing_the_code(env, monkeypatch):
@@ -110,8 +121,8 @@ def test_an_error_result_alerts_without_changing_the_code(env, monkeypatch):
     from core.period_report import workbook as WB
     monkeypatch.setattr(WB, "build", lambda *a, **k: 1 / 0)
     assert env.run("2026-09", [], plan(("report", child(0)))) == 0
-    assert "！期间报表异常_MX_ML_2026-Q3_账单基准.txt" in env.alerts("2026-09")
-    assert "出错，没生成" in env.log_text()
+    assert not [a for a in env.alerts("2026-09") if a.startswith("！期间报表异常")]
+    assert "出错，没生成" in env.log_text() and "出错，没生成" in _alert_body(env)
 
 
 def test_only_quarter_ends_and_december(env):
