@@ -80,12 +80,18 @@ def _finish(out, recalc):
     return rc, scan
 
 
-def write_store(S, checks, out_dir=None, table=None, recalc=True, build_date=None):
+def write_store(S, checks, out_dir=None, table=None, recalc=True, build_date=None, before_recalc=None):
+    """before_recalc(path): called once the workbook is saved and before it is
+    recalculated (run_reports stamps the grade banner there — openpyxl drops the
+    cached formula values when it reopens a workbook, so the stamp has to come
+    first). None (run(), the golden tests): the workbook is left as built."""
     ctx = _ctx(S["month"], checks, table, build_date)
     out_dir = out_dir or DEFAULT_OUT
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, workbook_name(S["store"], S["month"]))
     WB.build(S, ctx, out)
+    if before_recalc is not None:
+        before_recalc(out)
     rc, scan = _finish(out, recalc)
     return {"out": out, "checks": checks, "S": S, "recalc": rc, "scan": scan}
 

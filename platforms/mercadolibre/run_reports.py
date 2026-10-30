@@ -54,6 +54,7 @@ from platforms.mercadolibre import financial_report
 from core.paths import ROOT
 from core import finalize
 from core import layout
+from core import report_kit as K
 from core import results as RS
 from platforms.mercadolibre import results_files
 # 默认输出目录。import 时 config.json 读不了就先记 None，不在这里抛：run_monthly
@@ -201,15 +202,31 @@ def bill_reports(usable, month, region, out_dir, per_store=True, combined=True, 
         if prepared_out is not None:
             prepared_out[(name, os.path.normcase(os.path.abspath(folder)))] = (S, checks)
         if per_store:
-            r = BB.guarded("%s 账单基准" % name, BB.write_store, S, checks, store_dir(folder), table)
+            # 写结果文件时也在①页盖完整度：保存后、重算前（见 BB.write_store）
+            def stamp_banner(path, S=S, checks=checks, folder=folder, formula_errors=False):
+                if not stamp:                 # no results files, no banner
+                    return None
+                try:
+                    g = results_files.bill_grade(S, checks, formula_errors)
+                except Exception as e:        # noqa: BLE001 — a banner must not cost the report
+                    print("    [提示] 完整度标记没写上：%s: %s" % (e.__class__.__name__, e))
+                    return None
+                return results_files.stamp_banner(path, g, version_id(folder, stamp), folder, "bill",
+                                                  log=lambda s: print("    " + s))
+            r = BB.guarded("%s 账单基准" % name, BB.write_store, S, checks, store_dir(folder), table,
+                           before_recalc=stamp_banner if stamp else None)
             _print_bill(r)
             results.append(r)
             if r.get("crashed"):
                 failed(name, folder, "生成报表时出错：%s" % r["output"], checks, S.get("meta"))
             else:
                 scan = r.get("scan")
+                formula_errors = bool(scan is not None and scan[1])
+                if formula_errors and stamp_banner(r["out"], formula_errors=True):
+                    # 公式错误压成“有缺口”：重新盖章后再重算一次补回缓存值
+                    print("    [重算] %s" % K.recalc(r["out"])[1])
                 save(lambda: results_files.bill_document(S, checks, version_id(folder, stamp), r["out"],
-                                                         formula_errors=bool(scan is not None and scan[1])))
+                                                         formula_errors=formula_errors))
     if combined and prepared:
         print("\n" + "-" * 62)
         print("汇总报表：%d 家店铺（账单基准）" % len(prepared))

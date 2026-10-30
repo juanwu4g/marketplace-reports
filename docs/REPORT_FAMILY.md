@@ -81,6 +81,40 @@ Left to right: conclusion first, then the proof, then what is still missing.
 Keep the ten-sheet numbering even when a sheet is "not applicable": people learn
 where things are.
 
+### Grade banner (sheet ①)
+
+Every monthly **store** workbook carries its grade (docs/RESULTS_AND_PERIODS.md §3,
+the same `level` / `reasons` as its results file) on sheet ①, so finance sees it
+without opening anything else. `core/report_kit.stamp_grade(path, info)` writes
+it; the combined workbook is not graded and has none.
+
+- **Position**: row 1 of the first empty column after ①'s content, with one spacer
+  column — ①'s content lives in A–C on every platform, so the banner is E1:F8
+  (label column E, value column F). No row or column is inserted and no existing
+  cell is touched; stamping again overwrites the same block (found by the 完整度
+  cell in row 1).
+- **Fields** (rows 1–8): 完整度 | grade · 原因 | reasons joined with "；" or "—" ·
+  报表版本 | version id · 数据下载于 | the run folder's time (YYYY-MM-DD HH:MM, "—"
+  when the folder name has none) · 报表生成于 | build time · 口径 | 账单基准 /
+  订单基准 (MercadoLibre only; the row is skipped for one-basis platforms) ·
+  是否最终版本 | 是（可以定稿的等级，且是最新的版本）/ 否（等级不够，只是未定稿）·
+  last row, label column, small grey: where the grade levels are explained (本月总览
+  「说明」) and that a rebuild makes a new version.
+- **Colours**: the grade cell is 12 pt bold on `E2EFDA` (完整, 完整·有提醒), `FFF2CC`
+  (暂定) or `FBE5E5` with red `C00000` text (有缺口, 失败); labels bold on `D9E2F3`,
+  boxed. The sheet tab is green `375623` / amber `BF8F00` / red `C00000` by grade,
+  and the file's properties carry it too (subject "完整度：<grade>", keywords =
+  version, description = reasons) so Explorer / Finder show it without opening.
+- **Rule**: the banner is stamped **by the runner** (report_build `--results-version`,
+  `run_reports.bill_reports` with a stamp, `platform_reports.ReportRunner.safe_build`
+  with a version) **after the builder saved the workbook and before LibreOffice
+  recalculation** — openpyxl drops the cached formula values when it reopens and
+  saves a workbook. The grade is computed with `formula_errors=False`; when the
+  scan after recalculation finds formula errors, the banner is stamped again with
+  the final grade (有缺口) and the workbook recalculated once more. **Builders never
+  write it**, so the golden tests see no banner, and a banner that cannot be written
+  only prints `[提示] 完整度标记没写上：…` — it never costs a report.
+
 ## 3. Look
 
 | Element | Value (from `core/report_kit.py`) |
