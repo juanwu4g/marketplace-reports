@@ -15,6 +15,7 @@
 
 退出码
     0  都生成了，每个店铺每个月都有完整版本（--preview：都有完整版本）
+       —— 店铺上线以前的月份（系统还没有它的数据，○ 未上线）不算缺
     1  生成了，但有店铺月份没有完整版本（没计入合计，见报表①和⑩）
     2  一份都没生成，或者有市场出错（文件被 Excel 打开着、参数不对 …）
 """
@@ -89,14 +90,16 @@ def stray_stores(stores, chosen, config_path=None):
 
 
 def grid_lines(D):
-    """'  BOCINA_TA02   2026-07 ✓ 完整   2026-08 ✗ 无完整版本' — one line per store."""
+    """'  BOCINA_TA02   2026-07 ○ 未上线   2026-08 ✓ 完整   2026-09 ✗ 无完整版本' — one line per store."""
     width = max([len(s) for s in D.stores] + [4])
     out = []
     for s in D.stores:
         parts = []
         for m in D.months:
-            f = D.final(s, m)
-            parts.append("%s %s" % (m, ("✓ " + R.GRADE_CN[f["grade"]["level"]]) if f else "✗ 无完整版本"))
+            c = D.cell(s, m)
+            f = c.final
+            parts.append("%s %s" % (m, ("✓ " + R.GRADE_CN[f["grade"]["level"]]) if f
+                                    else "○ " + MD.NOT_STARTED if c.not_started else "✗ 无完整版本"))
         out.append("  %s  %s" % (s.ljust(width), "　".join(parts)))
     return out
 
@@ -153,6 +156,8 @@ def main(argv=None, out=None):
                 say(line)
             for c in D.missing():
                 say("  ✗ %s %s：%s" % (c.store, c.month, c.reason()))
+            for s in D.not_started_stores():
+                say("  ○ %s：%s" % (s, D.not_started_cn(s, short=True)))
             codes.append(INCOMPLETE if D.missing() else OK)
             written += 1
             continue

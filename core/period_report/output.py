@@ -5,6 +5,10 @@ the automatic generation after a monthly run.
     generate(period, market, …)   one market's workbook -> a result dict
     auto_periods(month)           which periods a monthly run of `month` closes
     alert_text / write_alert      the 「！期间报表异常」 file of an automatic run
+
+A store-month before the store's first data month (model: not_started, 未上线)
+is not missing: the status stays COMPLETE, the summary says once per store from
+which month the system has its data, and no alert is raised for it.
 """
 import datetime
 import io
@@ -68,23 +72,26 @@ def generate(period, market, basis=None, stores=None, out_dir=None, config_path=
     happened.
 
     Result: {market, basis, period, path, status, stores, missing [Cell],
-    changed [(store, month, old, new, what)], first, carried, message}.
-    status: COMPLETE (written, every store-month final), INCOMPLETE (written,
-    some store-month without a final version), EMPTY (no results at all for the
-    period: nothing written), ERROR (nothing written; message says why)."""
+    not_started [Cell], changed [(store, month, old, new, what)], first,
+    carried, message}.
+    status: COMPLETE (written, every store-month on or after the store's first
+    data month is final — months before it, not_started, do not count against
+    it), INCOMPLETE (written, some store-month that should have a final version
+    has none), EMPTY (no results at all for the period: nothing written), ERROR
+    (nothing written; message says why)."""
     market = markets.normalize(market)
     pf, _ = markets.split(market)
     basis = MD.basis_of(pf, basis)
     res = {"market": market, "basis": basis, "period": period, "path": None, "status": ERROR,
-           "stores": [], "missing": [], "changed": [], "first": True, "carried": 0, "message": "",
-           "data": None}
+           "stores": [], "missing": [], "not_started": [], "changed": [], "first": True, "carried": 0,
+           "message": "", "data": None}
     try:
         D = MD.gather(market, period, basis, stores, config_path, built=now)
     except Exception as e:                               # noqa: BLE001 - reported, never raised
         res["message"] = "读月度结果时出错：%s: %s" % (e.__class__.__name__, e)
         res["trace"] = traceback.format_exc()
         return res
-    res.update(data=D, stores=list(D.stores), missing=D.missing())
+    res.update(data=D, stores=list(D.stores), missing=D.missing(), not_started=D.not_started())
     if not any(c.final or c.newest for c in D.cells.values()):
         res["status"] = EMPTY
         res["message"] = ("%s %s：期间内没有任何月度结果%s，没生成。"
@@ -142,6 +149,8 @@ def summary_lines(res):
             len(res["stores"]), len(p.months), len(D.finals())))
         for c in res["missing"]:
             out.append("  ✗ %s %s 无完整版本：%s" % (c.store, c.month, c.reason()))
+        for s in D.not_started_stores():                 # one line per store, not per month
+            out.append("  ○ %s：%s" % (s, D.not_started_cn(s, short=True)))
         if res["first"]:
             out.append("  第一次生成这份报表")
         elif res["changed"]:

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Period reports (core/period_report, run_period.py): built only from the final
-monthly results; totals to the cent; missing store-months; changed versions;
-names and folders in both layouts; the command line's exit codes."""
+monthly results; totals to the cent; missing store-months; months before a
+store's first data month (未上线, not missing); changed versions; names and
+folders in both layouts; the command line's exit codes."""
 import decimal
 import io
 import os
@@ -140,11 +141,12 @@ def test_missing_store_month_is_left_out_banner_and_listed(v2):
     P.put("S2", "2026-08", "20260905_000000", pl=[("gmv", 5.0)])
     res = G.generate(Q3, "MX")
     assert res["status"] == G.INCOMPLETE
-    assert [(c.store, c.month) for c in res["missing"]] == [
-        ("S1", "2026-09"), ("S2", "2026-07"), ("S2", "2026-09")]
+    # S2's first data month is 2026-08: its 2026-07 is not started (未上线), not missing
+    assert [(c.store, c.month) for c in res["missing"]] == [("S1", "2026-09"), ("S2", "2026-09")]
+    assert [(c.store, c.month) for c in res["not_started"]] == [("S2", "2026-07")]
     wb = load_workbook(res["path"])
     readme = wb[K.SHEET_NAMES[0]]
-    assert readme["B3"].value.startswith("⚠ 有 3 个店铺月份没有完整版本")
+    assert readme["B3"].value.startswith("⚠ 有 2 个店铺月份没有完整版本")
     assert readme["B3"].fill.fgColor.rgb.endswith(K.C_RED)
     text = [r for r in sheet_rows(res["path"], K.SHEET_NAMES[0]) if r[1] == "S1 · 2026-09"][0][2]
     assert text.startswith("无完整版本") and "有缺口" in text and "Ventas 没下载到" in text
@@ -153,11 +155,13 @@ def test_missing_store_month_is_left_out_banner_and_listed(v2):
     assert s1 == [10.0, 20.0, None, 30.0, None]
     assert block(pl, WB.MARKET_TOTAL)["GMV"][:4] == [10.0, 25.0, None, 35.0]
     heads = [r for r in pl if r[0] == "项目"]
-    assert heads[0][2:5] == ["2026-07\n1/2 家完整", "2026-08", "2026-09\n0/2 家完整"]
+    assert heads[0][2:5] == ["2026-07\n1/1 家完整，1 家未上线", "2026-08", "2026-09\n0/2 家完整"]
     assert heads[1][4] == "2026-09\n无完整版本"
+    assert heads[2][2] == "2026-07\n未上线"
     gaps = sheet_rows(res["path"], K.SHEET_NAMES[9])
     listed = [(r[0], r[1]) for r in gaps if r[2] == WB.NO_FINAL]
-    assert listed == [("S1", "2026-09"), ("S2", "2026-07"), ("S2", "2026-09")]
+    assert listed == [("S1", "2026-09"), ("S2", "2026-09")]
+    assert [(r[0], r[1]) for r in gaps if r[2] == WB.NOT_STARTED] == [("S2", "2026-07")]
 
 
 def test_listed_store_without_any_result_is_missing_everywhere(v2):
@@ -165,7 +169,130 @@ def test_listed_store_without_any_result_is_missing_everywhere(v2):
     D = MD.gather("MX", Q3, stores=["S1", "S3"])
     assert D.stores == ["S1", "S3"]
     assert "没有任何版本" in D.cell("S3", "2026-08").reason()
-    assert len(D.missing()) == 5
+    assert len(D.missing()) == 5                      # no first data month: nothing is "not started"
+    assert D.not_started() == [] and D.first_month("S3") is None
+
+
+# ------------------------------------------------------------------ before the first data month
+
+def test_months_before_the_first_data_month_are_not_missing(v2):
+    """(a) The production case: results only from 2026-09 -> Q3 is complete, 07
+    and 08 are 未上线, one ○ line per store and no ✗ line."""
+    P.put("S1", "2026-09", "20261005_000000", pl=[("gmv", 30.0)])
+    P.put("S1", "2026-09", "20261001_000000", basis="order", pl=[("gmv", 1.0)])
+    res = G.generate(Q3, "MX")
+    D = res["data"]
+    assert res["status"] == G.COMPLETE and res["missing"] == [] and D.missing() == []
+    assert [(c.store, c.month) for c in res["not_started"]] == [("S1", "2026-07"), ("S1", "2026-08")]
+    assert all(c.not_started and c.first_month == "2026-09" for c in D.not_started())
+    assert D.first_month("S1") == "2026-09" and D.data_months("S1") == ("2026-09", ["2026-07", "2026-08"])
+    assert D.not_started_cn("S1") == "系统从 2026-09 起有该店数据，2026-07、2026-08 不在合计内"
+    assert D.cell("S1", "2026-07").reason() == "未上线（系统从 2026-09 起有数据）"
+    assert D.store_total("S1", "gmv") == 30.0
+    lines = G.summary_lines(res)
+    assert lines[0].endswith("：完整")
+    assert "  ○ S1：系统从 2026-09 起有数据，07、08 月不在合计内" in lines
+    assert not any("✗" in x for x in lines)
+    assert sum(1 for x in lines if x.startswith("  ○")) == 1
+    # the alert text (another workstream decides when it is written) carries the same lines
+    assert "○ S1：系统从 2026-09 起有数据" in G.alert_text(res, "2026-09") and "✗" not in G.alert_text(res, "2026-09")
+
+
+def test_a_month_after_the_first_data_month_without_results_is_a_real_gap(v2):
+    """(b) results in 07 and 09, none in 08 -> 08 is missing, nothing is not started."""
+    P.put("S1", "2026-07", "20260805_000000")
+    P.put("S1", "2026-09", "20261005_000000")
+    res = G.generate(Q3, "MX")
+    assert res["status"] == G.INCOMPLETE
+    assert [(c.store, c.month) for c in res["missing"]] == [("S1", "2026-08")]
+    assert res["not_started"] == []
+    lines = G.summary_lines(res)
+    assert [x for x in lines if "✗" in x] == ["  ✗ S1 2026-08 无完整版本：这个月没有任何版本（没出过月度报表，或结果文件读不出来）"]
+    assert not any(x.startswith("  ○") for x in lines)
+
+
+def test_first_month_counts_any_grade_and_later_gaps_still_count(v2):
+    """(c) first month 08 (complete), 09 only a gaps-grade version -> 07 not
+    started, 09 missing; a first month that is itself not final still starts the store."""
+    P.put("S1", "2026-08", "20260905_000000", pl=[("gmv", 20.0)])
+    P.put("S1", "2026-09", "20261005_000000", level=R.GAPS, reasons=["缺 Ventas"])
+    res = G.generate(Q3, "MX")
+    assert res["status"] == G.INCOMPLETE
+    assert [(c.store, c.month) for c in res["missing"]] == [("S1", "2026-09")]
+    assert [(c.store, c.month) for c in res["not_started"]] == [("S1", "2026-07")]
+    assert "有缺口" in res["missing"][0].reason() and "缺 Ventas" in res["missing"][0].reason()
+    lines = G.summary_lines(res)
+    assert any(x.startswith("  ✗ S1 2026-09") for x in lines)
+    assert "  ○ S1：系统从 2026-08 起有数据，07 月不在合计内" in lines
+    # a store whose first file is a failed version: that month is missing, not 未上线
+    P.put("S2", "2026-08", "20260905_000000", level=R.FAILED)
+    D = MD.gather("MX", Q3)
+    assert D.first_month("S2") == "2026-08"
+    assert [(c.store, c.month) for c in D.not_started()] == [("S1", "2026-07"), ("S2", "2026-07")]
+    assert [(c.store, c.month) for c in D.missing() if c.store == "S2"] == [("S2", "2026-08"), ("S2", "2026-09")]
+    assert "失败" in D.cell("S2", "2026-08").reason()
+
+
+def test_workbook_says_not_started_in_grey_not_red(v2):
+    """(d) ①, ②, ⑧ and ⑩ word a not-started month 未上线（系统从 YYYY-MM 起有数据）
+    and colour it grey; a real gap stays red."""
+    P.put("S1", "2026-08", "20260905_000000", pl=[("gmv", 20.0)])
+    P.put("S1", "2026-09", "20261005_000000", pl=[("gmv", 30.0)])
+    P.put("S2", "2026-09", "20261005_000000", pl=[("gmv", 5.0)])
+    P.put("S3", "2026-07", "20260805_000000", pl=[("gmv", 1.0)])
+    P.put("S3", "2026-09", "20261005_000000", pl=[("gmv", 3.0)])      # 08 is a real gap
+    res = G.generate(Q3, "MX")
+    assert res["status"] == G.INCOMPLETE
+    assert [(c.store, c.month) for c in res["missing"]] == [("S3", "2026-08")]
+    wb = load_workbook(res["path"])
+    readme = wb[K.SHEET_NAMES[0]]
+    assert readme["B3"].value.startswith("⚠ 有 1 个店铺月份没有完整版本")
+    rows = list(readme.iter_rows(min_col=2, max_col=3))
+    by_label = {r[0].value: r[1] for r in rows if r[0].value}
+    c = by_label["S1 · 2026-07"]
+    assert c.value == "未上线（系统从 2026-08 起有数据）"
+    assert c.font.color.rgb.endswith(K.C_GREY) and not c.font.bold
+    c = by_label["S3 · 2026-08"]
+    assert c.value.startswith("无完整版本") and c.font.color.rgb.endswith(K.C_RED)
+    idle = by_label["未上线的月份"].value
+    assert idle.startswith("3 个店铺月份（灰字）") and "S1：系统从 2026-08 起有该店数据，2026-07 不在合计内" in idle
+    assert "S2：系统从 2026-09 起有该店数据，2026-07、2026-08 不在合计内" in idle and "S3" not in idle
+    # ②: the empty month is grey for a not-started month, light red for a gap
+    pl = wb[K.SHEET_NAMES[1]]
+    heads = [r for r in pl.iter_rows() if r[0].value == "项目"]
+    assert heads[0][2].value == "2026-07\n1/1 家完整，2 家未上线"
+    assert heads[0][3].value == "2026-08\n1/2 家完整，1 家未上线"
+    assert heads[1][2].value == "2026-07\n未上线" and heads[3][3].value == "2026-08\n无完整版本"
+    gmv = {r[0].row: r for r in pl.iter_rows() if r[0].value == "GMV"}
+    s1_row = heads[1][0].row + 1
+    s3_row = heads[3][0].row + 1
+    assert gmv[s1_row][2].fill.fgColor.rgb.endswith(WB.C_NOT_STARTED) and gmv[s1_row][2].value is None
+    assert gmv[s3_row][3].fill.fgColor.rgb.endswith(K.C_BAD) and gmv[s3_row][3].value is None
+    assert gmv[s1_row][5].value == 50.0 and gmv[s3_row][5].value == 4.0      # totals unchanged
+    # ⑧: 2026-07 lacks S1 and S2 only because they had not started -> grey, named as such
+    trend = sheet_rows(res["path"], K.SHEET_NAMES[7])
+    assert trend[4][:3] == ["2026-07", "1/3", "（S1、S2：未上线）"]
+    assert wb[K.SHEET_NAMES[7]].cell(row=5, column=1).fill.fgColor.rgb.endswith(WB.C_NOT_STARTED)
+    assert trend[5][:3] == ["2026-08", "1/3", "S3（S2：未上线）"]
+    assert wb[K.SHEET_NAMES[7]].cell(row=6, column=1).fill.fgColor.rgb.endswith(K.C_BAD)
+    # ⑩: the gap in red, the not-started months in grey with the same wording
+    gaps = wb[K.SHEET_NAMES[9]]
+    rows10 = {(r[0].value, r[1].value): r for r in gaps.iter_rows() if r[0].value in ("S1", "S2", "S3")}
+    assert rows10[("S3", "2026-08")][2].value == WB.NO_FINAL
+    assert rows10[("S3", "2026-08")][2].fill.fgColor.rgb.endswith(K.C_BAD)
+    r = rows10[("S2", "2026-08")]
+    assert r[2].value == WB.NOT_STARTED and r[3].value == "不算缺"
+    assert r[4].value.startswith("未上线（系统从 2026-09 起有数据）")
+    assert r[2].fill.fgColor.rgb.endswith(WB.C_NOT_STARTED) and r[2].font.color.rgb.endswith(K.C_GREY)
+    # ③ says how many months were before a store started
+    checks = sheet_rows(res["path"], K.SHEET_NAMES[2])
+    assert any("1 个没有完整版本，没有计入；3 个在店铺上线以前（未上线），不算缺" in str(x[3]) for x in checks[5:])
+    # the CLI grid and the window's grid show ○ 未上线 and count no missing month for it
+    assert cli.grid_lines(res["data"])[0] == "  S1    2026-07 ○ 未上线　2026-08 ✓ 完整　2026-09 ✓ 完整"
+    g = PC.grid(Q3, "MX")
+    assert g[0]["missing"] == 1
+    store, cells = g[0]["rows"][0]
+    assert store == "S1" and cells[0] == ("2026-07", True, "○ 未上线（从 2026-08 起有数据）", "")
 
 
 def test_pl_rows_follow_the_latest_month_and_missing_rows_count_zero(v2):

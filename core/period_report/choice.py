@@ -77,7 +77,9 @@ def grid(period, region, stores=None, basis=None, config_path=None):
 
     [{"market", "title", "basis", "rows": [(store, [(month, ok, text, reason)])],
       "missing": n, "error": message or None}] — one entry per market of the
-    region that has any result in the period."""
+    region that has any result in the period. A month before the store's first
+    data month shows '○ 未上线' with ok True (it is not a gap) and does not
+    count in "missing"."""
     out = []
     for m in G.markets_of(region):
         pf, _ = markets.split(m)
@@ -98,6 +100,8 @@ def grid(period, region, stores=None, basis=None, config_path=None):
                 c = D.cell(s, month)
                 if c.final:
                     cells.append((month, True, "✓ " + R.GRADE_CN[c.final["grade"]["level"]], ""))
+                elif c.not_started:
+                    cells.append((month, True, "○ %s（从 %s 起有数据）" % (MD.NOT_STARTED, c.first_month), ""))
                 else:
                     cells.append((month, False, "✗ 无完整版本", c.reason()))
             rows.append((s, cells))

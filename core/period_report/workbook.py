@@ -5,7 +5,8 @@ Built only from a model.PeriodData (final monthly results); every figure is a
 value, not a formula, so a reader (or a test) sees the same number Excel shows.
 
   ①  what the report is; the version and grade of every store-month; what is
-     missing (red banner); what changed since the previous file
+     missing (red banner); which months are before a store's first data month
+     (未上线, grey — not a gap); what changed since the previous file
   ②  P&L: one block per store and, with several stores, the market total first;
      one column per month + 期间合计; 备查项 under each block
   ③  the period's own cross-checks (period total = sum of months, market = sum
@@ -14,8 +15,9 @@ value, not a formula, so a reader (or a test) sees the same number Excel shows.
   ⑥  not applicable (the monthly reports hold the per-order detail)
   ⑦  SKU totals over the period, by store and SKU
   ⑧  monthly trend of the market    ⑨ the last month's inventory snapshot
-  ⑩  missing store-months, checks carried from the monthly versions, P&L rows
-     missing in a month, versions changed since the previous file
+  ⑩  missing store-months (red) and not-started ones (grey), checks carried
+     from the monthly versions, P&L rows missing in a month, versions changed
+     since the previous file
 
 A hidden sheet (VERSIONS_SHEET) records the version used for every
 store-month, so the next generation of the same file can say what changed.
@@ -36,6 +38,8 @@ VERSIONS_SHEET = "_版本记录"
 VERSIONS_HEAD = ("店铺", "月份", "基准", "版本", "等级", "生成于")
 MARKET_TOTAL = "全部店铺合计"
 NO_FINAL = "无完整版本"
+NOT_STARTED = MD.NOT_STARTED                       # 未上线: before the store's first data month
+C_NOT_STARTED = K.C_CALC                           # grey, not the red of a real gap
 
 
 # ------------------------------------------------------------------ helpers
@@ -74,11 +78,25 @@ def text_cell(ws, r, c, v, font=None, color=None, align=None):
 
 def month_head(D, month, store=None):
     """Header text of a month column: '2026-08', with 无完整版本 when the store
-    (or, for the market total, some store) has no final version."""
+    (or, for the market total, some store) has no final version, 未上线 when
+    the store (or every store) had not started yet."""
     if store is not None:
-        return month if D.final(store, month) else "%s\n%s" % (month, NO_FINAL)
-    n, total = len(D.complete_stores(month)), len(D.stores)
-    return month if n == total else "%s\n%d/%d 家完整" % (month, n, total)
+        c = D.cell(store, month)
+        return month if c.final else "%s\n%s" % (month, NOT_STARTED if c.not_started else NO_FINAL)
+    started = [s for s in D.stores if not D.cell(s, month).not_started]
+    if not started:
+        return "%s\n%s" % (month, NOT_STARTED)
+    n, total = len(D.complete_stores(month)), len(started)
+    idle = len(D.stores) - total
+    if n == total and not idle:
+        return month
+    text = "%s\n%d/%d 家完整" % (month, n, total)
+    return text + ("，%d 家未上线" % idle if idle else "")
+
+
+def all_not_started(D, month):
+    """Had no store of the market started by this month?"""
+    return all(D.cell(s, month).not_started for s in D.stores)
 
 
 def build(D, out_path, previous=None):
@@ -112,7 +130,8 @@ def sheet_versions(wb, D):
     for s in D.stores:
         for m in D.months:
             doc = D.final(s, m)
-            ws.append([s, m, D.basis, doc["version"] if doc else "", grade_text(doc) if doc else NO_FINAL,
+            ws.append([s, m, D.basis, doc["version"] if doc else "",
+                       grade_text(doc) if doc else NOT_STARTED if D.cell(s, m).not_started else NO_FINAL,
                        doc["built_at"] if doc else ""])
     ws.sheet_state = "hidden"
 
@@ -195,7 +214,7 @@ def sheet_readme(wb, D, changes):
             ("", "店铺", "、".join(D.stores) or "（无）"),
             ("", "", ""),
             ("S", "二、各店各月用的版本", "")]
-    flagged = []
+    flagged, greyed = [], []
     for s in D.stores:
         for m in D.months:
             cell = D.cell(s, m)
@@ -204,6 +223,9 @@ def sheet_readme(wb, D, changes):
                 text = "%s · 版本 %s · 生成于 %s" % (grade_text(f), f["version"], f["built_at"].replace("T", " "))
                 if f["grade"].get("reasons"):
                     text += " · " + "；".join(f["grade"]["reasons"])
+            elif cell.not_started:
+                text = cell.reason()                     # 未上线（系统从 YYYY-MM 起有数据）
+                greyed.append(len(rows))
             else:
                 text = "%s：%s" % (NO_FINAL, cell.reason())
                 flagged.append(len(rows))
@@ -213,7 +235,13 @@ def sheet_readme(wb, D, changes):
         rows.append(("", "没有完整版本", "%d 个店铺月份（红字）。它们的数字不在任何合计里 —— 不是 0，是还没有。"
                                       "等那个月重出报表、有了完整版本，再生成一次这份报表。" % len(missing)))
     else:
-        rows.append(("", "没有完整版本", "没有。每个店铺每个月都有完整版本。"))
+        rows.append(("", "没有完整版本", "没有。每个店铺每个月%s都有完整版本。"
+                     % ("（上线以后）" if D.not_started() else "")))
+    idle = D.not_started_stores()
+    if idle:
+        rows.append(("", "未上线的月份", "%d 个店铺月份（灰字）在店铺上线以前 —— 系统还没有它的数据，不是缺口，"
+                                      "也不在合计里。%s。" % (len(D.not_started()), "；".join(
+                                          "%s：%s" % (s, D.not_started_cn(s)) for s in idle))))
     gaps = D.pl_gaps()
     if gaps:
         rows.append(("", "损益行缺月", "%d 处：某个月的结果里没有这一行，按 0 计（见⑩）。" % len(gaps)))
@@ -227,7 +255,8 @@ def sheet_readme(wb, D, changes):
     else:
         rows.append(("", "换了版本", "没有：每个店铺月份用的版本和上一份相同。"))
     rows += [("", "", ""), ("S", "五、各页说明", ""),
-             ("", SHEETS[1], "损益：%s每家店一块；每块每月一列，最后一列期间合计。没有完整版本的月份留空（浅红）。"
+             ("", SHEETS[1], "损益：%s每家店一块；每块每月一列，最后一列期间合计。没有完整版本的月份留空（浅红）；"
+                             "店铺上线以前的月份留空（灰）。"
                              % ("最上面一块是全部店铺合计，然后" if len(D.stores) > 1 else "")),
              ("", SHEETS[2], "期间报表自己的核对：期间合计 = 各月之和、全部店铺 = 各店之和、只用了完整版本。"
                              "每个月的平账在各月月度报表③。"),
@@ -237,12 +266,16 @@ def sheet_readme(wb, D, changes):
              ("", SHEETS[6], "期间内每家店每个 SKU 的件数、净销售额、费用、贡献和成本之和。"),
              ("", SHEETS[7], "全部店铺按月：完整的店铺数和主要损益行。"),
              ("", SHEETS[8], "每家店期间内最后一个有库存数据的月份的库存快照。库存是时点数，不跨月相加。"),
-             ("", SHEETS[9], "没有完整版本的店铺月份、月度版本带过来的提醒、损益行缺月、和上一份相比换了的版本。")]
+             ("", SHEETS[9], "没有完整版本的店铺月份（红）和上线以前的月份（灰）、月度版本带过来的提醒、损益行缺月、"
+                             "和上一份相比换了的版本。")]
     first = 5 if missing else 4
     readme_end = RF.readme_rows(ws, first, rows)
     for i in flagged:
         c = ws.cell(row=first + i, column=3)
         c.font = F(10, True, K.C_RED)
+    for i in greyed:
+        c = ws.cell(row=first + i, column=3)
+        c.font = F(10, False, K.C_GREY)
     return readme_end
 
 
@@ -296,10 +329,17 @@ def _memo_value(D, store, month, key):
     return D.field_month_total(month, "memo", "key", key, "value")
 
 
+def _blank_color(D, store, month):
+    """The fill of an empty month cell: grey before the store (or every store)
+    started, light red for a month that lacks a final version."""
+    idle = D.cell(store, month).not_started if store else all_not_started(D, month)
+    return C_NOT_STARTED if idle else K.C_BAD
+
+
 def _value_cells(ws, r, D, store, vals, money, bold=False, color=None):
     for j, v in enumerate(vals):
         if v is None:
-            text_cell(ws, r, 3 + j, None, color=K.C_BAD)
+            text_cell(ws, r, 3 + j, None, color=_blank_color(D, store, D.months[j]))
         else:
             money_cell(ws, r, 3 + j, round(v, D.decimals), money, bold=bold, color=color)
 
@@ -358,8 +398,10 @@ def checks(D):
         out.append((MARKET_TOTAL, "全部店铺 = 各店之和（每月和期间）", worst <= tol, "最大差额 %.6f" % worst))
     used = D.finals()
     bad = [x for x in used if x[2]["grade"]["level"] not in R.COUNTABLE]
+    idle = len(D.not_started())
     out.append((MARKET_TOTAL, "只用了完整版本", not bad,
-                "用了 %d 个店铺月份的定稿版本；%d 个没有完整版本，没有计入" % (len(used), len(D.missing()))))
+                "用了 %d 个店铺月份的定稿版本；%d 个没有完整版本，没有计入" % (len(used), len(D.missing()))
+                + ("；%d 个在店铺上线以前（未上线），不算缺" % idle if idle else "")))
     return out
 
 
@@ -382,7 +424,7 @@ def sheet_checks(wb, D):
 # ------------------------------------------------------------------ ④ ⑤ (month tables)
 
 def _month_table(ws, D, head_cols, rows, money, header_at=4):
-    """rows: [(fixed values, [month values or None], total, fmt, color)]."""
+    """rows: [(fixed values, [month values or None], total, fmt, color, store or None)]."""
     nm = len(D.months)
     heads = list(head_cols) + list(D.months) + ["期间合计"]
     r = header_at
@@ -391,12 +433,12 @@ def _month_table(ws, D, head_cols, rows, money, header_at=4):
     RF.set_widths(ws, [h[1] for h in head_cols] + [15] * nm + [17])
     r += 1
     nf = len(head_cols)
-    for fixed, vals, total, fmt, color in rows:
+    for fixed, vals, total, fmt, color, store in rows:
         for j, v in enumerate(fixed, 1):
             text_cell(ws, r, j, v, color=color)
         for j, v in enumerate(vals):
             if v is None:
-                text_cell(ws, r, nf + 1 + j, None, color=K.C_BAD)
+                text_cell(ws, r, nf + 1 + j, None, color=_blank_color(D, store, D.months[j]))
             else:
                 money_cell(ws, r, nf + 1 + j, v, fmt, color=color)
         money_cell(ws, r, nf + nm + 1, total, fmt, bold=True, color=K.C_TOTAL)
@@ -433,7 +475,7 @@ def sheet_fees(wb, D, money):
             vals, tot = _field_vals(D, store, "fees", "name", name, "amount")
             if not any(vals) and not tot:
                 continue
-            rows.append(((label, cn, name, pl_key), vals, tot, money, None))
+            rows.append(((label, cn, name, pl_key), vals, tot, money, None, store))
     r = _month_table(ws, D, [("店铺", 22), ("费用类型", 30), ("原文", 34), ("计入②行", 16)], rows, money)
     if not rows:
         ws.cell(row=r, column=1, value="期间内的月度结果里没有费用明细。").font = F(10, False, K.C_GREY)
@@ -450,8 +492,8 @@ def sheet_returns(wb, D, money):
         for key, cn in spec.items():
             n, ntot = _field_vals(D, store, "returns", "key", key, "count", money=False)
             a, atot = _field_vals(D, store, "returns", "key", key, "amount")
-            rows.append(((label, cn, "件数"), n, ntot, K.INT, None))
-            rows.append(((label, cn, "金额"), a, atot, money, None))
+            rows.append(((label, cn, "件数"), n, ntot, K.INT, None, store))
+            rows.append(((label, cn, "金额"), a, atot, money, None, store))
     r = _month_table(ws, D, [("店铺", 22), ("类别", 30), ("指标", 8)], rows, money)
     if not rows:
         ws.cell(row=r, column=1, value="期间内的月度结果里没有退货分类。").font = F(10, False, K.C_GREY)
@@ -520,7 +562,8 @@ def sheet_trend(wb, D, money):
     ws = wb.create_sheet(SHEETS[7])
     lines = trend_rows(D)
     K.title_rows(ws, "月度趋势（期间）",
-                 "全部店铺按月（只加有完整版本的店铺）；完整店铺数少于店铺数的月份标浅红，和别的月份不可比。")
+                 "全部店铺按月（只加有完整版本的店铺）；完整店铺数少于店铺数的月份标浅红，和别的月份不可比；"
+                 "店铺上线以前的月份标灰（不算缺）。")
     heads = ["月份", "完整店铺", "缺的店铺"] + [row["label"] for row in lines] + ["销售件数"]
     K.header_cells(ws, 4, heads)
     ws.row_dimensions[4].height = 42
@@ -529,10 +572,13 @@ def sheet_trend(wb, D, money):
     for m in D.months:
         done = D.complete_stores(m)
         lacking = [s for s in D.stores if s not in done]
-        color = K.C_BAD if lacking else None
+        gaps_ = [s for s in lacking if not D.cell(s, m).not_started]
+        idle = [s for s in lacking if D.cell(s, m).not_started]
+        color = K.C_BAD if gaps_ else C_NOT_STARTED if idle else None
         text_cell(ws, r, 1, m, color=color)
         text_cell(ws, r, 2, "%d/%d" % (len(done), len(D.stores)), color=color)
-        text_cell(ws, r, 3, "、".join(lacking), color=color)
+        text_cell(ws, r, 3, "、".join(gaps_) + ("（%s：%s）" % ("、".join(idle), NOT_STARTED) if idle else ""),
+                  color=color)
         for j, row in enumerate(lines):
             money_cell(ws, r, 4 + j, D.month_total(m, row["key"]) if done else None, money, color=color)
         units = sum(float(x.get("units") or 0) for s in done for x in (D.final(s, m).get("sku") or []))
@@ -596,8 +642,16 @@ def sheet_gaps(wb, D, changes):
         lvl = R.GRADE_CN.get(c.newest["grade"]["level"], "") if c.newest else "没有版本"
         fam.write_row(ws, r, GAP_COLS, (c.store, c.month, NO_FINAL, lvl, c.reason()), fill_color=K.C_BAD)
         r += 1
+    idle = D.not_started()
     if not miss:
-        ws.cell(row=r, column=3, value="没有。每个店铺每个月都有完整版本。")
+        ws.cell(row=r, column=3, value="没有。每个店铺每个月%s都有完整版本。" % ("（上线以后）" if idle else ""))
+        r += 1
+    for c in idle:                                      # grey: not a gap anyone can fill
+        cells = fam.write_row(ws, r, GAP_COLS, (c.store, c.month, NOT_STARTED, "不算缺",
+                                                "%s。店铺上线以前系统没有它的数据，这个月不在合计里，也不用补。"
+                                                % c.reason()), fill_color=C_NOT_STARTED)
+        for cell in cells:
+            cell.font = F(10, False, K.C_GREY)
         r += 1
     r += 1
     r = RF.section(ws, r, "二、月度版本里没通过的校验（数字已按月度报表定稿；看一眼是否影响期间判断）", 5)

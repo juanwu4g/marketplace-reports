@@ -148,6 +148,15 @@ stores and month of that step.
 * Input: `core/results.final()` per store-month only. A store-month without a
   final version is left out of every total and listed as 无完整版本 on ① (red
   banner) and ⑩; an alert file is written for the automatic runs.
+* Before the store started: a store's **first data month** is the earliest
+  month with any results file for it (any basis, any grade;
+  `results.first_month_at`). A store-month before it is 未上线 (not started:
+  the system had no data for the store yet), **not** missing — it is left out
+  of the totals like any non-final month, but it does not make the report
+  INCOMPLETE, raises no alert, and is shown grey ("未上线（系统从 YYYY-MM 起有数据）"
+  on ①, ②, ⑧, ⑩; one ○ line per store in the summary). Only a month on or after
+  the first data month without a final is a gap (✗, red, INCOMPLETE). A listed
+  store with no results anywhere has no first data month: every month is missing.
 * Output: `layout.period_dir(kind, period, market)`, name
   `<CC>_<PF>_<period>[_账单基准|_订单基准].xlsx`
   (e.g. `MX_ML_2026-Q3_账单基准.xlsx`, `CL_FA_2026.xlsx`).

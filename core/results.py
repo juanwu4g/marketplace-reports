@@ -255,6 +255,26 @@ def final_at(platform, country, store, month, basis, config_path=None):
     return None
 
 
+def months_at(platform, country, store, config_path=None):
+    """months() for a store found in the results tree under <PF>/<CC>: the
+    months ('YYYY-MM') whose folder holds at least one results file (any basis,
+    any grade), ascending. Cheap: lists folders, reads nothing."""
+    base = os.path.join(layout.results_root(config_path), platform, country, store)
+    if not os.path.isdir(base):
+        return []
+    return sorted(m for m in os.listdir(base)
+                  if MONTH_RE.match(m) and has_files_at(platform, country, store, m, None, config_path))
+
+
+def first_month_at(platform, country, store, config_path=None):
+    """The store's first data month: the earliest month with any results file
+    (any basis, any grade); None when the store has none. Months before it are
+    「未上线」 in a period report — the system was not producing results yet —
+    not missing."""
+    ms = months_at(platform, country, store, config_path)
+    return ms[0] if ms else None
+
+
 def period_label(kind, months_):
     """The period's name in folders and file names: '2026-Q3', '2026',
     '2026-07_2026-11' (kind 'quarterly' / 'annual' / 'custom')."""

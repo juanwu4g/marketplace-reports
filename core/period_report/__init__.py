@@ -6,7 +6,9 @@ core/results.final() per store-month — never platform data. One workbook per
 market (currencies differ) with every store of the market that has results in
 the period; the report family's ten sheets (core/report_kit, core/report_family).
 
-    model.py     periods, gathering the finals, every sum (to the cent)
+    model.py     periods, gathering the finals, every sum (to the cent); which
+                 store-months are missing and which are before the store's
+                 first data month (未上线 — not a gap, never an alert)
     workbook.py  the ten sheets + the hidden version record
     output.py    generate(): names, folders, previous file, alerts, automatic periods
     choice.py    the window tab's rules (no tkinter)
