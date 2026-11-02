@@ -60,6 +60,15 @@ NON_BLOCKING_FORMS = {
     ("ML", "bill", "mercadopago/"):
         "账单基准的金额全部来自账单；MercadoPago 报表只用来判断取消/退货状态、补 SKU 映射和备查项，"
         "缺了②不变（订单基准不在此列：它用结算流水修正部分退款）",
+    # ML order basis, Liberaciones (reserve-release) only — 2026-11-02, from the
+    # production run of 2026-10-31: 8 of 12 Mexican order-basis workbooks were
+    # "gaps" for this file alone (Liberaciones takes >4 h to generate). The order
+    # basis reads it in one place, report/loading.load_mp_cash, as the cash proof
+    # of the bill-vs-orders cross-check, and falls back to settlement_v2 when it
+    # is absent; ② does not use it. settlement stays blocking (partial refunds).
+    ("ML", "order", "mercadopago/release"):
+        "订单基准只拿 Liberaciones 做账单逐单比对的现金凭证，没有它就用结算流水代替；②的金额不用它"
+        "（结算流水 settlement 仍然必需：它修正部分退款）",
     # Liverpool (2026-10-26): every figure of ② comes from the supplier ledger; the
     # marketplace lists only place amounts on SKUs (evidence: the 2026-09 report of
     # Liverpool Report — ② identical with and without them, ⑦ falls back to the

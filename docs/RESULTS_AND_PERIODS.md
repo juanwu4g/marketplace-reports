@@ -86,8 +86,10 @@ Missing forms: a record counts when the report reads the form (run_meta
 "in_report", or `core/download_diag.affects_report` when absent) and its cause is
 not NO_DATA or NOT_AVAILABLE (nothing to download). A missing form listed in
 `core/grading.NON_BLOCKING_FORMS` makes `complete_warn`, not `gaps`: stock forms
-(every platform; ⑥ ⑦ ⑨ only) and MercadoPago forms for the ML bill basis (status
-evidence, SKU mapping and memo only). Without that list some stores could never
+(every platform; ⑥ ⑦ ⑨ only), MercadoPago forms for the ML bill basis (status
+evidence, SKU mapping and memo only) and, for the ML order basis, the
+Liberaciones file alone (cash proof of the bill-vs-orders cross-check; the
+settlement file stands in for it, so ② is unchanged). Without that list some stores could never
 have a final version (EWTTO_SM has no MercadoPago report permission). Formula
 errors after recalculation are gaps. `complete_warn` also comes from error-level
 checks listed in `NON_BLOCKING` (keyed by platform, basis, check); warn-level

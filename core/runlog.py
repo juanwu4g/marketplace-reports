@@ -239,6 +239,8 @@ _ERROR_RES = (re.compile(r"\bERROR\b"),
               re.compile(r"^\S+\s+(failed|not-allowed)\b"))
 # 带"失败"二字但其实不是出错的说法。
 _NOT_FAILURE = ("部分文件失败", "[日志写入失败]", "失败即拒绝")
+# 批次结论：N 家店，正常 a，要看 b，失败 c（core/platform_batch, run_batch）
+_VERDICT_RE = re.compile(r"批次结论：\d+ 家店，正常 \d+，要看 (\d+)，失败 (\d+)")
 
 _WARN_MARKS = ("[警告]", "[待取]", "[跳过]", "[剔除]", "[warn]", "⚠", "✗",
                "部分文件失败", "[日志写入失败]", "有校验未过", "需要关注",
@@ -322,6 +324,11 @@ class LineClassifier(object):
             return ERROR
         if any(k in s for k in _ERROR_MARKS) or any(r.search(s) for r in _ERROR_RES):
             return ERROR
+        m = _VERDICT_RE.search(s)
+        if m:
+            # 批次结论：只有真有店失败才是错误；有要看的店是警告；否则普通信息
+            # （2026-10-31 的日志里 "失败 0" 的结论行全被标成了错误）。
+            return ERROR if int(m.group(2)) else (WARN if int(m.group(1)) else INFO)
         if "失败" in s and not any(k in s for k in _NOT_FAILURE):
             return ERROR
         if any(k in s for k in _WARN_MARKS) or any(r.search(s) for r in _WARN_RES):

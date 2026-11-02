@@ -525,3 +525,15 @@ def test_spawn_detached_survives_and_captures_stderr(tmp_path):
     assert p.wait(timeout=30) == 3
     with io.open(err, "rb") as f:
         assert f.read() == b"boom"
+
+
+def test_batch_verdict_level_follows_the_counts():
+    """批次结论 is an error only when a store really failed; "失败 0" with stores to
+    look at is a warning; all fine is plain info (the 2026-10-31 production log
+    showed every FA/AZ/LV conclusion line in red)."""
+    from core.runlog import ERROR, WARN, INFO
+    c = runlog.LineClassifier("download")
+    lv = lambda s: c.feed(s)[2]
+    assert lv("批次结论：3 家店，正常 0，要看 3，失败 0") == WARN
+    assert lv("批次结论：1 家店，正常 1，要看 0，失败 0") == INFO
+    assert lv("批次结论：2 家店，正常 1，要看 0，失败 1") == ERROR
