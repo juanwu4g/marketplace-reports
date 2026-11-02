@@ -52,6 +52,29 @@ everything into the new tree, verifies every file, writes `paths.data_root` into
 config.json, and only on a second, explicit command deletes the old folders.
 Run it between monthly runs with the scheduled task paused.
 
+When the window's 「报表输出到」 names its own folder (the production machine:
+`S:\Finance\电商数据` on the shared drive), that folder is the flat report
+folder in the old layout and the reports root in the new one, so the tool
+sorts its files **in place**, under that same folder, and never under
+`data_root\reports`:
+
+| in `S:\Finance\电商数据` (old, flat)                         | after (same folder)        |
+|-------------------------------------------------------------|----------------------------|
+| `BOCINA_TA02_2026-09.xlsx`, `…_账单基准.xlsx`, `…_指标.json`, `MX_ML_全店汇总_2026-09.xlsx`, `全店_2026-09_指标.json` | `monthly\2026-09\ML-MX\` |
+| `！需要处理_202609.txt`, `！报表异常_*_202609.txt`, `本月总览_2026-09.xlsx` | `monthly\2026-09\` |
+| `期间报表\quarterly\2026-Q3\ML-MX\*` (same for `annual`, `custom`) | `quarterly\2026-Q3\ML-MX\*` |
+| anything else (incl. `_versions\`, `版本说明.txt`)          | `_旧文件\`                 |
+
+Files already under `monthly\`, `quarterly\`, `annual\`, `custom\` or `_旧文件\`
+are left alone, so `plan`/`copy` can run again. These are copies like every
+other move: verified, listed in the manifest (which records the folder), the
+flat originals deleted by `remove-old`; `results\**.json` `workbook` paths into
+that folder are rewritten to the new place. `undo` leaves the sorted copies
+where they are (the flat originals are still there until `remove-old`, which is
+where the old layout looks). The setting itself is kept; the tool says so after
+switching config.json. If the shared drive cannot be opened, the tool refuses
+to run until it can (or the setting is changed).
+
 ## The cleaning pipeline
 
 The Mexican cleaning project lives in `pipelines\` (code). It is always told its
