@@ -653,6 +653,18 @@ half-written `.crdownload` named, since "the download started and did not
 finish" and "the click did nothing" are different faults. A plain "not ready"
 line now also says what the probe saw (`尚未就绪（列表里还没有这一行）`).
 
+When the click did nothing, the collect loop does not click it again in the
+same call (`点击后没有任何下载开始：本趟不再重试，下一趟再试`): the entry stays
+owed with its evidence and the next run tries once more, while reports still
+generating keep being polled until the budget ends. On 2026-10-31 IDG01_PE's
+Poscobro was clicked 12 times in one late pass (36 minutes) with the same
+answer every time. The same report owed by several run folders of one store
+(same accounting month, same form) is collected once, into the newest folder,
+and the older entries are retired whether or not it lands
+(`同一张报表 … 被 3 趟目录欠着 … 只向最新的 … 收一次，旧的 2 条欠账撤销`); the
+late pass gives a store one `--late-timeout` budget in total, newest folder
+first, not one per folder.
+
 ### Every report that does not arrive gets a cause
 
 `download_diag.py` computes what a run should have produced and gives each

@@ -266,6 +266,12 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
     每个条目上会留下诊断字段（probes / first_probe_at / last_probe_at /
     last_state / last_status_text / evidence），只留最新一次的。截图只在最后
     一轮拍：中间每一轮的画面没有人会看。
+
+    点了下载却**连一个下载都没开始**的条目，本次调用里不再点第二次。2026-10-31
+    IDG01_PE 的补收对同一张 Poscobro 点了 12 次、等了 36 分钟，每次都是同一个
+    结果 —— 再点一次得到的不会不一样。它照旧欠着（带着这次的现场和原因），
+    下一趟再试；还在生成的条目则照旧每轮探测到预算用完。"下载开始了但没写完"
+    （目录里有 .crdownload）不算这一类，照旧下一轮再点。
     """
 
     def probe_and_fetch(p):
@@ -303,6 +309,7 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
     deadline = time.time() + budget
     remaining = list(pending)
     errored = []
+    parked = []          # 点了没反应的：本趟不再点，仍欠着
     cycle = 0
     # do-while：至少完整扫一轮再谈超时。budget=0 就是"只扫一遍、不等待"，
     # 这正是店内收取需要的语义 —— 探测本身的开销省不掉，省掉的是轮询空等。
@@ -368,20 +375,29 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
                 remaining.remove(p)
             elif got is NOT_LANDED:
                 # 已就绪，是下载这一步没成。说"尚未就绪"会把人引去等平台，
-                # 而平台早就好了。留在列表里，下一轮再点一次。
+                # 而平台早就好了。下载开始过（有 .crdownload）或没有可点的入口
+                # 的，留在列表里下一轮再试；点了却什么都没开始的，见下面。
                 info["row_state"] = "ready"
                 info["fetch"] = fetch
+                half = (delta or {}).get("crdownload") or []
                 if fetch == "clicked":
                     info["signal"] = "download-not-landed"
                     info.update(delta or {})
                     print("    %-28s 已就绪，但点了下载后文件没有落盘%s"
-                          % (label, "（有没写完的 %s）" % "、".join(
-                              delta["crdownload"][:2])
-                             if delta and delta.get("crdownload") else ""))
+                          % (label, "（有没写完的 %s）" % "、".join(half[:2])
+                             if half else ""))
                 else:
                     print("    %-28s 已就绪，但页面上没有可点击的下载入口" % label)
                 download_diag.note_probe(p, info)
-                if final:
+                if fetch == "clicked" and not half:
+                    # 点击后没有任何下载开始。本趟不再点它：这是它最后一次探测，
+                    # 现场现在就拍。
+                    print("    %-28s 点击后没有任何下载开始：本趟不再重试，"
+                          "下一趟再试" % label)
+                    download_diag.snapshot_entry(d, p, out_dir)
+                    parked.append(p)
+                    remaining.remove(p)
+                elif final:
                     download_diag.snapshot_entry(d, p, out_dir)
             elif got:
                 remaining.remove(p)
@@ -399,7 +415,7 @@ def collect_pending(d, pending, out_dir, result, budget, poll=20):
         if wait > 0:
             time.sleep(wait)
     # 原来的先后顺序：调用方按它打印
-    left_over = remaining + errored
+    left_over = remaining + errored + parked
     return [p for p in pending if any(p is q for q in left_over)]
 
 

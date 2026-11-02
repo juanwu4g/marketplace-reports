@@ -604,14 +604,58 @@ def collect_pass(client, names, args, rows):
         _settle_late_store(name, entries, row, result, keep, late_dir, by_dir)
 
 
+def _run_name(out_dir):
+    """目录名（时间戳开头，按名字排序就是按时间排序）；没有目录算最早。"""
+    return os.path.basename(os.path.normpath(out_dir)) if out_dir else ""
+
+
+def collapse_duplicates(entries):
+    """同一张报表被这家店好几趟目录欠着：只向最新那一趟收，其余撤销。
+
+    返回 (要收的, 撤销的)。"同一张"的判据和 drop_superseded 一样：同一家店、
+    同一个会计月（month_key）、同一种报表（form）。出报表只用最新那一趟，
+    旧目录里就算收到也没人用 —— 而每一条都要单独跑满一次补收预算。2026-10-31
+    IDG01_PE 的 Poscobro 被 10-27、10-28、10-31 三趟目录各欠一条，补收对同一
+    张报表点了 12 次、耗了 36 分钟。
+
+    没有 out_dir 的条目不参与：它们落不到任何一趟目录里。
+    """
+    groups = {}
+    for e in entries:
+        if not e.get("out_dir"):
+            continue
+        groups.setdefault(
+            (download_diag.form_of_entry(e), month_key(e["out_dir"])),
+            []).append(e)
+    dupes = []
+    for (form, _month), es in groups.items():
+        newest = max(_run_name(e["out_dir"]) for e in es)
+        older = [e for e in es if _run_name(e["out_dir"]) != newest]
+        if not older:
+            continue
+        dupes.extend(older)
+        print("    %-16s 同一张报表 %s 被 %d 趟目录欠着（%s）：只向最新的 %s "
+              "收一次，旧的 %d 条欠账撤销"
+              % (es[0].get("store"), form, len(set(_run_name(e["out_dir"])
+                                                   for e in es)),
+                 "、".join(sorted(set(_run_name(e["out_dir"]) for e in es))),
+                 newest, len(older)))
+    return [e for e in entries if not any(e is x for x in dupes)], dupes
+
+
 def _late_collect_store(client, name, entries, args):
-    """补收一家店。返回 (result, 仍欠的, 落盘目录, 按目录的文件, 异常或 None)。"""
+    """补收一家店。返回 (result, 仍欠的, 落盘目录, 按目录的文件, 异常或 None)。
+
+    整家店只有**一份**预算（--late-timeout）：以前每个目录各跑满一次，三趟目录
+    欠同一张报表就是三倍的时间。最新的目录先收 —— 出报表用的是它。
+    """
     result = {"store": name, "sales": [], "mp": [], "pending": [],
               "empty": [], "errors": [], "retry_later": [], "no_data": []}
     late_dir = None
     keep = []
     by_dir = {}                 # 目录 -> 这一趟补收落在那里的文件
     failure = None
+    attempt, result["superseded"] = collapse_duplicates(entries)
     try:
         store = client.find_store(name)
         with client.open_store(store, close_when_done=True) as session:
@@ -623,9 +667,11 @@ def _late_collect_store(client, name, entries, args):
             # be re-applied here, once per folder. Forgetting this is how a
             # route ends up reporting "got 0 files" while clicking correctly.
             folders = {}
-            for e in entries:
+            for e in attempt:
                 folders.setdefault(e.get("out_dir"), []).append(e)
-            for home, group in folders.items():
+            deadline = time.time() + args.late_timeout
+            for home in sorted(folders, key=_run_name, reverse=True):
+                group = folders[home]
                 out_dir = home
                 if not out_dir or not os.path.isdir(out_dir):
                     # the run folder is gone; put the file with this batch
@@ -639,7 +685,8 @@ def _late_collect_store(client, name, entries, args):
                 n_sales, n_mp = len(result["sales"]), len(result["mp"])
                 left = run_downloads.collect_pending(
                     d, group, out_dir, result,
-                    budget=args.late_timeout, poll=args.collect_poll)
+                    budget=max(0, deadline - time.time()),
+                    poll=args.collect_poll)
                 keep.extend(left)
                 by_dir[home] = {"sales": result["sales"][n_sales:],
                                 "mp": result["mp"][n_mp:]}
@@ -651,8 +698,8 @@ def _late_collect_store(client, name, entries, args):
         print("    [失败] %s: %s" % (e.__class__.__name__, e))
         result["errors"].append("late collect: %s: %s"
                                 % (e.__class__.__name__, e))
-        # 已经确认没有数据的不必再欠着；其余全部照旧欠着
-        keep = [x for x in entries
+        # 已经确认没有数据的不必再欠着；撤销的重复欠账也不再欠；其余照旧欠着
+        keep = [x for x in attempt
                 if not any(x is y for y in result.get("no_data", []))]
         # 没有浏览器可截图：异常类、卡在哪一步、紫鸟的原话就是全部现场
         for x in keep:
@@ -668,12 +715,16 @@ def _settle_late_store(name, entries, row, result, keep, late_dir, by_dir):
     waiting = list(keep)
     keep.extend(x for x in result.get("retry_later", [])
                 if not any(x is k for k in keep))
-    collected = len(entries) - len(keep)
-    print("    已取回 %d 张，仍欠 %d 张" % (collected, len(keep)))
+    superseded = result.get("superseded") or []
+    collected = len(entries) - len(keep) - len(superseded)
+    print("    已取回 %d 张，仍欠 %d 张%s" % (
+        collected, len(keep),
+        "，撤销重复的旧欠账 %d 条" % len(superseded) if superseded else ""))
 
-    # Everything not kept is done with - downloaded, or a range that will
-    # never produce a report. Removing it is what stops the registry growing
-    # without bound.
+    # Everything not kept is done with - downloaded, a range that will never
+    # produce a report, or an older folder's duplicate of a report collected
+    # (or still owed) by the newest folder. Removing it is what stops the
+    # registry growing without bound.
     done = [e for e in entries if not any(e is k for k in keep)]
     if done:
         pending_store.remove(done)
