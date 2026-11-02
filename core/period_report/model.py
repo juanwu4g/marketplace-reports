@@ -170,11 +170,14 @@ def market_stores(market, months, basis, stores=None, config_path=None):
     they have results or not — a listed store without any results anywhere is
     reported missing in every month (it has no first data month)."""
     pf, cc = markets.split(markets.normalize(market))
-    found = R.stores(pf, cc, config_path)
+    found = R.stores(pf, cc, config_path)                  # former names already folded in
     if stores:
         from core import store_config
         out = []
         for s in stores:
+            s = store_config.current_name(s)               # a renamed store asked for by its old name
+            if s in out:
+                continue
             if s in found:
                 out.append(s)
                 continue
@@ -199,7 +202,7 @@ def fsum(values, decimals):
 class PeriodData(object):
     """One market's period: the cells and every sum the workbook shows."""
 
-    def __init__(self, market, basis, period, stores, cells, built):
+    def __init__(self, market, basis, period, stores, cells, built, merged=()):
         self.market = markets.normalize(market)
         self.platform, self.country = markets.split(self.market)
         self.basis, self.period = basis, period
@@ -207,6 +210,7 @@ class PeriodData(object):
         self.stores = list(stores)
         self.cells = cells
         self.built = built
+        self.merged = list(merged)        # [(former name, store)]: old-name folders read as the store's
         docs = [c.final for c in cells.values() if c.final] + \
                [c.newest for c in cells.values() if c.newest]
         self.currency = docs[0]["currency"] if docs else ""
@@ -429,6 +433,14 @@ class PeriodData(object):
         return {(s, m): (self.final(s, m) or {}).get("version", "")
                 for s in self.stores for m in self.months}
 
+    def merged_lines(self):
+        """'旧名 清货2_EE02 的结果并入 QH_EE02' — one line per former name read."""
+        return [merged_text(old, s) for old, s in self.merged]
+
+
+def merged_text(former, store):
+    return "旧名 %s 的结果并入 %s" % (former, store)
+
 
 def gather(market, period, basis=None, stores=None, config_path=None, built=None):
     """Read the final monthly results of one market for a period."""
@@ -438,9 +450,11 @@ def gather(market, period, basis=None, stores=None, config_path=None, built=None
     basis = basis_of(pf, basis)
     names = market_stores(market, period.months, basis, stores, config_path)
     cells = {}
+    merged = []
     for s in names:
         first = first_month(pf, cc, s, config_path)
         for m in period.months:
             final, newest, probs = _read(pf, cc, s, m, basis, config_path)
             cells[(s, m)] = Cell(s, m, final, newest, probs, first)
-    return PeriodData(market, basis, period, names, cells, built or datetime.datetime.now())
+        merged += [(old, s) for old in R.merged_former(pf, cc, s, config_path)]
+    return PeriodData(market, basis, period, names, cells, built or datetime.datetime.now(), merged)

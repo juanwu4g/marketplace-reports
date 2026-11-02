@@ -137,17 +137,39 @@ def run_folders(store, base=None, config_path=None):
 
     `base` is a legacy-shaped root (<base>/<store>/<run>/) — what tests and the
     old --downloads options pass; without it the configured layout is used.
-    Only folders whose name starts with a year ("20…") count, as before."""
-    if base is not None or not configured_data_root(config_path):
-        parent = os.path.join(base if base is not None else os.path.join(paths.ROOT, "downloads"), store)
-        found = _runs_in(parent)
-    else:
-        found = []
-        sd = store_dir(store, config_path)
-        if os.path.isdir(sd):
-            for month in os.listdir(sd):
-                found += _runs_in(os.path.join(sd, month))
-    return sorted(found, key=lambda x: x[0], reverse=True)
+    Only folders whose name starts with a year ("20…") count, as before.
+
+    A store renamed in Ziniao (config.json stores.catalog "formerly") keeps its
+    old folders: the former names' run folders are included, so a report built
+    right after the rename still sees the newest download. Two runs with the
+    same name list the current name's folder first."""
+    found = []
+    for name in _names_on_disk(store):
+        if base is not None or not configured_data_root(config_path):
+            parent = os.path.join(base if base is not None else os.path.join(paths.ROOT, "downloads"), name)
+            found += _runs_in(parent)
+        else:
+            sd = _store_dir_named(store, name, config_path)
+            if os.path.isdir(sd):
+                for month in os.listdir(sd):
+                    found += _runs_in(os.path.join(sd, month))
+    return sorted(found, key=lambda x: x[0], reverse=True)      # stable: current name first on ties
+
+
+def _names_on_disk(store):
+    """The store's current name, then its former names (store_config.former_names)."""
+    from core import store_config
+    try:
+        olds = store_config.former_names(store)
+    except Exception:                         # noqa: BLE001 — config problems are reported elsewhere
+        olds = []
+    return [store] + [o for o in olds if o != store]
+
+
+def _store_dir_named(store, name, config_path=None):
+    """store_dir() of a former name of `store` (the market is the store's)."""
+    pf, cc = store_market(store)
+    return os.path.join(configured_data_root(config_path), "raw", pf, cc, name)
 
 
 def _runs_in(parent):

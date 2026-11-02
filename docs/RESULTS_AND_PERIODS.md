@@ -27,6 +27,14 @@ monthly workbook is built (`core/results.write`, atomic). Path and names:
 `core/results.py` docstring. Country summaries ("全店汇总") have no results
 file: a period report adds up stores.
 
+A renamed store (config.json `stores.catalog` … `"formerly": ["old name"]`,
+docs/DATA_LAYOUT.md "Renamed stores") is read from its current folder and its
+former names' folders together by every reader of this module — `versions`,
+`final`, `months`, `first_month_at`, `stores` (the old name is never a store of
+its own) — and written under the current name only. `results.merged_former`
+says which former names' folders were read, for the log line
+`旧名 <old> 的结果并入 <store>`.
+
 | field | type | meaning |
 |---|---|---|
 | `schema` | 1 | |
@@ -143,7 +151,10 @@ stores and month of that step.
 * Period: `--quarter 2026-Q3`, `--year 2026`, `--from 2026-07 --to 2026-11`.
 * Scope: `--region` with the units of run_monthly (`MX`, `CL`, `PE`, `FA-CL`,
   `AZ-MX`, `ALL`) and optional `--stores`. One workbook per market (currencies
-  differ), every store of the market that has results in the period.
+  differ), every store of the market that has results in the period. A renamed
+  store counts once, under its current name, with the results of its former
+  names' folders (`--stores` accepts the old name too); the summary lines and
+  the run log say `旧名 <old> 的结果并入 <store>` for every former name read.
 * Basis: `--basis` (ML: `bill` default = official, or `order`); `main` elsewhere.
 * Input: `core/results.final()` per store-month only. A store-month without a
   final version is left out of every total and listed as 无完整版本 on ① (red

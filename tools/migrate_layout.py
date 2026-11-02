@@ -123,6 +123,9 @@ def store_market(store, run_dirs):
         raise Refused(str(e))
     if store in cat:
         return cat[store][0], cat[store][1], ""
+    current = store_config.current_name(store)          # a renamed store's old folder (catalog "formerly")
+    if current != store and current in cat:
+        return cat[current][0], cat[current][1], "旧名，现在叫 %s" % current
     for d in run_dirs:
         meta = read_json(os.path.join(d, "run_meta.json"))
         pf, cc = meta.get("platform"), meta.get("country")

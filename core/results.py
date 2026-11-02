@@ -20,6 +20,13 @@ versions. docs/RESULTS_AND_PERIODS.md describes the fields and the rules.
 
 This module is the read side and the file format; the report runners write the
 files (write()), and core/finalize decides finals, copies and cleans.
+
+Renamed stores: a store renamed in Ziniao keeps its old folders. config.json
+names the old names ("formerly" in stores.catalog, core/store_config); every
+reader here merges the former names' folders into the current store — versions
+from all of them, the final the newest countable across them — and never lists
+a claimed former name as a store of its own. New files are always written under
+the current name (docs/DATA_LAYOUT.md, "Renamed stores").
 """
 import datetime
 import io
@@ -130,32 +137,40 @@ def final(store, month, basis, config_path=None):
 
 
 def problems(store, month, config_path=None):
-    """Files in a store-month folder that cannot be used, with the reason."""
-    d = layout.results_dir(store, month, config_path)
+    """Files in a store-month folder that cannot be used, with the reason (a
+    former name's folder is named in the reason)."""
+    pf, cc = layout.store_market(store)
     out = []
-    if not os.path.isdir(d):
-        return out
-    for name in sorted(os.listdir(d)):
-        if not name.endswith(".json"):
+    for owner, base in _store_dirs(pf, cc, store, config_path):
+        d = os.path.join(base, month)
+        if not os.path.isdir(d):
             continue
-        if not FILE_RE.match(name):
-            out.append((name, "文件名不合规"))
-            continue
-        try:
-            bad = validate(load(os.path.join(d, name)))
-        except (ValueError, IOError, OSError) as e:
-            bad = ["读不出来：%s" % e]
-        if bad:
-            out.append((name, "；".join(bad)))
+        where = "" if owner == store else "（旧名 %s 的目录）" % owner
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".json"):
+                continue
+            if not FILE_RE.match(name):
+                out.append((name, "文件名不合规" + where))
+                continue
+            try:
+                bad = validate(load(os.path.join(d, name)))
+            except (ValueError, IOError, OSError) as e:
+                bad = ["读不出来：%s" % e]
+            if bad:
+                out.append((name, "；".join(bad) + where))
     return out
 
 
 def stores(platform=None, country=None, config_path=None):
-    """Store names that have any results, optionally of one platform / country."""
+    """Store names that have any results, optionally of one platform / country.
+    A folder named by a store's former name counts as that store (listed once,
+    under the current name, even when the current name has no folder yet)."""
+    from core import store_config
     root = layout.results_root(config_path)
     out = []
     if not os.path.isdir(root):
         return out
+    former = store_config.former_map()
     for pf in sorted(os.listdir(root)):
         if platform and pf != platform:
             continue
@@ -163,16 +178,20 @@ def stores(platform=None, country=None, config_path=None):
             if country and cc != country:
                 continue
             base = os.path.join(root, pf, cc)
-            out += sorted(s for s in os.listdir(base) if os.path.isdir(os.path.join(base, s)))
+            names = set(former.get(s, s) for s in os.listdir(base) if os.path.isdir(os.path.join(base, s)))
+            out += sorted(names)
     return out
 
 
 def months(store, config_path=None):
-    """Months ('YYYY-MM') with any result for the store, ascending."""
-    base = os.path.dirname(layout.results_dir(store, "2000-01", config_path))
-    if not os.path.isdir(base):
-        return []
-    return sorted(m for m in os.listdir(base) if MONTH_RE.match(m))
+    """Months ('YYYY-MM') with any result for the store, ascending (the former
+    names' folders included)."""
+    pf, cc = layout.store_market(store)
+    found = set()
+    for _owner, base in _store_dirs(pf, cc, store, config_path):
+        if os.path.isdir(base):
+            found |= set(m for m in os.listdir(base) if MONTH_RE.match(m))
+    return sorted(found)
 
 
 # ------------------------------------------------------------------ periods
@@ -215,35 +234,70 @@ def quarter_of(month):
 # store closed after the quarter); these read the same files by the folder the
 # results tree itself gives (<results>/<PF>/<CC>/<store>/), with the same rule.
 
-def versions_at(platform, country, store, month, basis=None, config_path=None):
-    """versions() for a store found in the results tree under <PF>/<CC>."""
-    d = os.path.join(layout.results_root(config_path), platform, country, store, month)
-    if not os.path.isdir(d):
-        return []
+def _former_dirs(platform, country, store, config_path=None):
+    """[(former name, its results folder)] for the store's former names
+    (store_config.former_names) whose folder exists under <PF>/<CC>."""
+    from core import store_config
+    root = layout.results_root(config_path)
     out = []
-    for name in os.listdir(d):
-        m = FILE_RE.match(name)
-        if not m or (basis and m.group("basis") != basis):
+    for old in store_config.former_names(store):
+        d = os.path.join(root, platform, country, old)
+        if os.path.isdir(d):
+            out.append((old, d))
+    return out
+
+
+def _store_dirs(platform, country, store, config_path=None):
+    """The store's results folder, then its former names' (existing ones only):
+    [(name, folder)]. Every reader walks all of them."""
+    root = layout.results_root(config_path)
+    return [(store, os.path.join(root, platform, country, store))] + \
+        _former_dirs(platform, country, store, config_path)
+
+
+def merged_former(platform, country, store, config_path=None):
+    """The former names whose results folders are read as this store's — what a
+    report logs as 「旧名 X 的结果并入 Y」. [] when none has a folder."""
+    return [old for old, _d in _former_dirs(platform, country, store, config_path)]
+
+
+def versions_at(platform, country, store, month, basis=None, config_path=None):
+    """versions() for a store found in the results tree under <PF>/<CC> — the
+    store's folder and its former names' folders together."""
+    out, seen = [], set()
+    for _owner, base in _store_dirs(platform, country, store, config_path):
+        d = os.path.join(base, month)
+        if not os.path.isdir(d):
             continue
-        try:
-            doc = load(os.path.join(d, name))
-        except (ValueError, IOError, OSError):
-            continue
-        if not validate(doc):
+        for name in os.listdir(d):
+            m = FILE_RE.match(name)
+            if not m or (basis and m.group("basis") != basis):
+                continue
+            try:
+                doc = load(os.path.join(d, name))
+            except (ValueError, IOError, OSError):
+                continue
+            if validate(doc):
+                continue
+            key = (doc["version"], doc["basis"])
+            if key in seen:                      # the same version copied under both names
+                continue
+            seen.add(key)
             out.append(doc)
     return sorted(out, key=lambda x: (x["built_at"], x["version"]), reverse=True)
 
 
 def has_files_at(platform, country, store, month, basis=None, config_path=None):
-    """Is there any results file (by its name) for this store-month and basis?
-    Cheap: lists the folder, reads nothing."""
-    d = os.path.join(layout.results_root(config_path), platform, country, store, month)
-    if not os.path.isdir(d):
-        return False
-    for name in os.listdir(d):
-        m = FILE_RE.match(name)
-        if m and (not basis or m.group("basis") == basis):
-            return True
+    """Is there any results file (by its name) for this store-month and basis,
+    in the store's folder or a former name's? Cheap: lists folders, reads nothing."""
+    for _owner, base in _store_dirs(platform, country, store, config_path):
+        d = os.path.join(base, month)
+        if not os.path.isdir(d):
+            continue
+        for name in os.listdir(d):
+            m = FILE_RE.match(name)
+            if m and (not basis or m.group("basis") == basis):
+                return True
     return False
 
 
@@ -259,11 +313,11 @@ def months_at(platform, country, store, config_path=None):
     """months() for a store found in the results tree under <PF>/<CC>: the
     months ('YYYY-MM') whose folder holds at least one results file (any basis,
     any grade), ascending. Cheap: lists folders, reads nothing."""
-    base = os.path.join(layout.results_root(config_path), platform, country, store)
-    if not os.path.isdir(base):
-        return []
-    return sorted(m for m in os.listdir(base)
-                  if MONTH_RE.match(m) and has_files_at(platform, country, store, m, None, config_path))
+    found = set()
+    for _owner, base in _store_dirs(platform, country, store, config_path):
+        if os.path.isdir(base):
+            found |= set(m for m in os.listdir(base) if MONTH_RE.match(m))
+    return sorted(m for m in found if has_files_at(platform, country, store, m, None, config_path))
 
 
 def first_month_at(platform, country, store, config_path=None):

@@ -141,9 +141,11 @@ class ReportRunner(object):
     def latest_folder(self, store, month, base=None):
         from core import layout
         y, m = self.periods.parse_month(month)
-        hits = sorted(p for _n, p in layout.run_folders_for_month(store, "%04d-%02d" % (y, m), base=base))
+        # newest run first, by the run's name (not its path: a renamed store's
+        # folders sit under two names — core/layout.run_folders)
+        hits = [p for _n, p in layout.run_folders_for_month(store, "%04d-%02d" % (y, m), base=base)]
         for marker in self.folder_markers(month):
-            for d in reversed(hits):
+            for d in hits:
                 if _holds(d, marker):
                     return d
         return None
