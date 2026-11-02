@@ -729,6 +729,17 @@ python -m platforms.mercadolibre.run_reports --region CL --dry-run
 }
 ```
 
+**店铺在紫鸟里改了名**（例如 `清货2_EE02` 改成 `QH_EE02`）：`allowed`、`catalog`、`batches`
+里一律改成新名，并在这家店的 `catalog` 条目里用 `formerly` 写上旧名；硬盘上什么都不用搬，
+旧名下的下载目录和月度结果会自动算作这家店的，季度报表和本月总览只显示新名、只算一次
+（日志里有一行「旧名 … 的结果并入 …」）。旧名不能同时还是一家现在的店，也不能被两家店认领。
+
+```json
+"catalog": {
+  "QH_EE02": {"platform": "ML", "country": "MX", "formerly": ["清货2_EE02"]}
+}
+```
+
 **怎么跑**：和美客多完全一样，同一个窗口、同一个计划任务。
 
 * 窗口「范围」树里多一个平台「Falabella」、下面是「智利」（只有 config 里有 Falabella 店时才出现）。

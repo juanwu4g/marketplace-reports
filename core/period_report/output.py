@@ -147,6 +147,8 @@ def summary_lines(res):
         D = res["data"]
         out.append("  店铺 %d 家，%d 个月；用了 %d 个店铺月份的完整版本" % (
             len(res["stores"]), len(p.months), len(D.finals())))
+        for line in D.merged_lines():
+            out.append("  " + line)
         for c in res["missing"]:
             out.append("  ✗ %s %s 无完整版本：%s" % (c.store, c.month, c.reason()))
         for s in D.not_started_stores():                 # one line per store, not per month

@@ -39,6 +39,34 @@ D:\marketplace-data\
 first half of a report version's id, so a report can be traced to its download.
 The window's 「报表输出到」 setting moves `reports\` (e.g. to a shared drive).
 
+## Renamed stores
+
+A store renamed in the Ziniao browser (2026-10: `清货2_EE02` → `QH_EE02`) keeps its
+old folders under `raw\` and `results\`. Nothing on disk needs moving: write the
+new name everywhere in `config.json` (`allowed`, `batches`) and put the old
+name(s) in the store's `stores.catalog` entry under `formerly` (a list, or one
+string):
+
+```json
+"catalog": {
+  "QH_EE02": {"platform": "ML", "country": "MX", "formerly": ["清货2_EE02"]}
+}
+```
+
+From then on every reader (`core/results.py`, `core/layout.run_folders`) treats
+the old name's folders as the store's: a month's versions come from both
+folders and the final is the newest countable one across them; the period
+reports and 本月总览 show the store once, under the new name, and log
+`旧名 清货2_EE02 的结果并入 QH_EE02`; a report built right after the rename still
+finds the newest download even when it sits under the old name. New downloads
+and results are always written under the current name; the clean-up never
+deletes a folder under an old name. The old folders may be archived later, once
+no month still needs them (a period report reads them for as long as they hold
+a month's final). A former name must not still be a current store, and one old
+name belongs to one store: a wrong entry makes only that store 配置有问题
+(`config_problems`), the others run as usual. `formerly` exists only in the
+`catalog` form of the config (the old `regions` form has no place for it).
+
 ## Old layout (no data_root)
 
 Everything where it has always been: downloads in `downloads\<store>\<run>\`,

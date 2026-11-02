@@ -203,11 +203,18 @@ def config_problem_stores():
 
 
 def stores_with_results(month, config_path=None):
-    """[(platform, country, store)] that have a results folder for the month."""
+    """[(platform, country, store)] that have a results folder for the month. A
+    folder under a store's former name (config.json stores.catalog "formerly")
+    counts as the current store, listed once under the current name."""
+    from core import store_config
     root = layout.results_root(config_path)
     out = []
     if not os.path.isdir(root):
         return out
+    try:
+        former = store_config.former_map()
+    except Exception:                                             # noqa: BLE001
+        former = {}
     for pf in sorted(os.listdir(root)):
         p1 = os.path.join(root, pf)
         if not os.path.isdir(p1):
@@ -218,12 +225,15 @@ def stores_with_results(month, config_path=None):
                 continue
             for name in sorted(os.listdir(p2)):
                 if os.path.isdir(os.path.join(p2, name, month)):
-                    out.append((pf, cc, name))
+                    key = (pf, cc, former.get(name, name))
+                    if key not in out:
+                        out.append(key)
     return out
 
 
-def gather(month, notes, config_path=None):
-    """Every store the overview lists, in order, with their versions."""
+def gather(month, notes, config_path=None, say=None):
+    """Every store the overview lists, in order, with their versions. say: one
+    log line per former name whose folder was read as a store's."""
     stores = {}
     for pf, cc, name in configured_stores(notes):
         stores[(pf, cc, name)] = _Store(pf, cc, name)
@@ -237,6 +247,12 @@ def gather(month, notes, config_path=None):
                                                    config_path)
             except Exception:                                     # noqa: BLE001
                 st.versions[basis] = []
+        if say:
+            try:
+                for old in R.merged_former(st.platform, st.country, st.name, config_path):
+                    say("  旧名 %s 的结果并入 %s" % (old, st.name))
+            except Exception:                                     # noqa: BLE001
+                pass
     ordered = sorted(stores.values(), key=lambda s: _order_key(s.platform, s.country, s.name))
     for name, why in config_problem_stores():
         if not any(s.name == name for s in ordered):
@@ -931,7 +947,7 @@ def build(month, alert_folder, run_notes=None, period_results=None, config_path=
     now = now or datetime.datetime.now()
     try:
         notes = []
-        stores = gather(month, notes, config_path)
+        stores = gather(month, notes, config_path, say)
         human = pending_actions(log_dir)
         batch_rows = batch_rows_for(month, log_dir, batch_summaries)
         rows = overview_rows(stores, batch_rows, human)
