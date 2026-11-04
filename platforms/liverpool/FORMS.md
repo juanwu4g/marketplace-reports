@@ -66,8 +66,15 @@ the 5th of M+1 also catches the first payment of M+1 in "Detalle de Pagos".
     Ziniao's `stop.html` page opened at the top level.
 - **Marketplace** `https://marketplace.liverpool.com.mx` (React, MUI).
   - **The session:** it lives in the Ziniao store. A signed-out store lands on
-    `login-entradaunica.liverpool.com.mx/u/login` (Auth0, email + password),
-    which is a person's job.
+    `login-entradaunica.liverpool.com.mx/u/login` (Auth0: `#username`,
+    `#password`, `button[name=action]` "Iniciar sesión"). Ziniao fills the
+    store's saved e-mail and password there (the password is a Chrome autofill
+    preview — `value` reads empty until a real click lands on the box), and the
+    program only presses the button (`marketplace_sign_in`; proven in the test VM
+    2026-11-05 after the production session had expired on 2026-11-04). Nothing
+    filled, or the sign-in refused → `Blocked` (PAGE_BLOCKED): then a person
+    signs in once inside the Ziniao store. `run_meta.json` flags
+    `marketplace_login`: `session` or `ziniao`.
   - **Ziniao's extra handle:** Ziniao opens with an extra handle (an omnibox
     pop-up), and using it makes the site say "Este sitio no está diseñado para
     … móvil". Switch to the first window whose size can be read (`real_window`).

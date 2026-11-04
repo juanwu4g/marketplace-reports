@@ -220,3 +220,67 @@ def test_files_in_a_subfolder_of_the_run_folder_count(tmp_path):
     (sub / "a.xml").write_text("<x/>")
     assert download_diag._rejected(["Notas_Cargo_202609/a.xml"], str(tmp_path)) == []
     assert download_diag._rejected(["Notas_Cargo_202609/missing.xml"], str(tmp_path)) == ["missing.xml（不在目录里）"]
+
+
+class FakeMarket(object):
+    """The marketplace: a signed-out store lands on the Entrada Única sign-in page,
+    whose e-mail and password Ziniao may have filled; "Iniciar sesión" signs in."""
+    title = "Iniciar sesión | Marketplace"
+    window_handles = ["w1"]
+
+    def __init__(self, filled=True, signed=False, accepts=True):
+        self.user = FakeField("nikki@example.com" if filled else "")
+        self.pw = FakeField("" if filled else "")
+        self.signed, self.accepts, self.clicks = signed, accepts, []
+        self.current_url = ("https://marketplace.liverpool.com.mx/orders" if signed else
+                            "https://login-entradaunica.liverpool.com.mx/u/login?state=x")
+
+    def get(self, url):
+        pass
+
+    def get_window_size(self):
+        return {"width": 1920, "height": 911}
+
+    def find_elements(self, by, value):
+        if value == "username":
+            return [self.user]
+        if value == "password":
+            return [self.pw]
+        if value == "button[name=action]":
+            return [self]            # the button
+        return []
+
+    def is_displayed(self):
+        return True
+
+    def submit(self):                # bk.real_click → d.submit() in the fast fixture
+        self.clicks.append("click")
+        if len(self.clicks) == 2 and self.user.value and self.accepts:
+            self.signed = True
+            self.current_url = "https://marketplace.liverpool.com.mx/orders"
+
+    def execute_script(self, js, *a):
+        return "Inicio\nPedidos\nCostos logísticos" if self.signed else ""
+
+
+def test_marketplace_sign_in_presses_the_button_ziniao_filled(fast):
+    d = FakeMarket(filled=True)
+    ctx = portal_ctx(d, None)
+    forms.marketplace_open(ctx)
+    assert d.signed and ctx.flags["marketplace_login"] == "ziniao"
+    assert d.clicks == ["click", "click"]          # the password box, then the button
+    assert d.pw.value == ""                        # nothing typed
+
+
+def test_marketplace_sign_in_page_not_filled_or_refused_is_blocked(fast):
+    with pytest.raises(forms.Blocked):
+        forms.marketplace_open(portal_ctx(FakeMarket(filled=False), None))
+    with pytest.raises(forms.Blocked):
+        forms.marketplace_open(portal_ctx(FakeMarket(filled=True, accepts=False), None))
+
+
+def test_marketplace_already_signed_in_is_the_session(fast):
+    d = FakeMarket(signed=True)
+    ctx = portal_ctx(d, None)
+    forms.marketplace_open(ctx)
+    assert d.clicks == [] and ctx.flags["marketplace_login"] == "session"

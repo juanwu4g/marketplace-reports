@@ -20,8 +20,14 @@ started by automation (its password script returns early in WebDriver mode), so 
 account configured for the store in config.json (stores.catalog[store].portal_login,
 owner's decision 2026-10-27) is typed into the portal's own sign-in form — nowhere
 else, and it is never logged. Without it the store is reported as needing a person
-(NeedsLogin -> PAGE_BLOCKED). The marketplace's sign-in is never touched: its
-session lives in the Ziniao store.
+(NeedsLogin -> PAGE_BLOCKED).
+
+The marketplace's sign-in (Entrada Única, Auth0): its session lives in the Ziniao
+store, and when it has expired the store lands on the sign-in page with the e-mail
+and password already filled by Ziniao (the store's own saved sign-in — a Chrome
+autofill preview that a real click commits). The program types nothing there; it
+only presses "Iniciar sesión" (marketplace_sign_in, proven in the test VM
+2026-11-05). Nothing filled, or the sign-in refused -> Blocked (PAGE_BLOCKED).
 """
 import base64
 import datetime
@@ -440,14 +446,49 @@ def invoices(ctx):
 
 # ================================================================ marketplace
 
+def _is_sign_in_page(url):
+    return "login" in url or "entradaunica" in url
+
+
+def marketplace_sign_in(ctx):
+    """On the marketplace's sign-in page (Entrada Única: #username, #password,
+    button[name=action]) press "Iniciar sesión" once Ziniao has filled the store's
+    saved e-mail. The password is Chrome's autofill preview until a real click lands
+    on its box, so the box is clicked first. Nothing is typed, nothing is logged.
+    Returns True when the marketplace is open again."""
+    d = ctx.d
+    filled = bk.wait_for(lambda: [e for e in d.find_elements(By.ID, "username")
+                                  if (e.get_attribute("value") or "").strip()], timeout=20, poll=2)
+    if not filled:
+        return False
+    pw = [e for e in d.find_elements(By.ID, "password") if e.is_displayed()]
+    btn = [b for b in d.find_elements(By.CSS_SELECTOR, "button[name=action]") if b.is_displayed()]
+    if not pw or not btn:
+        return False
+    bk.real_click(d, pw[0])
+    time.sleep(1)
+    bk.real_click(d, btn[0])
+    ok = bk.wait_for(lambda: not _is_sign_in_page(d.current_url or ""), timeout=60, poll=2)
+    if not ok:
+        return False
+    time.sleep(6)                          # the orders page renders after the redirect
+    ctx.flags["marketplace_login"] = "ziniao"
+    return True
+
+
 def marketplace_open(ctx):
-    """The marketplace seller centre, signed in (the session lives in the Ziniao store)."""
+    """The marketplace seller centre, signed in: by the session saved in the Ziniao
+    store, or by pressing the sign-in button on the page Ziniao has filled."""
     d = ctx.d
     real_window(d)
     ctx.go("/orders", settle=12)
     url = d.current_url or ""
-    if "login" in url or "entradaunica" in url:
-        raise Blocked("Marketplace 被带到了登录页：%s" % url[:100])
+    if _is_sign_in_page(url):
+        if not marketplace_sign_in(ctx):
+            raise Blocked("Marketplace 被带到了登录页，紫鸟没有填入账号密码或登录没有成功（请手动进店登录一次）：%s"
+                          % url[:100])
+    else:
+        ctx.flags["marketplace_login"] = "session"
     body = d.execute_script("return document.body.innerText || ''") or ""
     if "dispositivo móvil" in body:
         raise bk.PageError("Marketplace 以为是手机（窗口不对）")
