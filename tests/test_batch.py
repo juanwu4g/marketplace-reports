@@ -821,3 +821,167 @@ def test_batch_main_exits_2_when_no_store_got_anywhere(
     out = capsys.readouterr().out
     assert "没有一家下载成功" in out and "[STORE_OPEN_FAILED]" in out
     assert out.rstrip().splitlines()[-1].startswith("[BATCH_SUMMARY_JSON] ")
+
+
+# ------------------------------------------------------------------ 2026-10-31：同一张报表点了 12 次
+
+def test_item_whose_click_starts_nothing_is_not_clicked_again_this_call(
+        monkeypatch, clock, tmp_path, capsys):
+    """点了下载、一个下载都没开始的，本趟不再点；还在生成的照旧每轮探测。"""
+    calls = script(monkeypatch, {"after_collection": ["ready"],
+                                 "release": ["waiting"]},
+                   fetched={"after_collection": []})
+    d = Driver()
+    a, b = mp("after_collection"), mp("release")
+    result = new_result()
+    left = run_downloads.collect_pending(d, [a, b], str(tmp_path), result,
+                                         budget=40, poll=20)
+    out = capsys.readouterr().out
+    assert calls["after_collection"] == 1, "以前每一轮都再点一次"
+    assert calls["release"] == 3, "还在生成的照旧轮询到预算用完"
+    assert clock.sleeps == [20, 20]
+    assert left == [a, b], "不再点，但仍然欠着"
+    assert "本趟不再重试，下一趟再试" in out
+    assert a["last_state"] == "ready" and a["probes"] == 1
+    assert a["evidence"]["signal"] == "download-not-landed"
+    assert a["evidence"]["screenshot"].startswith("_diag/"), "停住时就拍现场"
+    assert dd.record_from_entry(a)["cause"] == "DOWNLOAD_NOT_LANDED"
+    assert not any(k.startswith("_") for k in a)
+    assert json.dumps(a)
+
+
+def test_download_that_started_but_did_not_finish_is_still_retried(
+        monkeypatch, clock, tmp_path, capsys):
+    """目录里有 .crdownload 的是"开始了没写完"，不是"点了没反应"：照旧再点。"""
+    calls = script(monkeypatch, {"release": ["ready"]}, fetched={"release": []})
+    real_fetch = mercadopago.fetch
+
+    def fetch(d, p, out_dir):
+        with open(os.path.join(out_dir, "release.csv.crdownload"), "w") as fh:
+            fh.write("half")
+        return real_fetch(d, p, out_dir)
+    monkeypatch.setattr(mercadopago, "fetch", fetch)
+    e = mp("release")
+    left = run_downloads.collect_pending(Driver(), [e], str(tmp_path),
+                                         new_result(), budget=40, poll=20)
+    out = capsys.readouterr().out
+    assert left == [e] and calls["release"] == 2, "第一轮开始了没写完：第二轮再点"
+    first, second = out.split("收取轮次 2")
+    assert "有没写完的 release.csv.crdownload" in first and "本趟不再重试" not in first
+    # 第二次点什么都没开始（那个半截文件是上一轮的）：到此为止，不再点第三次
+    assert "本趟不再重试" in second and clock.sleeps == [20]
+
+
+def test_single_scan_parks_the_same_way(monkeypatch, clock, tmp_path):
+    """阶段三（budget=0）本来就只扫一趟：行为不变，返回值照旧。"""
+    calls = script(monkeypatch, {"after_collection": ["ready"]},
+                   fetched={"after_collection": []})
+    e = mp("after_collection")
+    left = run_downloads.collect_pending(Driver(), [e], str(tmp_path),
+                                         new_result(), budget=0)
+    assert left == [e] and calls["after_collection"] == 1 and clock.sleeps == []
+
+
+def _three_folders(tmp_path, store="A"):
+    names = ["20261027_100000_m202610", "20261028_100000_m202610",
+             "20261031_100000_m202610"]
+    folders = [str(tmp_path / store / n) for n in names]
+    for f in folders:
+        os.makedirs(f)
+    return folders
+
+
+def test_same_report_owed_by_three_folders_is_collected_once_into_the_newest(
+        monkeypatch, clock, registry, tmp_path, capsys):
+    old, mid, new = _three_folders(tmp_path)
+    pending_store.add([
+        dict(mp("after_collection", "17/sep/2026 a 27/oct/2026"), store="A", out_dir=old),
+        dict(mp("after_collection", "17/sep/2026 a 28/oct/2026"), store="A", out_dir=mid),
+        dict(mp("after_collection", "17/sep/2026 a 30/oct/2026"), store="A", out_dir=new)])
+    calls = script(monkeypatch, {"after_collection": ["ready"]},
+                   fetched={"after_collection": ["poscobro.csv"]})
+    c = Client()
+    r = dict(row("A"), out_dir=new)
+    run_batch.collect_pass(c, ["A"], late_args(tmp_path), [r])
+    out = capsys.readouterr().out
+    assert c.opened == ["A"] and calls["after_collection"] == 1, "以前点 3 次"
+    assert os.path.isfile(os.path.join(new, "poscobro.csv"))
+    assert not os.path.exists(os.path.join(old, "poscobro.csv"))
+    assert pending_store.load() == [], "落盘了：三条欠账一起销账"
+    assert "被 3 趟目录欠着" in out and "只向最新的 20261031_100000_m202610 收一次" in out
+    assert "已取回 1 张，仍欠 0 张，撤销重复的旧欠账 2 条" in out
+    assert r["late_collected"] == 1 and r["_late"]["by_dir"][new]["mp"] == ["poscobro.csv"]
+    assert mid not in r["_late"]["by_dir"] and old not in r["_late"]["by_dir"]
+
+
+def test_duplicates_collapse_to_one_entry_when_the_report_does_not_land(
+        monkeypatch, clock, registry, tmp_path, capsys):
+    old, mid, new = _three_folders(tmp_path)
+    pending_store.add([
+        dict(mp("after_collection", "17/sep/2026 a 27/oct/2026"), store="A", out_dir=old),
+        dict(mp("after_collection", "17/sep/2026 a 28/oct/2026"), store="A", out_dir=mid),
+        dict(mp("after_collection", "17/sep/2026 a 30/oct/2026"), store="A", out_dir=new)])
+    calls = script(monkeypatch, {"after_collection": ["ready"]},
+                   fetched={"after_collection": []})
+    r = dict(row("A"), out_dir=new)
+    run_batch.collect_pass(Client(), ["A"], late_args(tmp_path), [r])
+    out = capsys.readouterr().out
+    assert calls["after_collection"] == 1
+    (e,) = pending_store.load()
+    assert e["out_dir"] == new and e["range"] == "17/sep/2026 a 30/oct/2026"
+    assert e["cause"] == "DOWNLOAD_NOT_LANDED"
+    assert "撤销重复的旧欠账 2 条" in out and "已取回 0 张，仍欠 1 张" in out
+    assert len(r["pending"]) == 1 and "[DOWNLOAD_NOT_LANDED]" in r["pending"][0]
+
+
+def test_duplicates_are_dropped_even_when_the_store_will_not_open(
+        monkeypatch, clock, registry, tmp_path):
+    old, mid, new = _three_folders(tmp_path)
+    pending_store.add([dict(mp("release"), store="A", out_dir=f)
+                       for f in (old, mid, new)])
+    err = ziniao_client.ZiniaoClient._error(
+        "startBrowser failed: {...}", "startBrowser", '{"statusCode": -1}')
+    r = dict(row("A"), out_dir=new)
+    run_batch.collect_pass(Client(fail=err), ["A"], late_args(tmp_path), [r])
+    (e,) = pending_store.load()
+    assert e["out_dir"] == new and e["cause"] == "STORE_OPEN_FAILED"
+
+
+def test_different_reports_in_different_folders_are_all_collected(
+        monkeypatch, clock, registry, tmp_path):
+    """只合并同一张报表；不同报表、不同会计月的各自照收。"""
+    old, mid, new = _three_folders(tmp_path)
+    other = str(tmp_path / "A" / "20261030_100000_m202609")      # 另一个会计月
+    os.makedirs(other)
+    pending_store.add([dict(mp("release"), store="A", out_dir=old),
+                       dict(mp("collection"), store="A", out_dir=new),
+                       dict(mp("release"), store="A", out_dir=other)])
+    calls = script(monkeypatch, {"release": ["ready"], "collection": ["ready"]},
+                   fetched={"release": ["r.csv"], "collection": ["c.csv"]})
+    r = dict(row("A"), out_dir=new)
+    run_batch.collect_pass(Client(), ["A"], late_args(tmp_path), [r])
+    assert calls == {"release": 2, "collection": 1}
+    assert pending_store.load() == []
+    assert os.path.isfile(os.path.join(old, "r.csv"))
+    assert os.path.isfile(os.path.join(other, "r.csv"))
+    assert os.path.isfile(os.path.join(new, "c.csv"))
+
+
+def test_late_pass_gives_the_store_one_budget_across_folders(
+        monkeypatch, clock, registry, tmp_path, capsys):
+    """以前每个目录各跑满 --late-timeout；现在整家店一份，最新目录先收。"""
+    monkeypatch.setattr(run_batch.time, "time", clock.time)
+    old, mid, new = _three_folders(tmp_path)
+    pending_store.add([dict(mp("release"), store="A", out_dir=old),
+                       dict(mp("collection"), store="A", out_dir=new)])
+    calls = script(monkeypatch, {"release": ["waiting"], "collection": ["waiting"]})
+    args = late_args(tmp_path)
+    args.late_timeout, args.collect_poll = 30, 20
+    r = dict(row("A"), out_dir=new)
+    run_batch.collect_pass(Client(), ["A"], args, [r])
+    assert sum(clock.sleeps) == 30, "两个目录加起来只等 30 秒（以前是 60）"
+    assert calls["collection"] == 3, "最新目录先收，用掉了预算"
+    assert calls["release"] == 1, "旧目录只剩一趟扫描"
+    assert len(pending_store.load()) == 2
+    out = capsys.readouterr().out
+    assert out.index("mercadopago/collection") < out.index("mercadopago/release")

@@ -22,7 +22,9 @@ remove-old  deletes the old files listed in a manifest, each only if both the
             layout works (a report run, the window).
 undo        removes paths.data_root from config.json: the machine is back on the
             old layout (as long as remove-old has not been run). The new tree is
-            left in place.
+            left in place — so are the copies sorted inside the window's report
+            folder (see below): their flat originals are still at the top of
+            that folder until remove-old, which is where the old layout looks.
 
 Every command refuses to run while a monthly run is active. Run it between
 monthly runs with the scheduled task paused.
@@ -31,12 +33,31 @@ What goes where (old -> new):
   downloads/<store>/<run>/              raw/<PF>/<CC>/<store>/<YYYY-MM or 其他>/<run>/
   downloads/data/reports/financial/*    reports/monthly/<YYYY-MM>/<PF>-<CC>/  (store and
                                         country workbooks, metrics), reports/monthly/<YYYY-MM>/
-                                        (alert files), reports/_旧文件/ (anything else)
+                                        (alert files, 本月总览), reports/_旧文件/ (anything else)
   downloads/data/processed/, mx_sales.duckdb, reports/<store>_<stamp>.xlsx
                                         work/mx_sales/…
   downloads/data/results/               results/
   downloads/data/<other>                work/_旧文件/<other>
   logs/                                 logs/
+
+The window's 「报表输出到」 (gui_settings.json out_dir), when it names a folder
+other than the old default (e.g. S:\\Finance\\电商数据 on a shared drive): in the
+old layout that folder IS the flat report folder, in the new one it is the
+reports root (core/layout.reports_root), so its files are sorted IN PLACE, under
+that same folder, never under data_root/reports:
+  <out_dir>/<store>_<YYYY-MM>*.xlsx|json, <CC>_<PF>_全店汇总_*, 全店_*_指标.json
+                                        <out_dir>/monthly/<YYYY-MM>/<PF>-<CC>/
+  <out_dir>/！报表异常_*_<YYYYMM>.txt, ！需要处理_<YYYYMM>.txt, 本月总览_<YYYY-MM>.xlsx
+                                        <out_dir>/monthly/<YYYY-MM>/
+  <out_dir>/期间报表/<kind>/<period>/<market>/*
+                                        <out_dir>/<kind>/<period>/<market>/*  (quarterly, annual, custom)
+  <out_dir>/<anything else>             <out_dir>/_旧文件/
+Files already under <out_dir>/monthly, quarterly, annual, custom or _旧文件 are
+left alone, so the sort can run again. These moves are copies like all the
+others (verified, listed in the manifest, originals deleted by remove-old), and
+results/**.json "workbook" paths into that folder follow them. A window setting
+inside downloads/ or logs/ is handled by the ordinary walk instead.
+
 A store's platform and country come from config.json; failing that from the run
 folder's run_meta.json. A folder that cannot be placed is listed and not copied.
 """
@@ -60,8 +81,13 @@ NOT_STORES = {"data", "mx_sales", "tests", "__pycache__", ".pytest_cache"}
 REPORT_RE = re.compile(r"^(?P<store>.+)_(?P<month>\d{4}-\d{2})(?P<rest>(_账单基准)?(_指标)?)\.(xlsx|json)$")
 COMBINED_RE = re.compile(r"^(?P<cc>[A-Z]{2})_(?P<pf>[A-Z]{2})_全店汇总_(?P<month>\d{4}-\d{2})(_账单基准)?\.xlsx$")
 ALL_METRICS_RE = re.compile(r"^全店_(?P<month>\d{4}-\d{2})_指标\.json$")
-ALERT_RE = re.compile(r"^！报表异常_(?:.*_)?(?P<ym>\d{6})\.txt$")
+ALERT_RE = re.compile(r"^！(?:报表异常_(?:.*_)?|需要处理_)(?P<ym>\d{6})\.txt$")
+OVERVIEW_RE = re.compile(r"^本月总览_(?P<month>\d{4}-\d{2})(?:\(新\))?\.xlsx$")
 MX_SALES_BOOK_RE = re.compile(r"^.+_\d{8}_\d{6}.*\.xlsx$")
+OLD_FILES = "_旧文件"
+LEGACY_PERIOD_FOLDER = "期间报表"            # layout.period_dir, legacy branch
+PERIOD_KINDS = ("quarterly", "annual", "custom")
+NEW_REPORT_DIRS = ("monthly",) + PERIOD_KINDS + (OLD_FILES,)   # under a reports root: left alone
 
 
 class Refused(Exception):
@@ -76,6 +102,30 @@ def legacy_downloads():
 
 def legacy_logs():
     return os.path.join(paths.ROOT, "logs")
+
+
+def old_default_reports():
+    """The old layout's default flat report folder."""
+    return os.path.join(paths.ROOT, "downloads", "data", "reports", "financial")
+
+
+def _under(path, top):
+    """Is `path` inside `top` (case and separators as the OS sees them)?"""
+    p, t = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(top))
+    return p == t or p.startswith(t.rstrip(os.sep) + os.sep)
+
+
+def window_out_dir():
+    """The window's 「报表输出到」 (absolute) when it names a folder other than
+    the old default report folder; None when unset or the default."""
+    from core import entrance
+    out = read_json(entrance.SETTINGS).get("out_dir")
+    if not out or not str(out).strip():
+        return None
+    out = os.path.abspath(str(out).strip())
+    if os.path.normcase(out) == os.path.normcase(os.path.abspath(old_default_reports())):
+        return None
+    return out
 
 
 def sha256(path):
@@ -123,6 +173,9 @@ def store_market(store, run_dirs):
         raise Refused(str(e))
     if store in cat:
         return cat[store][0], cat[store][1], ""
+    current = store_config.current_name(store)          # a renamed store's old folder (catalog "formerly")
+    if current != store and current in cat:
+        return cat[current][0], cat[current][1], "旧名，现在叫 %s" % current
     for d in run_dirs:
         meta = read_json(os.path.join(d, "run_meta.json"))
         pf, cc = meta.get("platform"), meta.get("country")
@@ -197,7 +250,10 @@ def build_plan(data_root):
     if os.path.isdir(lg):
         items += [("logs", f, os.path.join(data_root, "logs", os.path.relpath(f, lg))) for f in files_under(lg)
                   if os.path.basename(f) != "monthly.lock"]
-    return {"items": items, "unplaced": unplaced, "notes": notes, "folder_map": folder_map}
+    out = window_out_dir()
+    if out:
+        _plan_out_dir(out, store_markets, items, notes)
+    return {"items": items, "unplaced": unplaced, "notes": notes, "folder_map": folder_map, "out_dir": out}
 
 
 def _plan_reports(reports, data_root, store_markets, items, unplaced):
@@ -206,14 +262,7 @@ def _plan_reports(reports, data_root, store_markets, items, unplaced):
     for name in sorted(os.listdir(reports)):
         src = os.path.join(reports, name)
         if name == "financial" and os.path.isdir(src):
-            for f in sorted(os.listdir(src)):
-                p = os.path.join(src, f)
-                if os.path.isdir(p):
-                    items += [("old", x, os.path.join(data_root, "reports", "_旧文件", f, os.path.relpath(x, p)))
-                              for x in files_under(p)]
-                    continue
-                dst = report_target(f, data_root, store_markets)
-                items.append(("report", p, dst or os.path.join(data_root, "reports", "_旧文件", f)))
+            _plan_flat_reports(src, os.path.join(data_root, "reports"), store_markets, items)
         elif os.path.isfile(src) and MX_SALES_BOOK_RE.match(name):
             items.append(("work", src, os.path.join(data_root, "work", "mx_sales", "reports", name)))
         elif os.path.isdir(src):
@@ -223,13 +272,69 @@ def _plan_reports(reports, data_root, store_markets, items, unplaced):
             items.append(("old", src, os.path.join(data_root, "work", "_旧文件", "reports", name)))
 
 
-def report_target(fname, data_root, store_markets):
-    """Where one file of the old flat report folder goes, or None (→ _旧文件)."""
-    monthly = os.path.join(data_root, "reports", "monthly")
+def _plan_flat_reports(flat, reports_root, store_markets, items, in_place=False):
+    """The files of one old flat report folder `flat` sorted under
+    `reports_root` (data_root/reports for the old default folder; the folder
+    itself for the window's own folder, in_place). Sub-folders go to _旧文件
+    whole, except — in place — the new layout's own folders (left alone) and
+    期间报表/ (layout.period_dir's legacy branch, sorted into quarterly/ annual/
+    custom/)."""
+    for f in sorted(os.listdir(flat)):
+        p = os.path.join(flat, f)
+        if os.path.isdir(p):
+            if in_place and f in NEW_REPORT_DIRS:
+                continue
+            if in_place and f == LEGACY_PERIOD_FOLDER:
+                _plan_period_folder(p, reports_root, items)
+                continue
+            items += [("old", x, os.path.join(reports_root, OLD_FILES, f, os.path.relpath(x, p)))
+                      for x in files_under(p)]
+            continue
+        dst = report_target(f, reports_root, store_markets)
+        items.append(("report", p, dst or os.path.join(reports_root, OLD_FILES, f)))
+
+
+def _plan_period_folder(folder, reports_root, items):
+    """期间报表/<kind>/<period>/<market>/… -> <reports_root>/<kind>/<period>/<market>/…;
+    anything else in there -> _旧文件/期间报表/…"""
+    for f in files_under(folder):
+        rel = os.path.relpath(f, folder)
+        if rel.split(os.sep)[0] in PERIOD_KINDS:
+            items.append(("report", f, os.path.join(reports_root, rel)))
+        else:
+            items.append(("old", f, os.path.join(reports_root, OLD_FILES, LEGACY_PERIOD_FOLDER, rel)))
+
+
+def _plan_out_dir(out, store_markets, items, notes):
+    """The window's 「报表输出到」 when it is not the old default: the old
+    layout's flat report folder AND the new layout's reports root, so its files
+    are sorted in place (module docstring). Inside downloads/ or logs/ the
+    ordinary walk already copies it (twice would conflict)."""
+    if _under(out, legacy_downloads()) or _under(out, legacy_logs()):
+        notes.append("窗口里「报表输出到」%s 在代码目录的旧数据里，按普通旧文件搬走，没有就地整理" % out)
+        return
+    if not os.path.isdir(out):
+        raise Refused("窗口里「报表输出到」是 %s，现在打不开（共享盘没连上？）。连上它，或先在窗口里改掉这个设置，再迁移。"
+                      % out)
+    before = len(items)
+    _plan_flat_reports(out, out, store_markets, items, in_place=True)
+    mine = items[before:]
+    old = sum(1 for _k, _s, d in mine if _under(d, os.path.join(out, OLD_FILES)))
+    notes.append("窗口里「报表输出到」%s 不是旧的默认目录：那里的 %d 个旧文件就地整理到它自己的 monthly\\ quarterly\\ "
+                 "annual\\ custom\\ 子目录里（认不出的 %d 个放进 _旧文件\\）；已经在这些子目录里的不动" % (out, len(mine), old))
+
+
+def report_target(fname, reports_root, store_markets):
+    """Where one file of an old flat report folder goes under `reports_root`
+    (data_root/reports, or the window's folder itself), or None (→ _旧文件)."""
+    monthly = os.path.join(reports_root, "monthly")
     m = ALERT_RE.match(fname)
     if m:
         ym = m.group("ym")
         return os.path.join(monthly, "%s-%s" % (ym[:4], ym[4:]), fname)
+    m = OVERVIEW_RE.match(fname)
+    if m:
+        return os.path.join(monthly, m.group("month"), fname)
     m = COMBINED_RE.match(fname)
     if m:
         return os.path.join(monthly, m.group("month"), "%s-%s" % (m.group("pf"), m.group("cc")), fname)
@@ -345,8 +450,10 @@ def _pending_rewritten(src, folder_map, say):
     return json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-def switch_config(data_root, say=print):
-    """Write paths.data_root into config.json (backup first)."""
+def switch_config(data_root, say=print, sorted_in_place=None):
+    """Write paths.data_root into config.json (backup first). sorted_in_place:
+    how many files of the window's own report folder copy() sorted in place
+    (None when unknown)."""
     cfg_path = store_config.CONFIG_PATH
     with io.open(cfg_path, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -358,19 +465,25 @@ def switch_config(data_root, say=print):
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
     os.replace(tmp, cfg_path)
     say("config.json 已切换到新布局（paths.data_root = %s），原文件备份为 %s" % (cfg["paths"]["data_root"], backup))
-    _reset_default_out_dir(say)
+    _reset_default_out_dir(say, sorted_in_place)
 
 
-def _reset_default_out_dir(say):
+def _reset_default_out_dir(say, sorted_in_place=None):
     """A window setting that names the OLD default report folder would now mean
     "reports root" — drop it so the new default applies. Any other folder is
-    kept (it is where the user wants reports) and named in the output."""
-    old_default = os.path.join(paths.ROOT, "downloads", "data", "reports", "financial")
-    if _drop_out_dir_if(old_default, "旧的默认目录", say) is False:
-        from core import entrance
-        out = read_json(entrance.SETTINGS).get("out_dir")
-        say("注意：窗口里「报表输出到」是 %s —— 新布局里它是报表的根目录，monthly\\ quarterly\\ annual\\ "
-            "会建在它下面；那里原有的旧报表没有搬。" % out)
+    kept (it is where the user wants reports); its old files were sorted in
+    place by the plan (_plan_out_dir), which the notice says."""
+    if _drop_out_dir_if(old_default_reports(), "旧的默认目录", say) is False:
+        out = window_out_dir()
+        head = ("注意：窗口里「报表输出到」是 %s —— 新布局里它是报表的根目录，monthly\\ quarterly\\ annual\\ custom\\ "
+                "建在它下面。" % out)
+        if sorted_in_place is None:
+            say(head + "那里原有的旧报表请用 plan / copy 就地整理。")
+        elif sorted_in_place == 0:
+            say(head + "那里没有要整理的旧文件。")
+        else:
+            say(head + "那里原有的 %d 个旧文件已经按新布局整理（复制）到这些子目录里；旧文件先原样留着，"
+                "remove-old 时和其他旧文件一起删。" % sorted_in_place)
 
 
 def _drop_out_dir_if(default, what, say):
@@ -418,11 +531,16 @@ def remove_old(manifest_path, say=print):
     if not doc.get("items"):
         raise Refused("清单 %s 读不出来或是空的。" % manifest_path)
     removed, kept = 0, []
-    roots = [os.path.normcase(os.path.abspath(r)) for r in (legacy_downloads(), legacy_logs())]
+    out = doc.get("out_dir")                 # the window's report folder, sorted in place
+    roots = [legacy_downloads(), legacy_logs()] + ([out] if out else [])
     for it in doc["items"]:
         src, dst = it["src"], it["dst"]
-        if not any(os.path.normcase(os.path.abspath(src)).startswith(r + os.sep) for r in roots):
+        if not any(_under(src, r) and os.path.normcase(os.path.abspath(src)) != os.path.normcase(os.path.abspath(r))
+                   for r in roots):
             kept.append((src, "不在旧目录里，不删"))
+            continue
+        if os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst)):
+            kept.append((src, "新旧位置相同"))
             continue
         if not os.path.exists(src):
             continue
@@ -436,6 +554,11 @@ def remove_old(manifest_path, say=print):
         removed += 1
     for top in (legacy_downloads(), legacy_logs()):
         _remove_empty_dirs(top)
+    if out and os.path.isdir(out):           # the folder itself and the new tree stay
+        for name in os.listdir(out):
+            p = os.path.join(out, name)
+            if os.path.isdir(p) and name not in NEW_REPORT_DIRS:
+                _remove_empty_dirs(p)
     say("删掉了 %d 个旧文件。" % removed)
     for src, why in kept[:50]:
         say("  保留 %s：%s" % (src, why))
@@ -504,14 +627,11 @@ def main(argv=None):
             raise Refused("config.json 已经指向另一个数据目录 %s。" % current)
         plan = build_plan(os.path.abspath(a.data_root))
         print("从 %s 搬到 %s：" % (paths.ROOT, os.path.abspath(a.data_root)))
-        size = summarize(plan)
+        summarize(plan)
         if a.cmd == "plan":
             print("\n这是预览，什么都没有写。确认无误后把 plan 换成 copy 再运行。")
             return 0
-        free = shutil.disk_usage(os.path.splitdrive(os.path.abspath(a.data_root))[0] + os.sep
-                                 if os.name == "nt" else _existing_parent(a.data_root)).free
-        if free < size * 1.1:
-            raise Refused("目标磁盘剩余 %.1f MB，不够（需要约 %.1f MB）。" % (free / 1e6, size * 1.1 / 1e6))
+        check_space(plan, os.path.abspath(a.data_root))
         items, conflicts = copy(plan, os.path.abspath(a.data_root))
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         mdir = os.path.join(os.path.abspath(a.data_root), "logs", "migration")
@@ -519,7 +639,8 @@ def main(argv=None):
         manifest = os.path.join(mdir, "manifest_%s.json" % stamp)
         with io.open(manifest, "w", encoding="utf-8") as fh:
             json.dump({"created": stamp, "root": paths.ROOT, "data_root": os.path.abspath(a.data_root),
-                       "items": items, "conflicts": conflicts, "unplaced": plan["unplaced"]},
+                       "out_dir": plan["out_dir"], "items": items, "conflicts": conflicts,
+                       "unplaced": plan["unplaced"]},
                       fh, ensure_ascii=False, indent=1)
         print("\n复制并校验了 %d 个文件。清单：%s" % (len(items), manifest))
         if conflicts:
@@ -527,7 +648,8 @@ def main(argv=None):
             for s, d in conflicts[:20]:
                 print("  %s → %s" % (s, d))
             return 1
-        switch_config(os.path.abspath(a.data_root))
+        in_place = sum(1 for it in items if plan["out_dir"] and _under(it["src"], plan["out_dir"]))
+        switch_config(os.path.abspath(a.data_root), sorted_in_place=in_place)
         print("\n旧目录一个文件都没动。新布局用过一次、确认没问题后，再运行：\n"
               "  python -m tools.migrate_layout remove-old --manifest \"%s\"" % manifest)
         return 0
@@ -536,10 +658,27 @@ def main(argv=None):
         return 2
 
 
+def check_space(plan, data_root):
+    """Enough free space where the copies go: data_root's disk, and the window's
+    report folder's own disk (a shared drive) for the files sorted in place."""
+    out = plan.get("out_dir")
+    need = {}
+    for _kind, src, dst in plan["items"]:
+        top = out if out and _under(dst, out) else data_root
+        need[top] = need.get(top, 0) + os.path.getsize(src)
+    for top, size in need.items():
+        free = shutil.disk_usage(_existing_parent(top)).free
+        if free < size * 1.1:
+            raise Refused("%s 所在的磁盘剩余 %.1f MB，不够（需要约 %.1f MB）。" % (top, free / 1e6, size * 1.1 / 1e6))
+
+
 def _existing_parent(p):
     p = os.path.abspath(p)
     while not os.path.exists(p):
-        p = os.path.dirname(p)
+        up = os.path.dirname(p)
+        if up == p:                          # the drive itself is missing
+            raise Refused("目录 %s 所在的磁盘不存在。" % p)
+        p = up
     return p
 
 

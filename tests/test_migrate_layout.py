@@ -164,3 +164,136 @@ def test_results_files_follow_the_moved_folders_and_workbooks(machine):
     manifest = sorted(os.listdir(str(data / "logs" / "migration")))[-1]
     removed, kept = ML.remove_old(os.path.join(str(data / "logs" / "migration"), manifest))
     assert not (dl / "data" / "results").exists() and not [k for k, why in kept if "results" in k]
+
+
+# ------------------------------------------------------------ the window's own report folder
+
+@pytest.fixture
+def shared(machine):
+    """「报表输出到」 names a folder on a shared drive, not the old default: the
+    old layout's flat report folder, the new layout's reports root. Its files
+    are sorted in place, under that same folder."""
+    root = machine / "code"
+    out = machine / "S" / "Finance" / "电商数据"
+    write(str(out / "BOCINA_TA02_2026-09.xlsx"), "store")
+    write(str(out / "BOCINA_TA02_2026-09_指标.json"), "{}")
+    write(str(out / "MX_ML_全店汇总_2026-09.xlsx"), "combined")
+    write(str(out / "！需要处理_202609.txt"), "alert")
+    write(str(out / "！报表异常_CL_FA_202608.txt"), "old alert")
+    write(str(out / "本月总览_2026-09.xlsx"), "overview")
+    write(str(out / "期间报表" / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx"), "q3")
+    write(str(out / "stray.txt"), "stray")
+    write(str(out / "_versions" / "v1" / "BOCINA_TA02_2026-09.xlsx"), "version")
+    write(str(root / "gui_settings.json"), json.dumps({"out_dir": str(out), "region": "MX"}))
+    return out
+
+
+def _out_items(plan, out):
+    return dict((src, dst) for _k, src, dst in plan["items"] if ML._under(src, str(out)))
+
+
+def test_plan_sorts_the_window_folder_in_place(shared, machine, capsys):
+    out, data = shared, machine / "data"
+    plan = ML.build_plan(str(data))
+    got = _out_items(plan, out)
+    m = out / "monthly" / "2026-09"
+    want = {
+        out / "BOCINA_TA02_2026-09.xlsx": m / "ML-MX" / "BOCINA_TA02_2026-09.xlsx",
+        out / "BOCINA_TA02_2026-09_指标.json": m / "ML-MX" / "BOCINA_TA02_2026-09_指标.json",
+        out / "MX_ML_全店汇总_2026-09.xlsx": m / "ML-MX" / "MX_ML_全店汇总_2026-09.xlsx",
+        out / "！需要处理_202609.txt": m / "！需要处理_202609.txt",
+        out / "！报表异常_CL_FA_202608.txt": out / "monthly" / "2026-08" / "！报表异常_CL_FA_202608.txt",
+        out / "本月总览_2026-09.xlsx": m / "本月总览_2026-09.xlsx",
+        out / "期间报表" / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx":
+            out / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx",
+        out / "stray.txt": out / "_旧文件" / "stray.txt",
+        out / "_versions" / "v1" / "BOCINA_TA02_2026-09.xlsx":
+            out / "_旧文件" / "_versions" / "v1" / "BOCINA_TA02_2026-09.xlsx",
+    }
+    assert got == dict((str(k), str(v)) for k, v in want.items())
+    # never under data_root/reports; the old default folder's files still go there
+    assert not [d for d in got.values() if ML._under(d, str(data))]
+    assert str(data / "reports" / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx") in \
+        [d for _k, _s, d in plan["items"]]
+    assert ML.main(["plan", "--data-root", str(data)]) == 0
+    assert not (out / "monthly").exists() and not data.exists()
+    text = capsys.readouterr().out
+    assert "就地整理" in text and "9 个旧文件" in text and "2 个放进 _旧文件" in text
+
+
+def test_copy_sorts_the_window_folder_in_place(shared, machine, capsys):
+    root, out, data = machine / "code", shared, machine / "data"
+    dl = root / "downloads"
+    rel = os.path.join("ML", "MX", "BOCINA_TA02", "2026-09", RUN + "__20261022_010000.bill.json")
+    old_wb = str(out / "BOCINA_TA02_2026-09.xlsx")
+    write(str(dl / "data" / "results" / rel),
+          json.dumps({"schema": 1, "store": "BOCINA_TA02", "month": "2026-09", "run": RUN,
+                      "source_folders": [], "workbook": old_wb, "pl": []}))
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    text = capsys.readouterr().out
+    assert "那里原有的 9 个旧文件已经按新布局整理" in text
+    # where core/layout will look for them in the new layout, under the same root
+    assert layout.mode() == layout.V2
+    assert (os.path.join(layout.monthly_dir("2026-09", "ML-MX", override=str(out)), "BOCINA_TA02_2026-09.xlsx")
+            == str(out / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx"))
+    for p in (out / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx",
+              out / "monthly" / "2026-09" / "ML-MX" / "MX_ML_全店汇总_2026-09.xlsx",
+              out / "monthly" / "2026-09" / "！需要处理_202609.txt",
+              out / "monthly" / "2026-09" / "本月总览_2026-09.xlsx",
+              out / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx",
+              out / "_旧文件" / "stray.txt"):
+        assert p.is_file(), p
+    assert str(out / "quarterly" / "2026-Q3" / "ML-MX") == layout.period_dir("quarterly", "2026-Q3", "ML-MX",
+                                                                               override=str(out))
+    # originals untouched; the setting is kept (it is where the user wants reports)
+    assert (out / "BOCINA_TA02_2026-09.xlsx").read_text(encoding="utf-8") == "store"
+    assert (out / "期间报表" / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx").is_file()
+    assert json.load(open(str(root / "gui_settings.json"), encoding="utf-8"))["out_dir"] == str(out)
+    # the results file follows the workbook
+    new = json.load(open(str(data / "results" / rel), encoding="utf-8"))
+    assert new["workbook"] == str(out / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx")
+    # the manifest knows the folder, so remove-old deletes the flat originals (and only them)
+    mdir = str(data / "logs" / "migration")
+    manifest = os.path.join(mdir, sorted(os.listdir(mdir))[-1])
+    doc = json.load(open(manifest, encoding="utf-8"))
+    assert doc["out_dir"] == str(out)
+    assert any(ML._under(it["src"], str(out)) for it in doc["items"])
+    # a second copy skips the identical copies; the sorted files are not sorted again
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    assert len(_out_items(ML.build_plan(str(data)), out)) == 9
+    assert not (out / "monthly" / "monthly").exists() and not (out / "_旧文件" / "monthly").exists()
+    # undo leaves everything where it is (the old layout still finds the flat originals)
+    ML.undo()
+    assert layout.mode() == layout.LEGACY
+    assert (out / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx").is_file()
+    assert (out / "BOCINA_TA02_2026-09.xlsx").is_file()
+    assert json.load(open(str(root / "gui_settings.json"), encoding="utf-8"))["out_dir"] == str(out)
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    removed, kept = ML.remove_old(manifest)
+    assert not [k for k, _ in kept if ML._under(k, str(out))]
+    for gone in (out / "BOCINA_TA02_2026-09.xlsx", out / "stray.txt", out / "期间报表", out / "_versions",
+                 out / "本月总览_2026-09.xlsx"):
+        assert not gone.exists(), gone
+    assert sorted(os.listdir(str(out))) == ["_旧文件", "monthly", "quarterly"]
+    assert (out / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx").is_file()
+    # nothing left to sort: the next plan lists no file of the folder
+    assert _out_items(ML.build_plan(str(data)), out) == {}
+
+
+def test_window_folder_that_cannot_be_opened_refuses(shared, machine, capsys):
+    root, data = machine / "code", machine / "data"
+    write(str(root / "gui_settings.json"), json.dumps({"out_dir": str(machine / "S" / "gone"), "region": "MX"}))
+    assert ML.main(["plan", "--data-root", str(data)]) == 2
+    assert "打不开" in capsys.readouterr().out
+
+
+def test_window_folder_inside_old_downloads_is_moved_the_ordinary_way(machine, capsys):
+    root, data = machine / "code", machine / "data"
+    inside = root / "downloads" / "data" / "reports" / "mine"
+    write(str(inside / "BOCINA_TA02_2026-09.xlsx"))
+    write(str(root / "gui_settings.json"), json.dumps({"out_dir": str(inside), "region": "MX"}))
+    plan = ML.build_plan(str(data))
+    assert [d for _k, s, d in plan["items"] if ML._under(s, str(inside))] == \
+        [str(data / "work" / "_旧文件" / "reports" / "mine" / "BOCINA_TA02_2026-09.xlsx")]
+    assert ML.main(["plan", "--data-root", str(data)]) == 0
+    assert "没有就地整理" in capsys.readouterr().out

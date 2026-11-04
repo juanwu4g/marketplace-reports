@@ -163,6 +163,21 @@ def describe():
 #       "batches": {"ML-MX": [...], "ML-CL": [...], "FA-CL": [...]}
 #     }
 #
+# 店铺在紫鸟里**改了名**（例如 清货2_EE02 改成 QH_EE02）：白名单、catalog、batches 里
+# 一律写新名，并在 catalog 这一家的条目里用 "formerly" 写上旧名（可以写几个，
+# 也可以只写一个字符串）。硬盘上什么都不用搬：旧名下的月度结果和下载目录会
+# 自动算作这家店的，季度报表、本月总览只显示新名、只算一次。
+#
+#       "catalog": {
+#         "QH_EE02": {"platform": "ML", "country": "MX", "formerly": ["清货2_EE02"]},
+#         "DAB_CL Admin(Coco)": {"platform": "FA", "country": "CL",
+#                                "formerly": "DAB_CL (Coco) Admin"}
+#       }
+#
+# 规则：旧名不能同时还是一家现在的店（白名单或 catalog 里有它），也不能被两家店
+# 同时认领 —— 写错的那家店算配置有问题（config_problems 说出来），别的店照常。
+# "formerly" 只认 catalog 这种写法；旧写法（regions）没有地方写它。
+#
 # 旧写法照样认（生产机器上的 config.json 就是这么写的，一个字不用改）：
 #
 #     "batch":   [... 美客多墨西哥那一批 ...]          = batches["ML-MX"]
@@ -226,7 +241,59 @@ def _catalog_scan():
                 continue
             _place(out, bad, name, entry.get("platform"), entry.get("country"),
                    "stores.catalog")
+        _scan_formerly(cat, out, bad)
     return out, bad
+
+
+def _formerly_of(entry):
+    """The "formerly" field of a catalog entry as a list of names. Raises
+    ValueError when it is neither a string nor a list of strings."""
+    raw = entry.get("formerly")
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError("formerly")
+    out = []
+    for x in raw:
+        x = x.strip()
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def _scan_formerly(cat, out, bad):
+    """Check every valid catalog entry's "formerly" names. A problem is the
+    claiming store's (it goes to `bad` and out of `out`): a former name that is
+    still a current store (allowlist, catalog or regions), or one claimed by two
+    stores. Never a crash — the other stores run as usual."""
+    current = set(out) | set(bad) | set(allowed_stores())
+    claims = {}                                  # former name -> [claiming stores]
+    for name, entry in cat.items():
+        if name in bad or not isinstance(entry, dict):
+            continue
+        try:
+            olds = _formerly_of(entry)
+        except ValueError:
+            bad[name] = ('stores.catalog 里 %s 的 formerly 写法不对，应该写成 ["旧店名"]' % name)
+            continue
+        for old in olds:
+            if old == name:
+                bad[name] = "stores.catalog 里 %s 的 formerly 写了它自己" % name
+                break
+            if old in current:
+                bad[name] = ("stores.catalog 里 %s 的 formerly 写了 %s，但 %s 还是一家现在的店"
+                             "（白名单或 catalog 里有它）：旧名不能同时是现在的店名" % (name, old, old))
+                break
+            claims.setdefault(old, []).append(name)
+    for old, names in claims.items():
+        if len(names) > 1:
+            for name in names:
+                bad[name] = ("旧名 %s 同时写在 %s 的 formerly 里，一个旧名只能属于一家店"
+                             % (old, "、".join(names)))
+    for name in list(bad):
+        out.pop(name, None)
 
 
 def _place(out, bad, name, platform, country, where):
@@ -260,6 +327,38 @@ def config_problems():
 
 def problem_stores():
     return set(n for n, _ in config_problems())
+
+
+# ---------------------------------------------------------------- 改过名的店（formerly）
+
+def former_map():
+    """{旧名: 现在的店名}，只取 catalog 里写法正确的店（写错的店不认领任何旧名）。"""
+    entries, _bad = _catalog_scan()
+    cat = _stores().get("catalog")
+    out = {}
+    if not isinstance(cat, dict):
+        return out
+    for name in entries:
+        entry = cat.get(name)
+        if not isinstance(entry, dict):
+            continue
+        try:
+            for old in _formerly_of(entry):
+                out[old] = name
+        except ValueError:
+            continue
+    return out
+
+
+def former_names(store):
+    """这家店在紫鸟里以前叫过的名字（catalog 条目的 "formerly"），没有就是 []。
+    条目写错的店返回 []：它不认领任何旧名。"""
+    return [old for old, cur in former_map().items() if cur == store]
+
+
+def current_name(name):
+    """`name` 是某家店的旧名就返回那家店现在的名字，否则原样返回。"""
+    return former_map().get(name, name)
 
 
 def catalog_option(store, key, default=None):

@@ -27,6 +27,14 @@ monthly workbook is built (`core/results.write`, atomic). Path and names:
 `core/results.py` docstring. Country summaries ("全店汇总") have no results
 file: a period report adds up stores.
 
+A renamed store (config.json `stores.catalog` … `"formerly": ["old name"]`,
+docs/DATA_LAYOUT.md "Renamed stores") is read from its current folder and its
+former names' folders together by every reader of this module — `versions`,
+`final`, `months`, `first_month_at`, `stores` (the old name is never a store of
+its own) — and written under the current name only. `results.merged_former`
+says which former names' folders were read, for the log line
+`旧名 <old> 的结果并入 <store>`.
+
 | field | type | meaning |
 |---|---|---|
 | `schema` | 1 | |
@@ -86,8 +94,10 @@ Missing forms: a record counts when the report reads the form (run_meta
 "in_report", or `core/download_diag.affects_report` when absent) and its cause is
 not NO_DATA or NOT_AVAILABLE (nothing to download). A missing form listed in
 `core/grading.NON_BLOCKING_FORMS` makes `complete_warn`, not `gaps`: stock forms
-(every platform; ⑥ ⑦ ⑨ only) and MercadoPago forms for the ML bill basis (status
-evidence, SKU mapping and memo only). Without that list some stores could never
+(every platform; ⑥ ⑦ ⑨ only), MercadoPago forms for the ML bill basis (status
+evidence, SKU mapping and memo only) and, for the ML order basis, the
+Liberaciones file alone (cash proof of the bill-vs-orders cross-check; the
+settlement file stands in for it, so ② is unchanged). Without that list some stores could never
 have a final version (EWTTO_SM has no MercadoPago report permission). Formula
 errors after recalculation are gaps. `complete_warn` also comes from error-level
 checks listed in `NON_BLOCKING` (keyed by platform, basis, check); warn-level
@@ -143,7 +153,10 @@ stores and month of that step.
 * Period: `--quarter 2026-Q3`, `--year 2026`, `--from 2026-07 --to 2026-11`.
 * Scope: `--region` with the units of run_monthly (`MX`, `CL`, `PE`, `FA-CL`,
   `AZ-MX`, `ALL`) and optional `--stores`. One workbook per market (currencies
-  differ), every store of the market that has results in the period.
+  differ), every store of the market that has results in the period. A renamed
+  store counts once, under its current name, with the results of its former
+  names' folders (`--stores` accepts the old name too); the summary lines and
+  the run log say `旧名 <old> 的结果并入 <store>` for every former name read.
 * Basis: `--basis` (ML: `bill` default = official, or `order`); `main` elsewhere.
 * Input: `core/results.final()` per store-month only. A store-month without a
   final version is left out of every total and listed as 无完整版本 on ① (red

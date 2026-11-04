@@ -73,6 +73,7 @@ def stray_stores(stores, chosen, config_path=None):
     from core import store_config
     out = []
     for s in stores or []:
+        s = store_config.current_name(s)               # a renamed store asked for by its old name
         home = None
         for m in chosen:
             pf, cc = markets.split(m)
@@ -154,6 +155,8 @@ def main(argv=None, out=None):
                 continue
             for line in grid_lines(D):
                 say(line)
+            for line in D.merged_lines():
+                say("  " + line)
             for c in D.missing():
                 say("  ✗ %s %s：%s" % (c.store, c.month, c.reason()))
             for s in D.not_started_stores():

@@ -62,6 +62,13 @@ def test_missing_forms():
     # ... unless ② does not use it (NON_BLOCKING_FORMS)
     g = G.grade("FA", "main", True, [], [m("stock", "DOWNLOAD_NOT_LANDED", True)])
     assert g["level"] == R.COMPLETE_WARN and g["reasons"] == ["缺下载（不影响金额）：stock（文件没有落盘）"]
+    # ML order basis: Liberaciones is only the cash proof (settlement stands in) → complete_warn;
+    # settlement itself and the sales export stay blocking
+    assert level("ML", "order", True, [], [m("mercadopago/release", "STILL_GENERATING")]) == R.COMPLETE_WARN
+    assert level("ML", "order", True, [], [m("mercadopago/settlement", "STILL_GENERATING")]) == R.GAPS
+    assert level("ML", "order", True, [], [m("ventas", "DOWNLOAD_NOT_LANDED")]) == R.GAPS
+    # the bill basis never needed any MercadoPago file
+    assert level("ML", "bill", True, [], [m("mercadopago/release", "STILL_GENERATING")]) == R.COMPLETE_WARN
     # nothing to download: no data, or the platform does not offer it (yet)
     assert level("FA", "main", True, [], [m("order/x", "NO_DATA", True)]) == R.COMPLETE
     assert level("FA", "main", True, [], [m("billing1/2026-09-21_2026-10-20", "NOT_AVAILABLE", True)]) == R.COMPLETE

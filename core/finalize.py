@@ -376,6 +376,10 @@ def clean_store(unit, store, st, log, config_path=None):
         key = os.path.normcase(os.path.abspath(path))
         if key in used:
             continue
+        if not _inside(path, layout.store_dir(store, config_path)):
+            # 店铺改过名（config stores.catalog "formerly"）：旧名下的下载目录只读不删
+            log("保留 %s：旧店名下的下载目录，清理不动它" % path)
+            continue
         if name in used_names:
             log("保留 %s：最终版本用的就是这个下载目录（结果文件里记的是旧路径）" % path, keep=True)
             continue
