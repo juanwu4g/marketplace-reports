@@ -51,9 +51,16 @@ that same folder, never under data_root/reports:
                                         <out_dir>/monthly/<YYYY-MM>/
   <out_dir>/期间报表/<kind>/<period>/<market>/*
                                         <out_dir>/<kind>/<period>/<market>/*  (quarterly, annual, custom)
-  <out_dir>/<anything else>             <out_dir>/_旧文件/
-Files already under <out_dir>/monthly, quarterly, annual, custom or _旧文件 are
-left alone, so the sort can run again. These moves are copies like all the
+  <out_dir>/_versions/, 版本说明.txt      <out_dir>/_旧文件/   (ours: old versions)
+  <out_dir>/<anything else>             LEFT WHERE IT IS — the folder is shared with
+                                        people (the finance team's own month folders
+                                        and downloads live next to our reports; on
+                                        2026-11-04 1,536 of theirs vs 108 of ours)
+Excel's ~$… lock files are skipped everywhere. Files already under
+<out_dir>/monthly, quarterly, annual, custom or _旧文件 are left alone, so the
+sort can run again. A source file that cannot be read during copy (open in
+Excel, share hiccup) is reported at the end, the rest is copied, config.json is
+not switched; run copy again after closing it. These moves are copies like all the
 others (verified, listed in the manifest, originals deleted by remove-old), and
 results/**.json "workbook" paths into that folder follow them. A window setting
 inside downloads/ or logs/ is handled by the ordinary walk instead.
@@ -136,9 +143,14 @@ def sha256(path):
     return h.hexdigest()
 
 
+LOCK_PREFIX = "~$"          # Excel's lock file next to an open workbook: not a file, never copied
+
+
 def files_under(top):
     for dirpath, _dirs, files in os.walk(top):
         for f in files:
+            if f.startswith(LOCK_PREFIX):
+                continue
             yield os.path.join(dirpath, f)
 
 
@@ -272,37 +284,64 @@ def _plan_reports(reports, data_root, store_markets, items, unplaced):
             items.append(("old", src, os.path.join(data_root, "work", "_旧文件", "reports", name)))
 
 
+# What this program itself writes next to the reports in the old flat folder
+# (core/finalize): the per-store version folders and the final-version note.
+OURS_DIRS = ("_versions",)
+OURS_FILES = ("版本说明.txt",)
+
+
 def _plan_flat_reports(flat, reports_root, store_markets, items, in_place=False):
     """The files of one old flat report folder `flat` sorted under
     `reports_root` (data_root/reports for the old default folder; the folder
-    itself for the window's own folder, in_place). Sub-folders go to _旧文件
-    whole, except — in place — the new layout's own folders (left alone) and
-    期间报表/ (layout.period_dir's legacy branch, sorted into quarterly/ annual/
-    custom/)."""
+    itself for the window's own folder, in_place).
+
+    The old default folder is ours entirely: sub-folders and unknown files go
+    to _旧文件. The window's folder (in place) is shared with people — on the
+    production machine it is the finance team's drive, with their own month
+    folders and downloads next to our reports — so there only what this
+    program wrote is touched: reports, alerts, overviews, 期间报表/ (sorted
+    into quarterly/ annual/ custom/), _versions/ and 版本说明.txt (to _旧文件).
+    The new layout's own folders are left alone; everything else is left
+    exactly where it is and counted. Returns the number of foreign entries."""
+    foreign = 0
     for f in sorted(os.listdir(flat)):
         p = os.path.join(flat, f)
         if os.path.isdir(p):
             if in_place and f in NEW_REPORT_DIRS:
                 continue
             if in_place and f == LEGACY_PERIOD_FOLDER:
-                _plan_period_folder(p, reports_root, items)
+                foreign += _plan_period_folder(p, reports_root, items, in_place)
+                continue
+            if in_place and f not in OURS_DIRS:
+                foreign += 1
                 continue
             items += [("old", x, os.path.join(reports_root, OLD_FILES, f, os.path.relpath(x, p)))
                       for x in files_under(p)]
             continue
+        if f.startswith(LOCK_PREFIX):
+            continue
         dst = report_target(f, reports_root, store_markets)
+        if dst is None and in_place and f not in OURS_FILES:
+            foreign += 1
+            continue
         items.append(("report", p, dst or os.path.join(reports_root, OLD_FILES, f)))
+    return foreign
 
 
-def _plan_period_folder(folder, reports_root, items):
+def _plan_period_folder(folder, reports_root, items, in_place=False):
     """期间报表/<kind>/<period>/<market>/… -> <reports_root>/<kind>/<period>/<market>/…;
-    anything else in there -> _旧文件/期间报表/…"""
+    anything else in there -> _旧文件/期间报表/… (left alone, counted, in place).
+    Returns the number of foreign files."""
+    foreign = 0
     for f in files_under(folder):
         rel = os.path.relpath(f, folder)
         if rel.split(os.sep)[0] in PERIOD_KINDS:
             items.append(("report", f, os.path.join(reports_root, rel)))
+        elif in_place:
+            foreign += 1
         else:
             items.append(("old", f, os.path.join(reports_root, OLD_FILES, LEGACY_PERIOD_FOLDER, rel)))
+    return foreign
 
 
 def _plan_out_dir(out, store_markets, items, notes):
@@ -317,11 +356,14 @@ def _plan_out_dir(out, store_markets, items, notes):
         raise Refused("窗口里「报表输出到」是 %s，现在打不开（共享盘没连上？）。连上它，或先在窗口里改掉这个设置，再迁移。"
                       % out)
     before = len(items)
-    _plan_flat_reports(out, out, store_markets, items, in_place=True)
+    foreign = _plan_flat_reports(out, out, store_markets, items, in_place=True)
     mine = items[before:]
     old = sum(1 for _k, _s, d in mine if _under(d, os.path.join(out, OLD_FILES)))
-    notes.append("窗口里「报表输出到」%s 不是旧的默认目录：那里的 %d 个旧文件就地整理到它自己的 monthly\\ quarterly\\ "
-                 "annual\\ custom\\ 子目录里（认不出的 %d 个放进 _旧文件\\）；已经在这些子目录里的不动" % (out, len(mine), old))
+    notes.append("窗口里「报表输出到」%s 不是旧的默认目录：那里本程序写的 %d 个旧文件就地整理到它自己的 monthly\\ "
+                 "quarterly\\ annual\\ custom\\ 子目录里（其中 %d 个旧版本文件放进 _旧文件\\）；已经在这些子目录里的不动"
+                 % (out, len(mine), old))
+    if foreign:
+        notes.append("那里另有 %d 个文件/文件夹不是本程序写的（别人放的），原样不动" % foreign)
 
 
 def report_target(fname, reports_root, store_markets):
@@ -365,36 +407,50 @@ def copy(plan, data_root, say=print):
     download folders a final version uses from them — an old path would get the
     final's moved folder deleted). The manifest keeps both checksums (sha256 =
     the old file, dst_sha256 = its copy)."""
-    done, conflicts = [], []
+    done, conflicts, unreadable = [], [], []
     file_map = dict((src, dst) for kind, src, dst in plan["items"] if kind in ("report", "old"))
     for kind, src, dst in plan["items"]:
-        digest = sha256(src)
-        if _is_pending(kind, src):
-            content = _pending_rewritten(src, plan["folder_map"], say)
-        elif _is_results(kind, src):
-            content = _results_rewritten(src, plan["folder_map"], file_map)
-        else:
-            content = None
-        want = hashlib.sha256(content).hexdigest() if content is not None else digest
-        if os.path.exists(dst):
-            if sha256(dst) != want:
-                conflicts.append((src, dst))
-                continue
-        else:
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            _copy_one(kind, src, dst, plan, file_map, done, conflicts, say)
+        except (IOError, OSError) as e:
+            # a workbook open in Excel, a file being written, a share hiccup:
+            # reported at the end, the rest of the copy goes on, no switch.
+            unreadable.append((src, "%s: %s" % (e.__class__.__name__, e)))
             tmp = dst + ".migrating"
-            if content is None:
-                shutil.copy2(src, tmp)
-            else:
-                with open(tmp, "wb") as fh:
-                    fh.write(content)
-            if sha256(tmp) != want:
+            if os.path.exists(tmp):
                 os.remove(tmp)
-                raise IOError("复制后校验不一致：%s" % src)
-            os.replace(tmp, dst)
-        done.append({"kind": kind, "src": src, "dst": dst, "size": os.path.getsize(src), "sha256": digest,
-                     "dst_sha256": want})
-    return done, conflicts
+    return done, conflicts, unreadable
+
+
+def _copy_one(kind, src, dst, plan, file_map, done, conflicts, say):
+    """Copy and verify one file (or skip an identical copy); records it in done
+    or conflicts. Raises IOError/OSError when the source cannot be read."""
+    digest = sha256(src)
+    if _is_pending(kind, src):
+        content = _pending_rewritten(src, plan["folder_map"], say)
+    elif _is_results(kind, src):
+        content = _results_rewritten(src, plan["folder_map"], file_map)
+    else:
+        content = None
+    want = hashlib.sha256(content).hexdigest() if content is not None else digest
+    if os.path.exists(dst):
+        if sha256(dst) != want:
+            conflicts.append((src, dst))
+            return
+    else:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + ".migrating"
+        if content is None:
+            shutil.copy2(src, tmp)
+        else:
+            with open(tmp, "wb") as fh:
+                fh.write(content)
+        if sha256(tmp) != want:
+            os.remove(tmp)
+            raise IOError("复制后校验不一致：%s" % src)
+        os.replace(tmp, dst)
+    done.append({"kind": kind, "src": src, "dst": dst, "size": os.path.getsize(src), "sha256": digest,
+                 "dst_sha256": want})
 
 
 def _is_pending(kind, path):
@@ -632,7 +688,7 @@ def main(argv=None):
             print("\n这是预览，什么都没有写。确认无误后把 plan 换成 copy 再运行。")
             return 0
         check_space(plan, os.path.abspath(a.data_root))
-        items, conflicts = copy(plan, os.path.abspath(a.data_root))
+        items, conflicts, unreadable = copy(plan, os.path.abspath(a.data_root))
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         mdir = os.path.join(os.path.abspath(a.data_root), "logs", "migration")
         os.makedirs(mdir, exist_ok=True)
@@ -640,9 +696,15 @@ def main(argv=None):
         with io.open(manifest, "w", encoding="utf-8") as fh:
             json.dump({"created": stamp, "root": paths.ROOT, "data_root": os.path.abspath(a.data_root),
                        "out_dir": plan["out_dir"], "items": items, "conflicts": conflicts,
-                       "unplaced": plan["unplaced"]},
+                       "unreadable": unreadable, "unplaced": plan["unplaced"]},
                       fh, ensure_ascii=False, indent=1)
         print("\n复制并校验了 %d 个文件。清单：%s" % (len(items), manifest))
+        if unreadable:
+            print("⚠ %d 个文件读不了（多半是有人在 Excel 里开着，或共享盘断了一下），这次没复制，也没有切换布局：" % len(unreadable))
+            for s, why in unreadable[:20]:
+                print("  %s —— %s" % (s, why))
+            print("关掉这些文件后再运行一次 copy：已经复制好的会直接跳过。")
+            return 1
         if conflicts:
             print("⚠ %d 个文件在新目录里已有不同的版本，没有覆盖，也没有切换布局：" % len(conflicts))
             for s, d in conflicts[:20]:

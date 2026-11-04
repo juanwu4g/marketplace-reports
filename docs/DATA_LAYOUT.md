@@ -91,17 +91,25 @@ sorts its files **in place**, under that same folder, and never under
 | `BOCINA_TA02_2026-09.xlsx`, `…_账单基准.xlsx`, `…_指标.json`, `MX_ML_全店汇总_2026-09.xlsx`, `全店_2026-09_指标.json` | `monthly\2026-09\ML-MX\` |
 | `！需要处理_202609.txt`, `！报表异常_*_202609.txt`, `本月总览_2026-09.xlsx` | `monthly\2026-09\` |
 | `期间报表\quarterly\2026-Q3\ML-MX\*` (same for `annual`, `custom`) | `quarterly\2026-Q3\ML-MX\*` |
-| anything else (incl. `_versions\`, `版本说明.txt`)          | `_旧文件\`                 |
+| `_versions\`, `版本说明.txt` (ours, old versions)            | `_旧文件\`                 |
+| **anything else** (the finance team's own folders and files, e.g. `10月\MercadoLibre\…`) | **left exactly where it is**, counted in the plan |
 
-Files already under `monthly\`, `quarterly\`, `annual\`, `custom\` or `_旧文件\`
-are left alone, so `plan`/`copy` can run again. These are copies like every
+That folder is shared with people, so only what this program wrote is touched
+(the production drive held 1,536 of the finance team's files next to our 108 on
+2026-11-04). Excel's `~$…` lock files are never files to copy. Files already
+under `monthly\`, `quarterly\`, `annual\`, `custom\` or `_旧文件\` are left
+alone, so `plan`/`copy` can run again. These are copies like every
 other move: verified, listed in the manifest (which records the folder), the
 flat originals deleted by `remove-old`; `results\**.json` `workbook` paths into
 that folder are rewritten to the new place. `undo` leaves the sorted copies
 where they are (the flat originals are still there until `remove-old`, which is
 where the old layout looks). The setting itself is kept; the tool says so after
 switching config.json. If the shared drive cannot be opened, the tool refuses
-to run until it can (or the setting is changed).
+to run until it can (or the setting is changed). A file that cannot be read
+during `copy` (open in Excel, a share hiccup) does not stop the copy: it is
+listed at the end with its reason, the manifest records it under `unreadable`,
+config.json is **not** switched, and running `copy` again after closing the file
+finishes the job (identical copies are skipped).
 
 ## The cleaning pipeline
 

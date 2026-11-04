@@ -4,6 +4,7 @@ file where core/layout expects it, verifies it, rewrites pending paths and only
 then switches config.json; remove-old deletes only verified old files; undo
 switches back."""
 import io
+import glob
 import json
 import os
 
@@ -182,8 +183,14 @@ def shared(machine):
     write(str(out / "！报表异常_CL_FA_202608.txt"), "old alert")
     write(str(out / "本月总览_2026-09.xlsx"), "overview")
     write(str(out / "期间报表" / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx"), "q3")
-    write(str(out / "stray.txt"), "stray")
     write(str(out / "_versions" / "v1" / "BOCINA_TA02_2026-09.xlsx"), "version")
+    write(str(out / "版本说明.txt"), "note")
+    # the finance team's own things on the same drive (production 2026-11-04:
+    # 1536 of them) — never touched; and Excel's lock file of an open workbook
+    write(str(out / "stray.txt"), "stray")
+    write(str(out / "10月" / "MercadoLibre" / "销售订单" / "IDG_PE_Ventas.xlsx"), "theirs")
+    write(str(out / "期间报表" / "notes.txt"), "theirs too")
+    write(str(out / "~$BOCINA_TA02_2026-09.xlsx"), "lock")
     write(str(root / "gui_settings.json"), json.dumps({"out_dir": str(out), "region": "MX"}))
     return out
 
@@ -206,7 +213,7 @@ def test_plan_sorts_the_window_folder_in_place(shared, machine, capsys):
         out / "本月总览_2026-09.xlsx": m / "本月总览_2026-09.xlsx",
         out / "期间报表" / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx":
             out / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx",
-        out / "stray.txt": out / "_旧文件" / "stray.txt",
+        out / "版本说明.txt": out / "_旧文件" / "版本说明.txt",
         out / "_versions" / "v1" / "BOCINA_TA02_2026-09.xlsx":
             out / "_旧文件" / "_versions" / "v1" / "BOCINA_TA02_2026-09.xlsx",
     }
@@ -218,7 +225,8 @@ def test_plan_sorts_the_window_folder_in_place(shared, machine, capsys):
     assert ML.main(["plan", "--data-root", str(data)]) == 0
     assert not (out / "monthly").exists() and not data.exists()
     text = capsys.readouterr().out
-    assert "就地整理" in text and "9 个旧文件" in text and "2 个放进 _旧文件" in text
+    assert "就地整理" in text and "9 个旧文件" in text and "2 个旧版本文件放进 _旧文件" in text
+    assert "另有 3 个文件/文件夹不是本程序写的" in text          # stray.txt, 10月/, 期间报表/notes.txt (the ~$ lock is not a file)
 
 
 def test_copy_sorts_the_window_folder_in_place(shared, machine, capsys):
@@ -241,8 +249,9 @@ def test_copy_sorts_the_window_folder_in_place(shared, machine, capsys):
               out / "monthly" / "2026-09" / "！需要处理_202609.txt",
               out / "monthly" / "2026-09" / "本月总览_2026-09.xlsx",
               out / "quarterly" / "2026-Q3" / "ML-MX" / "MX_ML_2026-Q3_账单基准.xlsx",
-              out / "_旧文件" / "stray.txt"):
+              out / "_旧文件" / "版本说明.txt"):
         assert p.is_file(), p
+    assert not (out / "_旧文件" / "stray.txt").exists() and not (out / "_旧文件" / "10月").exists()
     assert str(out / "quarterly" / "2026-Q3" / "ML-MX") == layout.period_dir("quarterly", "2026-Q3", "ML-MX",
                                                                                override=str(out))
     # originals untouched; the setting is kept (it is where the user wants reports)
@@ -271,10 +280,15 @@ def test_copy_sorts_the_window_folder_in_place(shared, machine, capsys):
     assert ML.main(["copy", "--data-root", str(data)]) == 0
     removed, kept = ML.remove_old(manifest)
     assert not [k for k, _ in kept if ML._under(k, str(out))]
-    for gone in (out / "BOCINA_TA02_2026-09.xlsx", out / "stray.txt", out / "期间报表", out / "_versions",
-                 out / "本月总览_2026-09.xlsx"):
+    for gone in (out / "BOCINA_TA02_2026-09.xlsx", out / "版本说明.txt", out / "_versions",
+                 out / "本月总览_2026-09.xlsx", out / "期间报表" / "quarterly"):
         assert not gone.exists(), gone
-    assert sorted(os.listdir(str(out))) == ["_旧文件", "monthly", "quarterly"]
+    # other people's files and folders are exactly where they were
+    for theirs in (out / "stray.txt", out / "10月" / "MercadoLibre" / "销售订单" / "IDG_PE_Ventas.xlsx",
+                   out / "期间报表" / "notes.txt", out / "~$BOCINA_TA02_2026-09.xlsx"):
+        assert theirs.is_file(), theirs
+    assert sorted(os.listdir(str(out))) == ["10月", "_旧文件", "monthly", "quarterly", "stray.txt", "~$BOCINA_TA02_2026-09.xlsx",
+                                            "期间报表"]
     assert (out / "monthly" / "2026-09" / "ML-MX" / "BOCINA_TA02_2026-09.xlsx").is_file()
     # nothing left to sort: the next plan lists no file of the folder
     assert _out_items(ML.build_plan(str(data)), out) == {}
@@ -297,3 +311,30 @@ def test_window_folder_inside_old_downloads_is_moved_the_ordinary_way(machine, c
         [str(data / "work" / "_旧文件" / "reports" / "mine" / "BOCINA_TA02_2026-09.xlsx")]
     assert ML.main(["plan", "--data-root", str(data)]) == 0
     assert "没有就地整理" in capsys.readouterr().out
+
+
+def test_a_file_that_cannot_be_read_is_reported_and_stops_the_switch(machine, capsys, monkeypatch):
+    """Production 2026-11-04: a workbook open in Excel made sha256 raise
+    PermissionError and the whole copy died in a traceback. Now: reported,
+    the rest copied, layout not switched; the next copy picks it up."""
+    root, data = machine / "code", machine / "data"
+    victim = str(root / "downloads" / "BOCINA_TA02" / RUN / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx")
+    real = ML.sha256
+
+    def flaky(path):
+        if os.path.normcase(path) == os.path.normcase(victim):
+            raise PermissionError(13, "Permission denied", path)
+        return real(path)
+    monkeypatch.setattr(ML, "sha256", flaky)
+    assert ML.main(["copy", "--data-root", str(data)]) == 1
+    text = capsys.readouterr().out
+    assert "1 个文件读不了" in text and victim in text and "再运行一次 copy" in text
+    assert layout.mode() == layout.LEGACY
+    assert not (data / "raw" / "ML" / "MX" / "BOCINA_TA02" / "2026-09" / RUN / "Reporte_Facturacion_MercadoLibre_Sept2026.xlsx").exists()
+    assert not glob.glob(str(data / "**" / "*.migrating"), recursive=True)
+    mdir = str(data / "logs" / "migration")
+    doc = json.load(open(os.path.join(mdir, sorted(os.listdir(mdir))[-1]), encoding="utf-8"))
+    assert [u[0] for u in doc["unreadable"]] == [victim] and doc["items"]
+    monkeypatch.setattr(ML, "sha256", real)
+    assert ML.main(["copy", "--data-root", str(data)]) == 0
+    assert layout.mode() == layout.V2
