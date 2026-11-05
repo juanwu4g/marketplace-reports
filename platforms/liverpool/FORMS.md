@@ -75,6 +75,26 @@ the 5th of M+1 also catches the first payment of M+1 in "Detalle de Pagos".
     filled, or the sign-in refused → `Blocked` (PAGE_BLOCKED): then a person
     signs in once inside the Ziniao store. `run_meta.json` flags
     `marketplace_login`: `session` or `ziniao`.
+  - **The language:** the header shows the current language in a control
+    (`[class*='LanguageSelector'][class*='ContentName']`, text `es` / `en`);
+    clicking it opens a menu of `li[role=menuitem]`: "Español (es)", "Inglés
+    (en)". An entry is picked by a mouse move, a pause and a click
+    (`_menu_click`); `real_click` (scroll + immediate click) leaves it unpicked.
+    The page re-renders in the new language at once — but **every page load
+    restores the account's own language setting** (VM 2026-11-05: picked
+    "Inglés (en)", header `en`, `localStorage.selectedLanguage` `{"id":"en"}`;
+    reloaded /orders: `es` again). So a person switching the menu cannot break
+    the next run; a language that is wrong on a fresh load is the account's
+    setting, which the script cannot change.
+    `marketplace_language` reads the control before any route, switches it back
+    to Spanish when needed, waits for the page and records it (`run_meta.json`
+    flags `marketplace_locale` = language at entry; a `language:` line in the
+    route errors when it changed it; LANGUAGE_WRONG when a reload undoes it).
+    Production 2026-11-05 03:03 reported LANGUAGE_WRONG ("找不到 Pedidos") 24 s
+    after opening the store while the test VM saw Spanish within 4 s: the old
+    check read the page once, 12 s after navigating. Now the header control is
+    awaited up to 40 s and "Pedidos" up to 30 s, and a store-level failure
+    saves a screenshot and the page facts (`_diag/`).
   - **Ziniao's extra handle:** Ziniao opens with an extra handle (an omnibox
     pop-up), and using it makes the site say "Este sitio no está diseñado para
     … móvil". Switch to the first window whose size can be read (`real_window`).

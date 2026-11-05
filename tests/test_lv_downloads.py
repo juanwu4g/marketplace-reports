@@ -222,18 +222,50 @@ def test_files_in_a_subfolder_of_the_run_folder_count(tmp_path):
     assert download_diag._rejected(["Notas_Cargo_202609/missing.xml"], str(tmp_path)) == ["missing.xml（不在目录里）"]
 
 
+class FakeEl(object):
+    """One page element: text, a value, and what a real click does."""
+    def __init__(self, text="", value="", on_click=None, shown=lambda: True):
+        self.text, self.value, self.on_click, self.shown = text, value, on_click, shown
+
+    def get_attribute(self, name):
+        return self.value
+
+    def is_displayed(self):
+        return self.shown()
+
+    def click(self):
+        if self.on_click:
+            self.on_click()
+
+
 class FakeMarket(object):
     """The marketplace: a signed-out store lands on the Entrada Única sign-in page,
-    whose e-mail and password Ziniao may have filled; "Iniciar sesión" signs in."""
+    whose e-mail and password Ziniao may have filled; "Iniciar sesión" signs in. The
+    header's language control opens a menu ("Español (es)", "Inglés (en)")."""
     title = "Iniciar sesión | Marketplace"
     window_handles = ["w1"]
 
-    def __init__(self, filled=True, signed=False, accepts=True):
-        self.user = FakeField("nikki@example.com" if filled else "")
-        self.pw = FakeField("" if filled else "")
-        self.signed, self.accepts, self.clicks = signed, accepts, []
+    def __init__(self, filled=True, signed=False, accepts=True, lang="es", menu_langs=("es", "en")):
+        self.signed, self.accepts, self.lang, self.menu_open, self.clicks = signed, accepts, lang, False, []
         self.current_url = ("https://marketplace.liverpool.com.mx/orders" if signed else
                             "https://login-entradaunica.liverpool.com.mx/u/login?state=x")
+        self.user = FakeEl(value="nikki@example.com" if filled else "")
+        self.pw = FakeEl(on_click=lambda: self.clicks.append("password"))
+        self.button = FakeEl("Iniciar sesión", on_click=self._sign_in)
+        self.lang_ctl = FakeEl(on_click=self._open_menu, shown=lambda: self.signed)
+        self.items = [FakeEl({"es": "Español (es)", "en": "Inglés (en)"}[l], on_click=lambda l=l: self._pick(l),
+                             shown=lambda: self.menu_open) for l in menu_langs]
+
+    def _sign_in(self):
+        self.clicks.append("button")
+        if self.user.value and self.accepts:
+            self.signed, self.current_url = True, "https://marketplace.liverpool.com.mx/orders"
+
+    def _open_menu(self):
+        self.clicks.append("lang"); self.menu_open = True
+
+    def _pick(self, lang):
+        self.clicks.append("pick:" + lang); self.lang, self.menu_open = lang, False
 
     def get(self, url):
         pass
@@ -242,45 +274,63 @@ class FakeMarket(object):
         return {"width": 1920, "height": 911}
 
     def find_elements(self, by, value):
-        if value == "username":
-            return [self.user]
-        if value == "password":
-            return [self.pw]
-        if value == "button[name=action]":
-            return [self]            # the button
-        return []
-
-    def is_displayed(self):
-        return True
-
-    def submit(self):                # bk.real_click → d.submit() in the fast fixture
-        self.clicks.append("click")
-        if len(self.clicks) == 2 and self.user.value and self.accepts:
-            self.signed = True
-            self.current_url = "https://marketplace.liverpool.com.mx/orders"
+        self.lang_ctl.text = self.lang
+        return {"username": [self.user], "password": [self.pw], "button[name=action]": [self.button],
+                forms.LANG_CONTROL_CSS: [self.lang_ctl], forms.LANG_MENU_CSS: self.items}.get(value, [])
 
     def execute_script(self, js, *a):
-        return "Inicio\nPedidos\nCostos logísticos" if self.signed else ""
+        if not self.signed:
+            return ""
+        return "Inicio\nPedidos\nCostos logísticos" if self.lang == "es" else "Home\nOrders\nLogistic costs"
 
 
-def test_marketplace_sign_in_presses_the_button_ziniao_filled(fast):
+@pytest.fixture
+def fast_market(monkeypatch):
+    monkeypatch.setattr(forms.time, "sleep", lambda s: None)
+    monkeypatch.setattr(forms, "real_window", lambda d: "w1")
+    monkeypatch.setattr(forms.bk, "real_click", lambda d, el: el.click())
+    monkeypatch.setattr(forms, "_menu_click", lambda d, el: el.click())
+    monkeypatch.setattr(forms.bk, "wait_for", lambda fn, timeout=0, poll=0: fn())
+
+
+def test_marketplace_sign_in_presses_the_button_ziniao_filled(fast_market):
     d = FakeMarket(filled=True)
     ctx = portal_ctx(d, None)
     forms.marketplace_open(ctx)
     assert d.signed and ctx.flags["marketplace_login"] == "ziniao"
-    assert d.clicks == ["click", "click"]          # the password box, then the button
+    assert d.clicks == ["password", "button"]      # the password box, then the button
     assert d.pw.value == ""                        # nothing typed
+    assert ctx.flags["marketplace_locale"] == "es" and ctx.errors == []
 
 
-def test_marketplace_sign_in_page_not_filled_or_refused_is_blocked(fast):
+def test_marketplace_sign_in_page_not_filled_or_refused_is_blocked(fast_market):
     with pytest.raises(forms.Blocked):
         forms.marketplace_open(portal_ctx(FakeMarket(filled=False), None))
     with pytest.raises(forms.Blocked):
         forms.marketplace_open(portal_ctx(FakeMarket(filled=True, accepts=False), None))
 
 
-def test_marketplace_already_signed_in_is_the_session(fast):
+def test_marketplace_already_signed_in_is_the_session(fast_market):
     d = FakeMarket(signed=True)
     ctx = portal_ctx(d, None)
     forms.marketplace_open(ctx)
     assert d.clicks == [] and ctx.flags["marketplace_login"] == "session"
+
+
+def test_marketplace_left_in_english_is_switched_back_and_recorded(fast_market):
+    d = FakeMarket(signed=True, lang="en")
+    ctx = portal_ctx(d, None)
+    forms.marketplace_open(ctx)
+    assert d.lang == "es" and d.clicks == ["lang", "pick:es"]
+    assert ctx.flags["marketplace_locale"] == "en"
+    assert len(ctx.errors) == 1 and ctx.errors[0].startswith("language: Marketplace 界面语言原本是 en，已改回 es")
+
+
+def test_marketplace_language_that_cannot_be_switched_is_language_wrong(fast_market):
+    with pytest.raises(forms.LanguageWrong):              # no Spanish entry in the menu
+        forms.marketplace_open(portal_ctx(FakeMarket(signed=True, lang="en", menu_langs=("en",)), None))
+    d = FakeMarket(signed=True, lang="en")
+    d._pick = lambda lang: d.clicks.append("pick:" + lang)   # the choice does not take
+    d.items = [FakeEl("Español (es)", on_click=lambda: d._pick("es"), shown=lambda: True)]
+    with pytest.raises(forms.LanguageWrong):
+        forms.marketplace_open(portal_ctx(d, None))
