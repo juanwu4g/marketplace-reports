@@ -85,6 +85,10 @@ def _phase(ctx, ziniao_name, routes, mine, opener, diag, log):
         ctx.errors.append("%s %s: %s: %s" % (ziniao_name, what, e.__class__.__name__, str(e)[:200]))
         log("  [%s] %s" % (ziniao_name, e))
         ev = download_diag.exception_evidence(e, step=what, driver=ctx.d)
+        try:                                  # the page as it was: a store-level failure has no other evidence
+            ev.update(download_diag.capture_evidence(ctx.d, "%s_%s" % (ziniao_name, what), ctx.out_dir, extra=ev))
+        except Exception as e2:
+            ev["capture_errors"] = [str(e2)[:80]]
         for f in mine:
             if f not in ctx.files and f not in ctx.no_data:
                 diag.items.setdefault(f, {"evidence": dict(ev), "period": None, "required": True})

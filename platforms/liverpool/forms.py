@@ -28,6 +28,13 @@ and password already filled by Ziniao (the store's own saved sign-in — a Chrom
 autofill preview that a real click commits). The program types nothing there; it
 only presses "Iniciar sesión" (marketplace_sign_in, proven in the test VM
 2026-11-05). Nothing filled, or the sign-in refused -> Blocked (PAGE_BLOCKED).
+
+The marketplace's language: before any route, marketplace_language reads the
+header control ("es" / "en") and switches it back to Spanish through its menu
+when someone left it in English (the routes find every button by its Spanish
+text); the run records the language at entry (flags.marketplace_locale) and a
+"language:" line when it had to change it. Unreadable or unswitchable ->
+LanguageWrong (LANGUAGE_WRONG).
 """
 import base64
 import datetime
@@ -476,9 +483,75 @@ def marketplace_sign_in(ctx):
     return True
 
 
+LANG_CONTROL_CSS = "[class*='LanguageSelector'][class*='ContentName']"   # header item showing "es" / "en"
+LANG_MENU_CSS = "li[role=menuitem]"                                          # "Español (es)", "Inglés (en)"
+WANT_LANG = "es"
+
+
+def _lang_control(d):
+    els = [e for e in d.find_elements(By.CSS_SELECTOR, LANG_CONTROL_CSS) if e.is_displayed()]
+    return els[0] if els else None
+
+
+def _lang_text(d):
+    ctl = _lang_control(d)
+    return (ctl.text or "").strip().lower() if ctl is not None else None
+
+
+def _body(d):
+    return d.execute_script("return document.body.innerText || ''") or ""
+
+
+def _menu_click(d, el):
+    """Pick an entry of the header's (MUI) menu: move the mouse there, pause, click.
+    real_click's scrollIntoView + immediate click leaves the entry unpicked."""
+    ActionChains(d).move_to_element(el).pause(0.5).click().perform()
+
+
+def marketplace_language(ctx):
+    """Before any route: the seller centre's language, read from the header control
+    ("es" / "en"); when it is not Spanish, switch it back through the control's
+    menu — the routes find every button by its Spanish text. Returns (language at
+    entry, changed). Raises LanguageWrong when the control cannot be found, the
+    menu has no Spanish entry, or the switch did not survive a reload (every page
+    load restores the account's own language setting — VM 2026-11-05 — so a
+    language that is wrong on a fresh load is the account's setting, which only
+    a person can change)."""
+    d = ctx.d
+    ctl = bk.wait_for(lambda: _lang_control(d), timeout=40, poll=2)
+    if ctl is None:
+        raise LanguageWrong("Marketplace 顶栏找不到语言切换器（页面没加载出来，或平台改版了）")
+    cur = (ctl.text or "").strip().lower()
+    if cur == WANT_LANG:
+        ctx.flags["marketplace_locale"] = cur
+        return cur, False
+    ctx.log("  [警告] Marketplace 界面语言是 %s，不是 %s —— 正在改回去" % (cur, WANT_LANG))
+    bk.real_click(d, ctl)
+    item = bk.wait_for(lambda: [e for e in d.find_elements(By.CSS_SELECTOR, LANG_MENU_CSS)
+                                if e.is_displayed() and "(%s)" % WANT_LANG in (e.text or "")],
+                       timeout=10, poll=1)
+    if not item:
+        raise LanguageWrong("Marketplace 语言菜单里找不到 Español (es)（当前 %s）；请手动进店改回 Español" % cur)
+    _menu_click(d, item[0])
+    now = bk.wait_for(lambda: _lang_text(d) == WANT_LANG and WANT_LANG, timeout=15, poll=1)   # changes in place
+    if now:
+        ctx.go("/orders", settle=10)                                         # re-rendered in Spanish
+        now = bk.wait_for(lambda: _lang_text(d) == WANT_LANG and WANT_LANG, timeout=40, poll=2)
+    if now != WANT_LANG:
+        now = _lang_text(d)
+        raise LanguageWrong("Marketplace 界面语言切换后重新打开页面又是 %s（期望 %s）：顶栏的切换只对当前页面有效，"
+                            "每次打开页面都恢复成账号自己的语言设置；请在 Marketplace 的账号设置里把语言改成 Español"
+                            % (now, WANT_LANG))
+    ctx.flags["marketplace_locale"] = cur
+    ctx.errors.append("language: Marketplace 界面语言原本是 %s，已改回 %s。请查清是谁改的" % (cur, WANT_LANG))
+    ctx.log("  Marketplace 界面语言已从 %s 改回 %s ✓" % (cur, WANT_LANG))
+    return cur, True
+
+
 def marketplace_open(ctx):
-    """The marketplace seller centre, signed in: by the session saved in the Ziniao
-    store, or by pressing the sign-in button on the page Ziniao has filled."""
+    """The marketplace seller centre, signed in (by the session saved in the Ziniao
+    store, or by pressing the sign-in button on the page Ziniao has filled), in
+    Spanish (switched back when it is not), with the orders page showing."""
     d = ctx.d
     real_window(d)
     ctx.go("/orders", settle=12)
@@ -489,11 +562,11 @@ def marketplace_open(ctx):
                           % url[:100])
     else:
         ctx.flags["marketplace_login"] = "session"
-    body = d.execute_script("return document.body.innerText || ''") or ""
-    if "dispositivo móvil" in body:
+    if "dispositivo móvil" in _body(d):
         raise bk.PageError("Marketplace 以为是手机（窗口不对）")
-    if "Pedidos" not in body:
-        raise LanguageWrong("Marketplace 界面语言不是西班牙语（找不到 Pedidos）")
+    marketplace_language(ctx)
+    if not bk.wait_for(lambda: "Pedidos" in _body(d), timeout=30, poll=2):
+        raise LanguageWrong("Marketplace 界面语言是西班牙语，但找不到 Pedidos（页面没加载出来，或平台改版了）")
 
 
 def _button(d, startswith):

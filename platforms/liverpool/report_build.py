@@ -652,7 +652,9 @@ def sheet_readme(wb, fam, ctx):
         sources.append((S["store"], "下载于 %s%s。账本：%s；Ventas Marketplace：%s；订单列表：%s；物流费明细：%s；"
                         "补充物流费：%s；付款：%s；费用发票：%s。"
                         % (meta.get("downloaded_at") or "?",
-                           "（订单等取自 %s）" % flags["marketplace_store"] if flags.get("marketplace_store") else "",
+                           ("（订单等取自 %s）" % flags["marketplace_store"] if flags.get("marketplace_store") else "")
+                           + ("（进店时 Marketplace 界面语言是 %s，已改回 es）" % flags["marketplace_locale"]
+                              if flags.get("marketplace_locale") not in (None, "es") else ""),
                            rel(f.get("ledger"), S["folder"]) or "缺", rel(f.get("sales"), S["folder"]) or "缺",
                            rel(f.get("orders"), S["folder"]) or "缺", rel(f.get("logistics"), S["folder"]) or "缺",
                            rel(f.get("balance"), S["folder"]) or "缺", rel(f.get("payments"), S["folder"]) or "缺",
