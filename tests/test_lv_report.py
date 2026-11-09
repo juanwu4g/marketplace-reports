@@ -16,6 +16,7 @@ column names, and a story whose numbers are worked out by hand:
 """
 import datetime
 import os
+import sys
 import shutil
 
 import pandas as pd
@@ -167,6 +168,8 @@ def test_catalog_registers_every_line_of_the_story():
     assert C.lookup(P, "YV", "F/", "C2")[0] == C.PROMO
     assert C.lookup(Rc, "YV", "0458/Comisión % DILISA      0458", "D2")[0] == C.COMMISSION
     assert C.lookup(P, "YD", "F/ 1 46 625", "C5")[0] == C.COMMISSION
+    assert C.lookup(P, "RW", "Dev Rec Logística 05/10/2026", "C2")[0] == C.LOGISTICS
+    assert C.lookup(P, "RW", "Ajuste log Agosto 2026", "C2")[0] == C.LOGISTICS_ADJ
     assert C.lookup(Rc, "DY", "Cargo misterioso", "C2") is None
 
 
@@ -202,7 +205,21 @@ def test_pl_from_the_ledger(tmp_path):
     # payments: the attempt sent back nets to 0; the real one is 2,900 − 900 of fees
     assert m["cash"] == pytest.approx(2000)
     assert m["rejected"] == [("2000000001", 3000.0)]
+    assert m["rejected_made_up"] is True
     assert not RB.RF.failed_errors(r["checks"])
+
+
+def test_rejected_payment_with_nothing_after_is_said_so(tmp_path, monkeypatch):
+    """October 2026: the only payment of the month was sent back by the bank and nothing
+    was paid afterwards — the check must not claim it was made up."""
+    monkeypatch.setattr(sys.modules[__name__], "LEDGER",
+                        [l for l in LEDGER if l["Nº doc."] != "2000000010"])
+    r, _ = build(make_folder(tmp_path), tmp_path)
+    m = r["metrics"][STORE]
+    assert m["cash"] == pytest.approx(0) and m["rejected"] == [("2000000001", 3000.0)]
+    assert m["rejected_made_up"] is False
+    c = dict((c["key"], c) for c in r["checks"])["payments_rejected"]
+    assert not c["ok"] and "没有再付款" in c["detail"] and "已补付" not in c["detail"]
 
 
 def test_bridges_tie(tmp_path):

@@ -7,8 +7,8 @@ Liverpool keeps two accounts per marketplace supplier (FORMS.md):
   20040002  what Liverpool owes the seller: the sale price of every sale ("F/",
             credit), the taxes it withholds on it (Q6 IVA 8 %, Q8 ISR 2.5 % of the
             price net of IVA, debits), returns ("DEV", debit) with the withholding
-            and the commission given back, logistics adjustments ("RW"), and the
-            payments ("ZP")
+            and the commission given back, logistics adjustments and shipping charges
+            given back ("RW"), and the payments ("ZP")
   11900003  what the seller owes Liverpool: the commission of every sale ("Comisión %
             DILISA") and the surcharge for a non-Liverpool card ("Sobrecomis %
             T.Exter"), the shipping charges ("Rec Logística"), the extra logistics
@@ -67,6 +67,10 @@ RULES = [
     (PAYABLE, ("YV", "YD"), r"^(COM|F/)", ("Q8",), WH_ISR, "代扣 ISR（2.5%）", "Q8 · ISR retenido"),
     (PAYABLE, ("YD",), r"^DEV", None, REFUND, "退货退款", "DEV · Devolución"),
     (PAYABLE, ("YD",), r"^F/", ("C5",), COMMISSION, "退货退还的佣金", "F/ · Comisión devuelta"),
+    # a shipping charge given back (a day charged twice; Liverpool's credit note MLOG "E"
+    # carries the same text): the same row as the charge, opposite sign — 2026-10
+    (PAYABLE, ("RW",), r"^Dev Rec Log[ií]stica", None, LOGISTICS, "发货物流费退回（多扣的运费冲回）",
+     "RW · Dev Rec Logística"),
     (PAYABLE, ("RW",), r"^Ajuste log", None, LOGISTICS_ADJ, "物流费调整（往月）", "RW · Ajuste log"),
     (RECEIVABLE, ("YV",), r"^Comisi[oó]n % DILISA", None, COMMISSION, "销售佣金", "Comisión % DILISA"),
     (RECEIVABLE, ("YV",), r"^Sobrecomis % T\.?\s*Exter", None, CARD_FEE, "外部银行卡附加佣金",

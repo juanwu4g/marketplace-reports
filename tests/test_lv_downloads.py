@@ -334,3 +334,36 @@ def test_marketplace_language_that_cannot_be_switched_is_language_wrong(fast_mar
     d.items = [FakeEl("Español (es)", on_click=lambda: d._pick("es"), shown=lambda: True)]
     with pytest.raises(forms.LanguageWrong):
         forms.marketplace_open(portal_ctx(d, None))
+
+
+# ------------------------------------------------------------------ Notas de Cargo pager
+
+class _A(object):
+    def __init__(self, text):
+        self.text = text
+
+    def is_displayed(self):
+        return True
+
+
+class _Folder(object):
+    """A KM folder page: its links and the pager line of its body."""
+    def __init__(self, links, body):
+        self.links, self.body = links, body
+
+    def find_elements(self, by, q):
+        return [_A(t) for t in self.links]
+
+    def execute_script(self, js):
+        return self.body
+
+
+def test_km_pager_follows_next_until_the_last_page():
+    page3 = _Folder(["<<", "<", "1-15", "16-30", "46-48", ">", ">>"], "… 31-45 / 48")
+    last = _Folder(["<<", "<", "1-15", "16-30", "31-45"], "… 46-48 / 48")
+    assert forms._km_next_link(page3).text == ">"
+    assert forms._km_next_link(last) is None
+    assert forms._km_total(last) == 48
+    one_file_last_page = _Folder(["<<", "<", "1-15", "16-30", "31-45"], "46-46 / 46")
+    assert forms._km_next_link(one_file_last_page) is None and forms._km_total(one_file_last_page) == 46
+    assert forms._km_total(_Folder([], "no pager here")) is None

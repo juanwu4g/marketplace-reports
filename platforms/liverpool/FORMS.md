@@ -14,8 +14,8 @@ Same structure as `platforms/falabella/FORMS.md` and `platforms/amazon/FORMS.md`
   - `Liverpool Report`: the supplier-portal user. **Not used** (owner, 2026-10-27).
   - `Liverpool Order Admin`, `Liverpool Order 子账号(Simon)`: other marketplace
     users of the same seller, not used.
-- Last verified: **2026-10-26**, by hand-driven probes in the test VM (September
-  2026, every form).
+- Last verified: **2026-11-05**, full October 2026 run in the test VM (every form);
+  the Notas de Cargo pager re-checked 2026-11-09.
 
 ---
 
@@ -129,6 +129,7 @@ Two accounts (`catalog.py` registers every kind of line):
 | | YD | `DEV …` | cancellation or return of a posted sale |
 | | YD | `F/ …` Q6 / Q8 / C5 | withholding / commission given back on it |
 | | RW | `Ajuste log …` | logistics adjustment of an earlier month |
+| | RW | `Dev Rec Logística dd/mm/yyyy` | a day's shipping charge given back (charged twice; MLOG credit note "E" with the same text) — same row as the charge, opposite sign |
 | | ZP | — | payments (pairs that net to 0 = a payment sent back by the bank) |
 | 11900003 (the seller owes Liverpool) | YV | `<store>/Comisión % DILISA` | commission (~17 % of the price), same Nº doc. as the sale |
 | | YV | `<store>/Sobrecomis % T.Exter` | surcharge when the buyer pays with a non-Liverpool card |
@@ -137,7 +138,14 @@ Two accounts (`catalog.py` registers every kind of line):
 | | DY | `AJUSTE MSI …`, `Ajuste log …`, `Suscripcion MKP …` | interest-free instalment cost, logistics adjustments, the monthly fee (600) |
 | | ZP | `PAGO`, `RECHAZO BANCO`, … | the fees settled with the payments |
 
-September 2026: 707 lines. Every amount of the report is −1 × Importe.
+September 2026: 707 lines; October 2026: 1,033 lines. Every amount of the report
+is −1 × Importe.
+
+October 2026's payments: one ZP pair on 05.10 (2000279311 sent, 2000296913
+"RECHAZO BANCO" back) and no other payment all month, so the month's cash is 0 and
+"Detalle de Pagos → Pagos realizados" is empty; the open items (`LV_pagos_pendientes`)
+held 847 lines, 815,963.68, posted 21.09–03.11. The report says so
+(`payments_rejected`: "本月之后没有再付款") instead of assuming a later payment.
 
 ## 2. sales — "Reporte Market Place" (Ventas Marketplace)
 
@@ -159,10 +167,12 @@ One row per order of a sale or return document. Columns:
 - Comisión Dilisa
 - Pago neto
 
-September 2026: 140 rows.
-- **Orders:** 139 matched the order list. The other one was the return of an order
-  older than the list's four months.
-- **Commission:** the total equals the ledger's net commission to the cent.
+September 2026: 140 rows; October 2026: 215 rows (189 sales, 26 returns, 197
+orders; gross 695,423.00, commission 118,784.11, net 549,433.14).
+- **Orders:** 139 of 140 (September) and 214 of 215 (October) matched the order
+  list; the other one was the return of an order older than the list's four months.
+- **Commission:** the total equals the ledger's net commission to the cent (both
+  months). Every Nº documento is in the ledger.
 
 ## 3. payments — Detalle de Pagos
 
@@ -173,17 +183,30 @@ menu → "Exportar a Microsoft Excel":
 
 A payment's lines (button "Detalles", after clicking its Doc.comp.) are the payable
 account's side only. September 2026: one payment of 423,244.53 on 28.09, with
-820 detail lines.
+820 detail lines. October 2026: no payment (see "ledger" above); the open-items
+export is the only one with rows.
 
 ## 4. invoices — Notas de Cargo
 
 A Knowledge Management folder on the portal itself (not blocked):
 `/irj/go/km/docs/factura_elec/Nota_Cargo/<user>/<YYYY>/<MM>/`, 15 files per
-page. Each file is fetched in the page with `fetch(…, {credentials:'include'})`.
+page, sorted by name. Each file is fetched in the page with
+`fetch(…, {credentials:'include'})`.
+- **The pager:** links "1-15", "16-30", "31-45", "46-48" (the current page is plain
+  text, e.g. "46-48 / 48"), plus "<<", "<", ">", ">>" — ">" is a link on every page
+  but the last. The route follows ">" (`_km_next_link`) and compares what it found
+  with the "/ N" count (`_km_total`); a shortfall is an `invoices:` line in the run's
+  errors. Until 2026-11-09 it followed only "<n>-<m>" links, and the October run of
+  2026-11-05 left the 46th file behind (a last page of one file: MLOG 000001365998
+  .xml, the 111.91 "Ajuste log Septiembre 2026" credit note).
 - **What they are:** Liverpool's CFDIs to the seller.
 - **Series:** MCOM (weekly commissions; E = credit notes for returns), MCUO
-  (subscription), MLOG (logistics).
-- **September 2026:** 40 files (20 XML).
+  (subscription), MLOG (logistics; E = a charge given back), and from 2026-11 also
+  **LN110** (one pair in the October folder, not yet read: see what it is on the
+  next run).
+- **September 2026:** 40 files (20 XML). **October 2026:** 48 files by 2026-11-09
+  (45 downloaded on 11-05: 8 MCOM 139,545.50, 1 MCUO 600.00, 13 MLOG 46,750.38,
+  totals with IVA). The November folder had nothing yet on 11-05.
 
 ## 5. orders — Pedidos
 
@@ -193,6 +216,8 @@ page. Each file is fetched in the page with `fetch(…, {credentials:'include'})
   oferta"), product name, quantities and prices, Liverpool promotion, refund flags,
   delivery and pick-up dates.
 - **Dropped on load:** the buyer's name, address and phone.
+- **October 2026 (downloaded 2026-11-04):** 499 rows, 498 orders created
+  2026-07-04 … 2026-11-03; 189 of them in October (subtotal 812,591.89, 191 units).
 
 ## 6. logistics — Costos logísticos
 
@@ -205,9 +230,11 @@ page. Each file is fetched in the page with `fetch(…, {credentials:'include'})
 
 Sheet `LogisticCostReportSeller`: Nombre paquetera, CR Liverpool, Pedido, Tipo,
 Fecha Cobro, Costos Logisticos, Costo de seguro, Fecha envío SAP, Estado de cobro,
-**Doc contable**. September 2026: 161 rows, 32,782.00. Every Doc contable matches a
-"Rec Logística" document of the ledger to the cent; the ledger has 12 more
-shipping documents (5,511.50) that are not in this list.
+**Doc contable**. September 2026: 161 rows, 32,782.00; October 2026: 179 rows,
+37,861.00 (16 documents, all "Envío", all COBRADO). Every Doc contable matches a
+"Rec Logística" document of the ledger to the cent; the ledger has more shipping
+documents that are not in this list (September 12, 5,511.50; October 16,
+10,536.81 — return pick-ups and the like), which ⑦ spreads by sales.
 
 ## 7. balance — Balance de cuenta
 
@@ -221,4 +248,6 @@ If the Motivo dropdown is opened, close it first: clicking elsewhere while it is
 open does nothing. Sheet `AdjustmentLogisticCostReportSel`: Id ajuste, Fecha de
 registro, Estatus, **Remisión** (order id), Monto, Motivo (COMPLEMENTARY, DIGITAL,
 compensation), Comentario, Clase de doc, Doc contable, Fecha cobro real, Pedido
-SAP, Contra recibo.
+SAP, Contra recibo. September 2026: see the ledger's "Balance logístico"; October
+2026: 8 rows, 1,775.00 (7 COMPLEMENTARY 1,175.00, 1 DIGITAL 600.00), every Doc
+contable in the ledger.

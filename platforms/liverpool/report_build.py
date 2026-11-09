@@ -308,6 +308,12 @@ def derive(S):
     rej = [c for c in nets.index if abs(nets[c]) <= TOL and gross.get(c, 0) > 0]
     m["rejected"] = [(c, float(gross.get(c, 0.0))) for c in rej]
     m["paid_clearings"] = [(c, float(nets[c])) for c in nets.index if abs(nets[c]) > TOL]
+    # a payment that went through after the last attempt sent back (else the money
+    # is still open — October 2026: one attempt on the 5th, nothing else all month)
+    when = pv.groupby("clearing")["post"].max() if len(pv) else pd.Series(dtype="datetime64[ns]")
+    m["rejected_made_up"] = bool(rej) and any(
+        when.get(c) is not None and when.get(c) >= max(when.get(r) for r in rej)
+        for c, _a in m["paid_clearings"])
     P = S["payments"]
     m["paid_detail"] = float(P.loc[(P["paid"] >= pd.Timestamp(a)) & (P["paid"] <= pd.Timestamp(b)),
                                    "amount"].sum()) if P is not None and len(P) else None
@@ -603,10 +609,14 @@ def validate(stores):
                               fmt(D["matched_list"]), fmt(D["matched_ledger"]), D["ledger_only_n"],
                               fmt(D["ledger_only"])), severity="warn", skipped=not D))
         rej = m["rejected"]
+        shown = "、".join("%s %s" % (c, fmt(a)) for c, a in rej)
         Cs.append(K.check("payments_rejected", st, "本月付款没有被银行退回", not rej,
                           "没有" if not rej else
                           "%d 次付款被银行退回（%s），之后的付款已补付；反复出现请检查在 Liverpool 登记的收款账户"
-                          % (len(rej), "、".join("%s %s" % (c, fmt(a)) for c, a in rej)), severity="warn"))
+                          % (len(rej), shown) if m.get("rejected_made_up") else
+                          "%d 次付款被银行退回（%s），本月之后没有再付款：这笔钱还挂在应收里（见 Detalle de Pagos 的待付项）。"
+                          "请检查在 Liverpool 登记的收款账户，并向 Liverpool 确认补付" % (len(rej), shown),
+                          severity="warn"))
     return Cs
 
 
@@ -812,7 +822,9 @@ def sheet_bridge(wb, fam, ctx):
            lambda S: S["m"]["paid_detail"] if S["m"]["paid_detail"] is not None else 0.0,
            "付款明细只列应付卖家一侧（销售、退货、代扣税），费用在账本另一侧抵扣"),
         Ln("参考：被银行退回的付款", lambda S: sum(a for _c, a in S["m"]["rejected"]),
-           "退回后已抵消，不影响上面的数字；反复出现请检查收款账户"),
+           "退回后已抵消，不影响上面的数字；%s" % fam.per_store(
+               lambda S: "本月之后没有再付款，钱还挂在应收里" if S["m"]["rejected"] and
+               not S["m"].get("rejected_made_up") else "反复出现请检查收款账户")),
     ]
     D = lambda S, k: (S["m"].get("bridge_d") or {}).get(k, 0.0)
     bridge_d = [

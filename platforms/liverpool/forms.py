@@ -394,6 +394,23 @@ def payments(ctx):
     ctx.got(form, names)
 
 
+def _km_next_link(d):
+    """The folder pager's ">" (next page) link, or None on the last page. The page
+    links read "16-30", "31-45", "46-48" — and, for a last page of one file, not a
+    range at all: the October 2026 run that followed only "<n>-<m>" links left the
+    46th file (an XML) behind. ">" is a link on every page but the last."""
+    for e in visible(d, "//a"):
+        if (e.text or "").strip() == ">":
+            return e
+    return None
+
+
+def _km_total(d):
+    """The folder's file count from the pager's "46-48 / 48", or None."""
+    m = re.search(r"\d+\s*-\s*\d+\s*/\s*(\d+)", d.execute_script("return document.body.innerText || ''") or "")
+    return int(m.group(1)) if m else None
+
+
 def invoices(ctx):
     """Notas de Cargo: Liverpool's fee CFDIs (XML + PDF) of the month and of the
     next one (the last week's are issued then), saved into Notas_Cargo_<YYYYMM>/."""
@@ -423,15 +440,18 @@ def invoices(ctx):
                 if "/irj/" in h:
                     hrefs.add(h.split("/irj/", 1)[1])
         grab()
-        for _ in range(20):                      # pages of 15: "16-30", "31-45", … then ">"
-            nxt = [e for e in visible(d, "//a") if re.match(r"^\d+-\d+$", (e.text or "").strip())
-                   and int(e.text.split("-")[0]) > len(hrefs)]
-            if not nxt:
+        for _ in range(20):                      # pages of 15; ">" is a link until the last page
+            nxt = _km_next_link(d)
+            if nxt is None:
                 break
-            bk.real_click(d, nxt[0])
+            bk.real_click(d, nxt)
             time.sleep(4)
             work_area(ctx)
             grab()
+        total = _km_total(d)
+        if total is not None and total > len(hrefs):
+            ctx.errors.append("invoices: Notas de Cargo %04d/%02d 文件夹显示 %d 个文件，只找到 %d 个"
+                              % (y, m, total, len(hrefs)))
         d.switch_to.default_content()
         dest = os.path.join(ctx.out_dir, R.INVOICE_DIR % periods.stamp(mon))
         os.makedirs(dest, exist_ok=True)
