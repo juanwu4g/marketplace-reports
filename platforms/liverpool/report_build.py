@@ -43,6 +43,7 @@ from core import report_family as RF
 from core import report_kit as K
 from core import sku_costs as SC
 from core.report_kit import F, fill, wrap, BOX
+from platforms.liverpool import bill_detail as BD
 from platforms.liverpool import catalog as C
 from platforms.liverpool import periods
 from platforms.liverpool import readers as R
@@ -339,6 +340,7 @@ def derive(S):
     S["m"] = m
     S["sku"] = sku_table(S)
     S["returns"] = returns_table(S)
+    BD.derive(S, _sku_maps(S))
     return S
 
 
@@ -617,6 +619,7 @@ def validate(stores):
                           "%d 次付款被银行退回（%s），本月之后没有再付款：这笔钱还挂在应收里（见 Detalle de Pagos 的待付项）。"
                           "请检查在 Liverpool 登记的收款账户，并向 Liverpool 确认补付" % (len(rej), shown),
                           severity="warn"))
+        Cs.append(BD.check(S))
     return Cs
 
 
@@ -644,6 +647,7 @@ def build_workbook(stores, ctx, out_path):
                             "不适用：本店没有使用 Liverpool Fulfillment（FBL），平台上没有库存（订单表 "
                             "Fulfillment = No）。本月各 SKU 的件数见【%s】。" % SHEETS[6])
     sheet_gaps(wb, fam, ctx)
+    BD.sheet(wb, fam, ctx)                      # ⑪, after the family's ten (docs/REPORT_FAMILY.md §2)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     wb.save(out_path)
     return out_path
@@ -719,7 +723,9 @@ def sheet_readme(wb, fam, ctx):
             (SHEETS[6], "按 SKU 的收入、费用、贡献与代扣税；运费按物流费明细逐单归属，订阅费等店铺级费用按销售额分摊。"),
             (SHEETS[7], "本月按周（按入账日）的销售、退货与费用。"),
             (SHEETS[8], "不适用：未使用 Liverpool Fulfillment，没有平台库存。"),
-            (SHEETS[9], "校验结果、缺失文件及原因、报税提示。校验和缺失为空表示没有待办。")]),
+            (SHEETS[9], "校验结果、缺失文件及原因、报税提示。校验和缺失为空表示没有待办。"),
+            (BD.SHEET, "Liverpool 结算账单（Ventas Marketplace）逐单：每个订单的售价、折扣、佣金、账单净额，"
+             "按订单号对上的发货物流费、补充物流费和 SKU；表后是对不到账单的物流费，以及和②的勾稽。")]),
         ("六、会计处理", policies),
         ("七、报税时要注意", [("提示 %d" % i, q) for i, q in enumerate(TAX_NOTES, 1)]),
     ]

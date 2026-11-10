@@ -147,3 +147,32 @@ Checks (⑩):
 - bridges A, B, D (warn);
 - payments sent back (warn);
 - with a SKU cost table, its coverage.
+
+## ⑪ 账单逐单明细 — the bill, order by order
+
+Owner's requirement (2026-11-10): the report is read from Liverpool's settled bill.
+`bill_detail.py` adds a sheet after the family's ten:
+
+- **One row per row of the bill** ("Ventas Marketplace", `LV_ventas`): price,
+  Liverpool's discount, commission, the card surcharge the bill already nets, and
+  "Pago neto". Measured on 2026-09 and 2026-10, document by document: Pago neto =
+  Venta con descuento − Comisión Dilisa − Sobrecomis % T.Exter; the withheld taxes
+  are not in it (they are a memo column here).
+- **By order number**: the seller SKU and status from the order list (an order older
+  than the list's four months falls back to Liverpool's article number, amber
+  cell), the shipping fee from "Costos logísticos", extra charges from "Balance de
+  cuenta" (its Remisión).
+- **Liverpool's own discount** comes back to the seller on a separate ledger
+  document, so it is its own column and part of the order's net.
+- **An order's shipping fee appears once**, on its first sale row. The month's list
+  is one column; a fee charged in a neighbouring month (read from that month's
+  download folder when it exists) is another column and outside the month's totals.
+- **Nothing is dropped**: the month's shipping fees and Balance rows whose order is
+  not in the month's bill are listed under the table (2026-09: 49 shipping fees of
+  August orders; 2026-10: 3).
+- **The tie**: bill net + promotion paid back + the month's other ledger charges =
+  ②'s contribution; the difference is the warn-level check `bill_tie` (± 1.00 for
+  the bill's per-order rounding; 0.05 and −0.01 on the two months).
+
+The ledger remains the source of ②–⑧: the two agree to the cent, and only the
+ledger has the withheld taxes, the fees without an order and the payments.

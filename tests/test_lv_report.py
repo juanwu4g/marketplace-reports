@@ -24,6 +24,7 @@ import pytest
 from openpyxl import load_workbook
 
 from core import report_kit as K
+from platforms.liverpool import bill_detail as BD
 from platforms.liverpool import catalog as C
 from platforms.liverpool import readers as R
 from platforms.liverpool import report_build as RB
@@ -86,14 +87,14 @@ SALES_COLS = ["Almacén", "Fecha", "Proveedor", "Artículo", "Nº documento", "R
               "Descuento", "Venta con descuento", "Comisión Dilisa", "Pago neto"]
 
 
-def S_(doc, day, article, order, gross, disc, comm):
+def S_(doc, day, article, order, gross, disc, comm, card=0.0):
     return {"Almacén": "0021", "Fecha": D(day), "Proveedor": "0000163073", "Artículo": article,
             "Nº documento": doc, "Referencia": "0000000000000000000" + order, "Venta con impuestos": gross,
             "Descuento": disc, "Venta con descuento": gross + disc, "Comisión Dilisa": comm,
-            "Pago neto": gross + disc - comm}
+            "Pago neto": gross + disc - comm - card}       # the bill nets the card surcharge too
 
 
-SALES = [S_("9500000001", 2, "1000000111", "1110000001", 1160, 0, 197.2),
+SALES = [S_("9500000001", 2, "1000000111", "1110000001", 1160, 0, 197.2, 41.18),
          S_("9500000002", 5, "1000000222", "2220000002", 2320, -232, 394.4),
          S_("9500000003", 10, "1000000111", "3330000003", 1160, 0, 197.2),
          S_("9600000003", 12, "1000000111", "3330000003", -1160, 0, -197.2)]
@@ -291,7 +292,7 @@ def test_no_ledger_is_an_error(tmp_path):
 def test_workbook_is_a_sister(tmp_path):
     r, out = build(make_folder(tmp_path), tmp_path)
     wb = load_workbook(out)
-    assert wb.sheetnames == K.SHEET_NAMES
+    assert wb.sheetnames == K.SHEET_NAMES + [BD.SHEET]      # the family's ten, then Liverpool's bill sheet
     labels = [c.value for c in wb[K.SHEET_NAMES[1]]["A"] if c.value]
     for want in ("商品销售收入（买家实付）", "加：Liverpool 出资的促销补偿", "减：取消与退货退款", "净销售收入",
                  "平台费用小计", "经营贡献毛利（未扣商品成本）", "减：商品采购成本",
@@ -313,3 +314,39 @@ def test_workbook_recalculates_with_zero_residuals(tmp_path):
             assert all(abs(v) < 0.01 for v in row[1:] if isinstance(v, (int, float))), row
     pl = dict((row[0], row[2]) for row in wb[K.SHEET_NAMES[1]].iter_rows(values_only=True) if row and row[0])
     assert pl["经营贡献毛利（未扣商品成本）"] == pytest.approx(r["metrics"][STORE]["contrib"])
+
+
+# ------------------------------------------------------------------ ⑪ the bill, order by order
+
+def test_bill_detail_joins_shipping_and_sku_by_order_and_ties(tmp_path):
+    """Owner's requirement 2026-11-10: the settlement bill (Ventas Marketplace) is the
+    base; each row gets its shipping fee and its SKU by order number; it ties to ②."""
+    r, out = build(make_folder(tmp_path), tmp_path)
+    m = r["metrics"][STORE]
+    B = m["bill"]
+    assert B["rows"] == len(SALES) and B["sales_n"] == 3 and B["returns_n"] == 1
+    assert B["net_pay"] == pytest.approx(sum(x["Pago neto"] for x in SALES))
+    # Liverpool's own discount comes back on a separate ledger document
+    assert B["promo"] == pytest.approx(232) == pytest.approx(B["promo_ledger"])
+    # every shipping fee of the month is either on a bill row or listed below the table
+    assert B["ship"] + B["ship_only"] == pytest.approx(B["ship_list"])
+    assert abs(B["resid"]) <= BD.TIE_TOL
+    checks = dict((c["key"], c) for c in r["checks"])
+    assert checks["bill_tie"]["ok"]
+    ws = load_workbook(out)[BD.SHEET]
+    head = [c.value for c in ws[4]]
+    rows = [dict(zip(head, [c.value for c in row])) for row in ws.iter_rows(min_row=5, max_row=4 + len(SALES))]
+    by_order = dict((x["订单号"], x) for x in rows if x["类型"] == "销售")
+    assert by_order["1110000001"]["SKU"] == "SKU-A" and by_order["2220000002"]["SKU"] == "SKU-B"
+    assert [x["类型"] for x in rows].count("退货") == 1
+    # an order's shipping fee is on its sale row only, never repeated on its return row
+    o3 = [x for x in rows if x["订单号"] == "3330000003"]
+    assert len(o3) == 2 and sum(1 for x in o3 if x["发货物流费\n（本月扣）"]) <= 1
+
+
+def test_bill_detail_without_the_bill_says_so(tmp_path):
+    r, out = build(make_folder(tmp_path, drop=("sales",)), tmp_path)
+    assert r["metrics"][STORE]["bill"] is None
+    checks = dict((c["key"], c) for c in r["checks"])
+    assert checks["bill_tie"]["skipped"]
+    assert "没有 Ventas Marketplace" in str(load_workbook(out)[BD.SHEET]["A5"].value)
