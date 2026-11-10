@@ -391,7 +391,46 @@ def payments(ctx):
     names.append(export_excel(ctx, menus[0], R.PENDING % periods.stamp(ctx.month)))
     if not any(names):
         return ctx.give_up(form, "download-not-landed", step="export")
+    names.extend(payment_details(ctx))
     ctx.got(form, names)
+
+
+def _clearing_links(d):
+    """The payments of "Pagos realizados": links whose text is the clearing document."""
+    return [e for e in visible(d, "//a") if re.match(r"^\d{8,12}$", (e.text or "").strip())]
+
+
+def payment_details(ctx):
+    """Every payment's breakdown (finance's "佣金和税金 Fees", requirement 2026-11-06):
+    click the payment's Doc.comp. -> "Desglose de documento <n>" fills in under
+    Detalles -> its own "Generar Archivo en Excel" (the third menu of the page).
+    A month without a payment has no link and yields nothing."""
+    d = ctx.d
+    work_area(ctx)
+    docs = [e.text.strip() for e in _clearing_links(d)]
+    names = []
+    for doc in docs:
+        work_area(ctx)
+        link = [e for e in _clearing_links(d) if e.text.strip() == doc]
+        if not link:
+            ctx.errors.append("payments: 付款 %s 的链接找不到了，明细没有下载" % doc)
+            continue
+        bk.real_click(d, link[0])
+        shown = bk.wait_for(lambda: "Desglose de documento %s" % doc in (
+            d.execute_script("return document.body.innerText || ''") or ""), timeout=60, poll=2)
+        time.sleep(4)
+        work_area(ctx)
+        menus = by_text(d, "Generar Archivo en Excel")
+        if not shown or len(menus) < 3:
+            ctx.errors.append("payments: 付款 %s 的明细（Desglose）没有展开，明细没有下载" % doc)
+            continue
+        n = export_excel(ctx, menus[2], R.PAYMENT_DETAIL % (periods.stamp(ctx.month), doc))
+        if n:
+            names.append(n)
+        else:
+            ctx.errors.append("payments: 付款 %s 的明细导出没有落地" % doc)
+    ctx.flags["payment_details"] = len(names)
+    return names
 
 
 def _km_next_link(d):
@@ -671,7 +710,10 @@ def logistics(ctx):
 
 
 def balance(ctx):
-    """Mi tienda -> Balance de cuenta: Fecha de registro = the month -> Descargar -> XLSX."""
+    """Mi tienda -> Balance de cuenta: Fecha real de cobro = the month -> Descargar ->
+    XLSX. The drawer has two date pairs with the same input names (from / to):
+    the first is "Fecha de registro", the last "Fecha real de cobro" — finance's
+    requirement (2026-11-09) is the charge date, like Costos logísticos."""
     form = "balance"
     d = ctx.d
     a, b = periods.month_bounds(ctx.month)
@@ -681,9 +723,12 @@ def balance(ctx):
         fr = [e for e in d.find_elements(By.CSS_SELECTOR, "input[name='from']") if e.is_displayed()]
         to = [e for e in d.find_elements(By.CSS_SELECTOR, "input[name='to']") if e.is_displayed()]
         if not fr or not to:
-            raise bk.PageError("找不到登记日期的输入框")
-        return [(fr[0], periods.web_date(a)), (to[0], periods.web_date(b))]
+            raise bk.PageError("找不到日期的输入框")
+        if len(fr) < 2 or len(to) < 2:
+            raise bk.PageError("筛选里找不到「Fecha real de cobro」（日期输入框只有一组，平台改版了？）")
+        return [(fr[-1], periods.web_date(a)), (to[-1], periods.web_date(b))]
     _apply_filters(ctx, fields)
+    ctx.flags["balance_filter"] = "fecha_real_de_cobro"
     if _results(d) == 0:
         return ctx.nothing_there(form, "本月没有补充物流费或其他扣款")
 

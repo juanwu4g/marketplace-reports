@@ -11,6 +11,7 @@ import pytest
 from core import download_diag
 from core import store_config
 from platforms.liverpool import forms
+from platforms.liverpool import readers as R
 from platforms.liverpool import run_downloads as RD
 
 MAIN, MARKET_USER = "Liverpool Report", "Liverpool Order 子账号(Nikki)"
@@ -367,3 +368,9 @@ def test_km_pager_follows_next_until_the_last_page():
     one_file_last_page = _Folder(["<<", "<", "1-15", "16-30", "31-45"], "46-46 / 46")
     assert forms._km_next_link(one_file_last_page) is None and forms._km_total(one_file_last_page) == 46
     assert forms._km_total(_Folder([], "no pager here")) is None
+
+
+def test_payment_detail_file_name_is_per_payment():
+    assert R.PAYMENT_DETAIL % ("202609", "2000291114") == "LV_pago_detalle_202609_2000291114.xlsx"
+    import fnmatch                      # never mistaken for the payments list or the open items
+    assert not fnmatch.fnmatch(R.PAYMENT_DETAIL % ("202609", "1"), R.PAYMENTS % "202609")

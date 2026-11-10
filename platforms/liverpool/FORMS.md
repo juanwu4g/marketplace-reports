@@ -25,11 +25,11 @@ Same structure as `platforms/falabella/FORMS.md` and `platforms/amazon/FORMS.md`
 |---|---|---|---|---|---|
 | 1 | ledger | supplier portal | Facturación y Pagos → Pagos MKP → **3.- Cobros y Pagos Marketplace** | posting date in the month | `LV_mayor_<YYYYMM>.xlsx` |
 | 2 | sales | supplier portal | Pagos MKP → **9.- Ventas Marketplace** | date in the month | `LV_ventas_<YYYYMM>.xlsx` |
-| 3 | payments | supplier portal | Pagos MKP → **2.- Detalle de Pagos** | payments of the month + open items | `LV_pagos_<YYYYMM>.xlsx`, `LV_pagos_pendientes_<YYYYMM>.xlsx` |
+| 3 | payments | supplier portal | Pagos MKP → **2.- Detalle de Pagos** | payments of the month + open items + each payment's breakdown | `LV_pagos_<YYYYMM>.xlsx`, `LV_pagos_pendientes_<YYYYMM>.xlsx`, `LV_pago_detalle_<YYYYMM>_<Doc.comp.>.xlsx` |
 | 4 | invoices | supplier portal | Pagos MKP → **7.- Notas de Cargo** | folders `<YYYY>/<MM>` of the month and the next one | `Notas_Cargo_<YYYYMM>/*.xml` + `*.pdf` |
 | 5 | orders | marketplace | Pedidos → Pedidos y facturas → Descargar → XLSX | the last four months, as the page offers | `LV_pedidos_<YYYYMMDD>.xlsx` |
 | 6 | logistics | marketplace | Pedidos → Costos logísticos → Filtros → Fecha de cobro | charge date in the month | `LV_costos_logisticos_<YYYYMM>.xlsx` |
-| 7 | balance | marketplace | Mi tienda → Balance de cuenta → Filtros → Fecha de registro | registration date in the month | `LV_balance_<YYYYMM>.xlsx` |
+| 7 | balance | marketplace | Mi tienda → Balance de cuenta → Filtros → **Fecha real de cobro** | real charge date in the month | `LV_balance_<YYYYMM>.xlsx` |
 
 Every download is immediate (no "we'll prepare it"): nothing is ever owed.
 
@@ -37,6 +37,13 @@ Every download is immediate (no "we'll prepare it"): nothing is ever owed.
 the first day of M+1 (Liverpool posts a sale on its order day and the fees on their
 charge day). The fee CFDIs of M's last week are issued in M+1. Running on or after
 the 5th of M+1 also catches the first payment of M+1 in "Detalle de Pagos".
+
+**Finance's requirement list** (`download_requirements.xlsx`, tab 财务数据下载, rows
+46–53, read 2026-11-10; the file is not in git): Billing = form 2, Fees = form 3
+*with each payment's breakdown*, Shipping = form 6, Other fees = form 7 filtered by
+Fecha real de cobro. Orders (form 5) and invoices (form 4) are marked "not needed
+for now" there; the routes still fetch them because the report reads the order
+list and the CFDIs are evidence.
 
 ## Signing in — read before touching the routes
 
@@ -181,8 +188,12 @@ menu → "Exportar a Microsoft Excel":
 - **Pagos Pendientes** (open items).
 - **Pagos realizados**: enter "Fecha de pago (año)" and "(mes)", then click **Buscar**.
 
-A payment's lines (button "Detalles", after clicking its Doc.comp.) are the payable
-account's side only. September 2026: one payment of 423,244.53 on 28.09, with
+**The breakdown** (`payment_details`, finance's "Fees" file): click the payment's
+Doc.comp. link (an `a` whose text is the ten-digit number) → "Desglose de documento
+<n>" fills in under Detalles → the page's third "Generar Archivo en Excel" menu.
+Saved as `LV_pago_detalle_<YYYYMM>_<n>.xlsx`, one per payment; a month without a
+payment has none (October 2026). September 2026: 816 lines, proven in the VM
+2026-11-11. A payment's lines are the payable account's side only. September 2026: one payment of 423,244.53 on 28.09, with
 820 detail lines. October 2026: no payment (see "ledger" above); the open-items
 export is the only one with rows.
 
@@ -240,7 +251,11 @@ documents that are not in this list (September 12, 5,511.50; October 16,
 
 `/stores/balance` (Mi tienda → Balance de cuenta). Steps:
 1. **Filtros**.
-2. Enter Fecha de registro (`input[name=from]` / `[name=to]`, the first pair).
+2. Enter **Fecha real de cobro**: the drawer has two date pairs with the same
+   names (`input[name=from]` / `[name=to]`); the first is Fecha de registro, the
+   **last** is Fecha real de cobro (finance's requirement, 2026-11-09; until then the
+   route used the first). For September and October 2026 both filters give the
+   same rows (10 / 3,132.00 and 8 / 1,775.00).
 3. **Aplicar filtros**.
 4. **Descargar** → XLSX.
 
