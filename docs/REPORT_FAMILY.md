@@ -84,6 +84,12 @@ Left to right: conclusion first, then the proof, then what is still missing.
 Keep the ten-sheet numbering even when a sheet is "not applicable": people learn
 where things are.
 
+**A platform's own sheet goes after ⑩**, numbered on (⑪ …), never between the ten:
+the ten keep their names and places, and the extra sheet is listed in ①'s "各页说明".
+Today: Liverpool's `⑪ 账单逐单明细` (`platforms/liverpool/bill_detail.py`) — the
+settlement bill order by order with each order's shipping fee and SKU, ending in
+its tie to ② (check `bill_tie`).
+
 ### Grade banner (sheet ①)
 
 Every monthly **store** workbook carries its grade (docs/RESULTS_AND_PERIODS.md §3,

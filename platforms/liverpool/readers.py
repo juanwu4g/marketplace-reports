@@ -21,6 +21,7 @@ LEDGER = "LV_mayor_%s.xlsx"
 SALES = "LV_ventas_%s.xlsx"
 PAYMENTS = "LV_pagos_%s.xlsx"
 PENDING = "LV_pagos_pendientes_%s.xlsx"
+PAYMENT_DETAIL = "LV_pago_detalle_%s_%s.xlsx"      # month stamp, clearing document
 INVOICE_DIR = "Notas_Cargo_%s"
 ORDERS = "LV_pedidos_*.xlsx"
 LOGISTICS = "LV_costos_logisticos_%s.xlsx"
