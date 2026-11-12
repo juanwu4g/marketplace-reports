@@ -28,6 +28,7 @@ from platforms.mercadolibre.bill_report import catalog as C
 from platforms.mercadolibre.bill_report import mapping as M
 from platforms.mercadolibre.bill_report import status as ST
 from platforms.mercadolibre.bill_report import workbook as WB
+from platforms.mercadolibre.bill_report import reventa as RV
 
 SHEETS = K.SHEET_NAMES
 BOLD = WB.BOLD
@@ -127,8 +128,9 @@ def sheet_readme(wb, fam, Ss, ctx):
         points.append((S["store"], "净商品销售额 %s；平台费用 %s；经营贡献 %s（%s）；SKU 映射 %s；%s。文件夹：%s" % (
             WB.fmtm(pl["net_gmv"], dec), WB.fmtm(-pl["fees_total"], dec), WB.fmtm(pl["contrib"], dec),
             WB.pct(pl["contrib"] / pl["net_gmv"]) if pl["net_gmv"] else "—", WB.pct(m["mapped_share"], 2),
-            ("%d 项 error 级校验未通过（见⑩）" % len(bad)) if bad else "error 级校验全部通过", S["folder"])))
-    policy = WB.readme_sections(Ss[0], ctx)
+            ("%d 项 error 级校验未通过（见⑩）" % len(bad)) if bad else "error 级校验全部通过", S["folder"])
+            + (" " + WB.reventa_point(S) if WB.has_reventa(S) else "")))
+    policy = WB.readme_sections(Ss[0], ctx, reventa=any(WB.has_reventa(S) for S in Ss))
     sections = [
         ("一、这份报表是什么", [
             ("基准", "以 MercadoLibre 的账单（Reporte_Facturacion ＋ Reporte_Notas_Credito）为唯一金额基准的财务报表，"
@@ -449,6 +451,10 @@ def sheet_sku(wb, fam, Ss, ctx):
         for vals, unmapped in WB.map_rows(S):
             fam.write_row(ws, r, map_cols, [S["store"]] + vals, fill_color=K.C_BAD if unmapped else None)
             r += 1
+    for S in Ss:
+        if WB.has_reventa(S):
+            r = WB.section_head(ws, r + 1, "表三　直接销售与 Reventa 对比　%s" % S["store"], len(RV.COMPARE_HEAD))
+            r = RV.write_compare(ws, r, S["rv_compare"][0], S["rv_compare"][1], fam.money)
     ws.freeze_panes = "C6"
 
 
@@ -535,6 +541,6 @@ def sheet_gaps(wb, fam, Ss, ctx):
         ("期后冲销", "本月计费、下月才冲销的销售按计费日留在本月 GMV。"),
         ("%s" % p.vat_name, "金额含 %s；申报口径交%s会计师确认。" % (p.vat_name, p.country_cn)),
         ("店铺级费用分摊", "广告等按各店自己的净商品销售额分摊到该店的 SKU，不跨店分摊。"),
-    ]))
+    ] + (WB.REVENTA_OPEN if any(WB.has_reventa(S) for S in Ss) else [])))
     fam.gaps_sheet(wb, SHEETS[9], "数据缺口与待办（%s · 账单基准 · 全店汇总）" % ctx["period_cn"], ctx["checks"],
                    notes=notes)

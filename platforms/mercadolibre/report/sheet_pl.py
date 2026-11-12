@@ -13,7 +13,8 @@ from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (FEE_BY_ES, FEE_CATALOG, SHEET_NAMES,
     TAX_RATE_NOMINAL_NET, fmt, money, pct)
 from platforms.mercadolibre.report.loading import cycle_day
-from platforms.mercadolibre.report.sheet_common import Sheet, agg_tax_rate, per_store, store_cols
+from platforms.mercadolibre.report.sheet_common import (Sheet, agg_tax_rate, any_reventa, per_store,
+    store_cols)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -224,6 +225,9 @@ def sheet_pl(wb, stores, ctx):
     sh.header(4, cols, widths, 26)
 
     rows = build_pl_rows()
+    if any_reventa(stores):
+        rows = [(k, lab, es, kind, note + PL_NOTE_REVENTA) if k == "ing" else (k, lab, es, kind, note)
+                for k, lab, es, kind, note in rows]
     if ctx.get("sku_costs") is not None:
         rows = [(k, lab, es, kind, per_store(stores, lambda S: SC.pl_note(S["cost"]))
                  if len(stores) > 1 else SC.pl_note(stores[0]["cost"]))
@@ -341,9 +345,43 @@ MEMO_KEYS_NO_WITHHOLDING = ("ventas_vs_bill_commission", "residual", "bill_paid"
                             "vat_in_gmv")
 
 
+PL_NOTE_REVENTA = ("。⚠ 本月有 Reventa（平台买断转售）的销售：那部分是平台付给本店的买断净额、不是买家价，"
+                   "也没有佣金、配送费和代扣税 —— 拆分见下方备查项与【⑦】表末的对比表")
+
+
+def pl_memo_reventa(stores):
+    """有 Reventa 销售的月份才出现的备查项（排在原有备查项之后，原有行位置不变）。"""
+    if not any_reventa(stores):
+        return []
+    rv = lambda k: (lambda S: S["m"]["rv"][k])
+    return [
+        ("reventa_sales", ("其中：Reventa 销售（平台支付净额，已含在 GMV 中）",
+                           "Ingresos por productos · Modelo de venta = Reventa", rv("ing"), None,
+                           "%s。平台在买家下单时向本店买断再转售：这是买断价，不是买家价；这部分没有佣金、配送费和代扣税。"
+                           % per_store(stores, lambda S: "%d 单 / %s 件" % (
+                               S["m"]["rv"]["n"], fmt(S["m"]["rv"]["units"], 0)), "、"))),
+        ("reventa_refund", ("其中：Reventa 取消/退款（已含在“退款与取消”中）",
+                            "Anulaciones y reembolsos · Reventa", rv("refund"), None,
+                            "Reventa 订单取消或退货时，平台把买断款原额冲回。")),
+        ("direct_gmv", ("其中：直接销售 GMV（买家价）", "Ingresos por productos · Venta directa",
+                        lambda S: S["m"]["ing_direct"], None,
+                        "＝ GMV − Reventa 销售。佣金、配送费、代扣税只发生在这一部分；代扣税率也只按它计算。")),
+        ("reventa_suggested", ("Reventa 销售的建议售价合计（参考，不是本店收入）",
+                               "Precio sugerido para reventa × Unidades", rv("suggested"), None,
+                               "%s。把它与直接销售 GMV 相加，才是可与以前月份比较的“买家价口径”销售规模。"
+                               % per_store(stores, lambda S: "买断净额 ÷ 建议售价 ＝ %s" % pct(
+                                   S["m"]["rv"]["ing"] / S["m"]["rv"]["suggested"]
+                                   if S["m"]["rv"]["suggested"] else 0, 1), "、"))),
+    ]
+
+
 def pl_memo(stores):
     """② 备查项：[(key, (行名, 西语, fn(S), special, 说明))]。special == "sens" 的行是
     公式（经营贡献毛利 − 代扣税）。② 页和结果文件（report/figures.py）都读这一份。"""
+    return _pl_memo_base(stores) + pl_memo_reventa(stores)
+
+
+def _pl_memo_base(stores):
     if not site.WITHHOLDING:
         return list(zip(MEMO_KEYS_NO_WITHHOLDING, pl_memo_no_withholding(stores)))
     memo = [

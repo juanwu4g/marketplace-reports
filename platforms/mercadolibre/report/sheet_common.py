@@ -48,8 +48,17 @@ def agg_tax_rate(stores):
     那家的税率说成全体的。
     """
     tax = sum(S["m"]["tax_ret"] for S in stores)
-    gmv = sum(S["m"]["ing"] for S in stores)
+    gmv = sum(S["m"]["ing_direct"] for S in stores)      # 代扣只发生在直接销售上（Reventa 不代扣）
     return (tax / gmv) if gmv else 0.0
+
+
+def has_reventa(S):
+    """本店本月有没有 Reventa（平台买断转售）的销售。没有的店，报表与以前逐格相同。"""
+    return bool(S["m"].get("rv", {}).get("n"))
+
+
+def any_reventa(stores):
+    return any(has_reventa(S) for S in stores)
 
 
 def store_count_cn(stores):

@@ -34,6 +34,7 @@ import re
 import pandas as pd
 
 from core import report_kit as K
+from platforms.mercadolibre.bill_report import reventa as RV
 from platforms.mercadolibre.bill_report import catalog as C
 from platforms.mercadolibre.bill_report import mapping as M
 from platforms.mercadolibre.bill_report import profile as P
@@ -118,7 +119,10 @@ def load(store, folder, month, site):
     if p:
         try:
             S["ventas"], f = R.read_ventas(p)
-            note(f["name"], "SKU 查找；状态证据；账单之外的金额：卖家优惠、平台补贴", "%d 行；下单日 %s → %s" % (f["rows"], f["first"], f["last"]))
+            note(f["name"], "SKU 查找；状态证据；账单之外的金额：卖家优惠、平台补贴" + (
+                "、Reventa 销售（账单里没有）" if f.get("reventa") else ""),
+                "%d 行；下单日 %s → %s" % (f["rows"], f["first"], f["last"]) + (
+                    "；其中 Reventa %d 行" % f["reventa"] if f.get("reventa") else ""))
         except Exception as e:                     # noqa: BLE001
             S["load_errors"].append((os.path.basename(p), str(e)))
 
@@ -232,6 +236,7 @@ def derive(S):
             cohort.append(sales[r.sale_no])
         if r.qty and r.unit_price and abs(r.qty * r.unit_price - r.sale_total) > max(prof.tol, 0.011):
             issues["total_mismatch"].append(r.sale_no)
+    rv_revs = _reventa(S, sales, cohort)
     sale_rows = L[(L["attrib"] == C.SALE) & (L["sale_no"] != "")].sort_values(["order"])
     for r in sale_rows.itertuples(index=False):
         if r.sale_no not in sales:
@@ -283,6 +288,9 @@ def derive(S):
             in_period=bool(r.charge_date and p0 <= r.charge_date <= p1),
             post=bool(r.charge_date and r.charge_date > p1),
             sale_date=(s["sale_date"] if s else r.sale_date)))
+    for e in rv_revs:
+        cum[e["sale_no"]] += e["share"]
+    revs += rv_revs
     S["revs"] = revs
     share_total = dict(cum)
 
@@ -374,7 +382,133 @@ def derive(S):
     _pl(S)
     _weekly(S)
     _bridges(S)
+    _compare(S)
     return S
+
+
+# ------------------------------------------------------------------ Reventa
+
+def _pack_index(V):
+    """(heads, items) of the export's multi-product packs: the head row carries the
+    pack's money, its items only units and unit price."""
+    heads, items = {}, collections.defaultdict(list)
+    for r in V.itertuples(index=False):
+        if r.kind == "parent":
+            heads[r.sale_no] = r
+        elif r.kind == "child":
+            items[r.parent].append(r)
+    return heads, items
+
+
+def _money_row(r, heads, items):
+    """(the row holding r's money, r's share of it): r itself, or for a pack item
+    the pack's head and the item's share by units × unit price. (None, 0) when the
+    head is missing."""
+    if r.kind != "child":
+        return r, 1.0
+    kids = items[r.parent]
+    w = lambda x: (x.units or 0.0) * (x.unit_price or 0.0)
+    tot = sum(w(x) for x in kids)
+    head = heads.get(r.parent)
+    if head is None:
+        return None, 0.0
+    return head, (w(r) / tot if tot > 0 else 1.0 / len(kids))
+
+
+def _compare(S):
+    """⑦ 表三: the month's export rows (by sale date), direct next to Reventa, per SKU."""
+    V, p0, p1 = S["ventas"], S["p0"], S["p1"]
+    rows = []
+    if V is not None and "reventa" in V.columns:
+        heads, items = _pack_index(V)
+        for r in V.itertuples(index=False):
+            if r.kind == "parent" or not r.sale_date or not (p0 <= r.sale_date <= p1):
+                continue
+            money, share = _money_row(r, heads, items)
+            if money is None:
+                continue
+            rows.append(RV.Row(bool(r.reventa), r.sku, r.title, r.units or 0.0,
+                               (r.units or 0.0) * (r.unit_price or 0.0), (money.v_products or 0.0) * share,
+                               0.0 if r.reventa else ((money.v_charge or 0.0) + (money.v_ship_cost or 0.0)
+                                                      + (money.v_ship_income or 0.0)) * share,
+                               (money.v_refund or 0.0) * share))
+    S["rv_compare"] = RV.compare(rows, S["prof"].tol / 2)
+
+
+REVENTA = "reventa"            # sales[...]["source"] of a sale MercadoLibre bought (not in the bill)
+REVENTA_METHOD = "Reventa：销售报表的 Anulaciones y reembolsos ÷ Ingresos por productos"
+
+
+def _reventa(S, sales, cohort):
+    """Reventa sales — MercadoLibre buys the item from the seller at the buyer's
+    click and resells it — have no bill row at all (no commission, no shipping
+    charge), so the ledger cannot carry them. They are taken from the sales
+    export (rows whose "Modelo de venta" is Reventa) and enter the same machinery
+    as a billed sale:
+
+      sale      amount = "Ingresos por productos", the net amount MercadoLibre pays
+                (not the buyer's price); date = the sale date (there is no charge
+                date); in the month when the sale date is
+      reversal  "Anulaciones y reembolsos" of the row, as a share of the amount, on
+                the sale's own date — the export does not date it, so a refund is
+                in the month of its sale **as of the download**
+      nothing else: no commission, shipping, buyer-paid shipping or withholding.
+
+    A pack item whose money is on the pack's head row takes its share by units ×
+    unit price, as in _outside. A sale the bill also charges a commission for is
+    left to the bill (listed by the check `reventa`). Adds to `sales` and
+    `cohort`; returns the reversal events. S["reventa"] keeps the facts for ①②⑩."""
+    p0, p1 = S["p0"], S["p1"]
+    info = S["reventa"] = dict(n_export=0, first=None, last_direct=None, billed=[], undated=0,
+                               prev_n=0, prev_refund=0.0)
+    V = S["ventas"]
+    revs = []
+    if V is None or "reventa" not in V.columns:
+        return revs
+    heads, items = _pack_index(V)
+    prev_end = p0 - datetime.timedelta(days=1)
+    prev0 = prev_end.replace(day=1)
+    fname = next((n for n, role, _ in S["files"] if "Ventas" in n), "Ventas")
+    for r in V.itertuples(index=False):
+        if r.kind == "parent":
+            continue
+        if not r.reventa:
+            if r.sale_date and (info["last_direct"] is None or r.sale_date > info["last_direct"]):
+                info["last_direct"] = r.sale_date
+            continue
+        info["n_export"] += 1
+        if r.sale_date and (info["first"] is None or r.sale_date < info["first"]):
+            info["first"] = r.sale_date
+        if r.sale_no in sales:                     # the bill charged it: the bill decides
+            info["billed"].append(r.sale_no)
+            continue
+        money, share = _money_row(r, heads, items)
+        if money is None:
+            continue
+        total = (money.v_products or 0.0) * share
+        refund = (money.v_refund or 0.0) * share
+        if not r.sale_date:
+            info["undated"] += 1
+            continue
+        in_p = p0 <= r.sale_date <= p1
+        qty = r.units or 0.0
+        sales[r.sale_no] = dict(
+            n_billed=1, sale_no=r.sale_no, pack_no="", pago="", listing=r.listing, title=r.title, qty=qty,
+            unit_price=(total / qty) if qty else total, total=total, buyer_ship=0.0, sale_date=r.sale_date,
+            charge_date=r.sale_date, commission=0.0, charge_no="", file=fname, billed=in_p, source=REVENTA,
+            suggested=qty * (r.unit_price or 0.0))
+        if in_p:
+            cohort.append(sales[r.sale_no])
+        if refund < -S["prof"].tol / 2 and total > 0:
+            sh = min(1.0, -refund / total)
+            revs.append(dict(
+                sale_no=r.sale_no, charge_date=r.sale_date, charge_no="", file=fname, commission_rev=0.0,
+                share=sh, method=REVENTA_METHOD, total=total, qty=qty, amount=-total * sh, buyer_ship=0.0,
+                in_period=in_p, post=False, sale_date=r.sale_date))
+            if prev0 <= r.sale_date <= prev_end:
+                info["prev_n"] += 1
+                info["prev_refund"] += -total * sh
+    return revs
 
 
 # ------------------------------------------------------------------ outside the bill
@@ -461,7 +595,7 @@ def _outside(S, v_by_sale, v_single):
         o = dict(in_ventas=v is not None, discount=min(d, 0.0) + coupon, subsidy=max(d, 0.0), withheld=0.0,
                  wh_src=WH_NA, given_back=0.0, coupon=coupon, gap_kind=gap_kind,
                  gap=d_gap if gap_kind else 0.0)
-        if prof.withholding:
+        if prof.withholding and s["source"] != REVENTA:
             if s["pago"] in charged:
                 peers = by_pago[s["pago"]]
                 tot = sum(x["total"] for x in peers)
@@ -689,6 +823,15 @@ def _pl(S):
     m["pl"] = pl
     m["ledger"] = float(P_["amount"].sum())
     m["n_cohort"] = len(set(s["sale_no"] for s in S["cohort"]))
+    rv = [s for s in S["cohort"] if s["source"] == REVENTA]
+    rv_rev = [e for e in S["revs"] if e["in_period"] and S["sales"].get(e["sale_no"], {}).get("source") == REVENTA]
+    info = S["reventa"]
+    m["reventa"] = dict(
+        n=len(rv), units=sum(s["qty"] for s in rv), sales=sum(s["total"] for s in rv),
+        suggested=sum(s["suggested"] for s in rv), refund=sum(e["amount"] for e in rv_rev), n_refund=len(rv_rev),
+        direct_gmv=pl["gmv_billed"] - sum(s["total"] for s in rv), n_direct=len(S["cohort"]) - len(rv),
+        first=info["first"], last_direct=info["last_direct"], n_export=info["n_export"],
+        prev_n=info["prev_n"], prev_refund=info["prev_refund"])
     m["units_billed"] = sum(s["qty"] for s in S["cohort"])
     prof = S["prof"]
     m["vat_out"] = P.vat_in(pl["revenue"], prof)
@@ -987,6 +1130,20 @@ def validate(S):
             if g["exchange"][0] else "") +
            ("；%d 笔 Total 比各列之和多（%s），原因不明，没有计入 —— 请核对这些订单" % (
                g["positive"][0], "{:,.2f}".format(g["positive"][1])) if g["positive"][0] else ""),
+           severity="warn")
+    rv, rvi = m["reventa"], S["reventa"]
+    if rv["n"] or rvi["billed"] or rvi["undated"]:
+        bad = bool(rvi["billed"] or rvi["undated"])
+        ck("reventa", st, "Reventa 销售（平台买断转售，账单里没有）已从销售报表计入", not bad,
+           ("本月 %d 笔、%s 件，平台支付净额 %s（建议售价合计 %s），取消/退款 %s（%d 笔）；直接销售 %d 笔、%s。"
+            "销售报表里最早一笔 Reventa：%s；最后一笔直接销售：%s。按下单日、按净额计入②商品销售额，"
+            "没有佣金、运费和代扣税（见①五）" % (
+                rv["n"], "{:,.0f}".format(rv["units"]), "{:,.2f}".format(rv["sales"]),
+                "{:,.2f}".format(rv["suggested"]), "{:,.2f}".format(rv["refund"]), rv["n_refund"],
+                rv["n_direct"], "{:,.2f}".format(rv["direct_gmv"]), rv["first"] or "—", rv["last_direct"] or "—"))
+           + ("。⚠ %d 笔 Reventa 销售在账单里也有佣金行，已按账单计、没有再按销售报表计：%s —— 请核对" % (
+               len(rvi["billed"]), "、".join(rvi["billed"][:10])) if rvi["billed"] else "")
+           + ("。⚠ %d 行 Reventa 销售没有下单日期，没有计入" % rvi["undated"] if rvi["undated"] else ""),
            severity="warn")
     if prof.withholding:
         ws = m["wh_sources"]

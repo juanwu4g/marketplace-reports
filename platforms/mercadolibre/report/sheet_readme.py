@@ -67,6 +67,17 @@ def sheet_readme(wb, stores, ctx):
                      "%s —— %s %s 单 / %s 件 / GMV %s"
                      % (S["store"], ctx["period_short"], fmt0(s["rows"]),
                         fmt0(s["units"]), fmt(s["ing"]))))
+    for S in stores:
+        rv = S["m"].get("rv") or {}
+        if rv.get("n"):
+            rows.append(("", "Reventa（%s）" % S["store"],
+                         "本月 %s 单 / %s 件是 Reventa（平台买断转售）：平台在买家下单时向本店买断、再以平台名义卖出。"
+                         "这部分的收入是平台支付的买断净额 %s（建议售价合计 %s），没有佣金、配送费和代扣税；"
+                         "直接销售 %s 单、GMV %s。两种方式的销售额不是同一个口径，费用率、利润率跨月比较时请看"
+                         "②备查项的拆分和⑦表末的对比表。销售报表里最早一笔 Reventa 在 %s。"
+                         % (fmt0(rv["n"]), fmt0(rv["units"]), fmt(rv["ing"]), fmt(rv["suggested"]),
+                            fmt0(rv["n_direct"]), fmt(S["m"]["ing_direct"]),
+                            rv["first"].strftime("%Y-%m-%d") if rv["first"] == rv["first"] else "—")))
     rows.append(("", "数据来源", sources))
     costs = ctx.get("sku_costs")          # core/sku_costs 的成本表；没配是 None
     if costs is not None:

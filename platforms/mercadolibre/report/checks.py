@@ -222,6 +222,18 @@ def validate(stores, tol=None):
         else:
             out.append(_no_withholding_check(S))
 
+        rv = m.get("rv") or {}
+        if rv.get("n"):
+            day = lambda d: d.strftime("%Y-%m-%d") if pd.notna(d) else "—"
+            out.append(_chk(
+                "reventa", name, "Reventa 销售（平台买断转售）已单独标出", True,
+                "本月 %d 单、%s 件是 Reventa：平台支付净额 %s（建议售价合计 %s），取消/退款 %s；直接销售 %d 单、GMV %s。"
+                "销售报表里最早一笔 Reventa：%s；最后一笔直接销售：%s。Reventa 的收入是买断净额，没有佣金、配送费和代扣税；"
+                "代扣税率只按直接销售计算。拆分见②备查项和⑦表末。"
+                % (rv["n"], fmt(rv["units"], 0), fmt(rv["ing"]), fmt(rv["suggested"]), fmt(rv["refund"]),
+                   rv["n_direct"], fmt(m["ing_direct"]), day(rv["first"]), day(rv["last_direct"])),
+                severity="warn"))
+
         if S["files"].get("cargos_full"):
             d = m["cargos_full_report_total"] - m["full_bill_total"]
             out.append(_chk("cargos_full", name, "Full 费用报表 vs 账单",

@@ -18,7 +18,7 @@ from platforms.mercadolibre.report import site
 PKG = os.path.join(os.path.dirname(os.path.abspath(rb.__file__)), "report")
 
 # bottom to top: a module may import only from modules before it
-LAYERS = ["site", "catalog", "loading", "derived", "checks", "sheet_common", "sheet_readme",
+LAYERS = ["site", "catalog", "reventa", "loading", "derived", "checks", "sheet_common", "sheet_readme",
           "sheet_pl", "sheet_bridge", "sheet_fees", "sheet_returns", "sheet_sku", "sheet_trend",
           "sheet_inventory", "sheet_gaps", "figures"]
 

@@ -180,6 +180,23 @@ def derive(store, folder, p0, p1):
     m["units"] = float(num(A, V_UNITS).sum())
     m["ing"] = float(num(A, site.V_REVENUE).sum())
     m["env_ing"] = float(num(A, site.V_SHIP_INCOME).sum())
+    # ---- Reventa（平台买断转售）：收入是平台支付的净额，没有佣金/运费/代扣税 ----
+    RVA = A[A["reventa"].astype(bool)]
+    unit_price = num(RVA, site.V_UNIT_PRICE) if site.V_UNIT_PRICE in RVA.columns else 0.0
+    vr = V[V["reventa"].astype(bool)]["fecha"].dropna()
+    vd = V[~V["reventa"].astype(bool)]["fecha"].dropna()
+    m["rv"] = {
+        "n": int(len(RVA)), "units": float(num(RVA, V_UNITS).sum()),
+        "ing": float(num(RVA, site.V_REVENUE).sum()),
+        "refund": float(num(RVA, site.V_REFUND).sum()),
+        "n_refund": int((num(RVA, site.V_REFUND).abs() > site.ZERO_TOL).sum()),
+        "suggested": float((num(RVA, V_UNITS) * unit_price).sum()) if len(RVA) else 0.0,
+        "first": vr.min() if len(vr) else pd.NaT,
+        "last_direct": vd.max() if len(vr) and len(vd) else pd.NaT,
+    }
+    # 代扣税只对直接销售收取：税率的分母只用直接销售的 GMV（没有 Reventa 时就是 GMV 本身）
+    m["ing_direct"] = (m["ing"] - m["rv"]["ing"]) if m["rv"]["n"] else m["ing"]
+    m["rv"]["n_direct"] = m["rows"] - m["rv"]["n"]
     if site.BONIF_COL:
         # 秘鲁：运费收入里并进了 Flex 配送补贴（见 load_ventas），拆开记一笔供说明
         m["bonif"] = float(num(A, "bonif").sum())
@@ -204,10 +221,11 @@ def derive(store, folder, p0, p1):
 
     # ★ 代扣代缴税金：Ventas 的"佣金及税金" − 账单的纯佣金（毛额）
     m["tax_ret"] = m["com_imp"] - m["com_gross"]
-    m["tax_rate_gross"] = (m["tax_ret"] / m["ing"]) if m["ing"] else 0.0
+    m["tax_rate_gross"] = (m["tax_ret"] / m["ing_direct"]) if m["ing_direct"] else 0.0
     m["iva_in_gmv"] = m["ing"] * site.IVA_RATE / (1 + site.IVA_RATE)
     m["net_revenue_exvat"] = m["ing"] - m["iva_in_gmv"]
-    m["tax_vs_iva"] = (m["tax_ret"] / m["iva_in_gmv"]) if m["iva_in_gmv"] else 0.0
+    iva_direct = m["ing_direct"] * site.IVA_RATE / (1 + site.IVA_RATE)
+    m["tax_vs_iva"] = (m["tax_ret"] / iva_direct) if iva_direct else 0.0
     if not site.WITHHOLDING:
         # 智利没有代扣：上面的 tax_ret 只是"Ventas 佣金列 − 账单纯佣金"这个
         # 算术差（各座桥要靠它勾稽，所以键名不变），它不是税。拆成两块：
