@@ -19,6 +19,8 @@ import warnings
 
 import pandas as pd
 
+from platforms.mercadolibre.bill_report import reventa as RV
+
 warnings.filterwarnings("ignore", message="Workbook contains no default style")
 
 # ------------------------------------------------------------------ small helpers
@@ -339,8 +341,11 @@ def read_ventas(path):
     out = pd.DataFrame(index=df.index)
     for src, dst in VENTAS_COLS.items():
         out[dst] = df[src] if src in df.columns else None
-    unit_col = next((c for c in df.columns if c.startswith("Precio unitario de venta")), None)
+    # the header was renamed when Reventa arrived (2026-10): either name is the same column
+    unit_col = RV.unit_price_column([c for c in df.columns if isinstance(c, str)])
     out["unit_price"] = df[unit_col].map(num) if unit_col else 0.0
+    # Reventa: MercadoLibre bought the item from the seller (no bill row; see model._reventa)
+    out["reventa"] = df[RV.MODEL_HEADER].map(RV.is_reventa) if RV.MODEL_HEADER in df.columns else False
     for prefix, dst in VENTAS_MONEY.items():
         col = next((c for c in df.columns if c.startswith(prefix)), None)
         out[dst] = df[col].map(num) if col else 0.0
@@ -376,7 +381,8 @@ def read_ventas(path):
     dates = [d for d in out["sale_date"] if d]
     return out.reset_index(drop=True), {
         "name": os.path.basename(path), "sheet": sheet, "header_row": i + 1, "rows": len(out),
-        "first": min(dates) if dates else None, "last": max(dates) if dates else None}
+        "first": min(dates) if dates else None, "last": max(dates) if dates else None,
+        "reventa": int(out["reventa"].sum())}
 
 
 # ------------------------------------------------------------------ MercadoPago (evidence)

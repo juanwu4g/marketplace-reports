@@ -15,6 +15,7 @@ import re
 
 import pandas as pd
 
+from platforms.mercadolibre.report import reventa as RV
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (ABNORMAL_RE, BILLING_HEADER_ROW,
     CARGOS_HEADER_ROW, CH_NO, FEE_BY_ES, F_AMOUNT, F_CHANNEL, F_CHARGE_DATE, F_CHARGE_NO,
@@ -231,6 +232,15 @@ def load_ventas(folder):
               "已按实际行读。" % (hdr + 1, VENTAS_HEADER_ROW + 1))
     df = pd.read_excel(path, sheet_name=site.VENTAS_SHEET, header=hdr)
     df.attrs["incomplete_notice"] = notice
+    # 2026-10 起平台把单价列改名为 "Precio unitario para venta directa / Precio sugerido
+    # para reventa"（同一列）。其余代码按 site.V_UNIT_PRICE 读，这里补一列同名的。
+    up = RV.unit_price_column([c for c in df.columns if isinstance(c, str)])
+    if up and site.V_UNIT_PRICE not in df.columns:
+        df[site.V_UNIT_PRICE] = df[up]
+    # Reventa：平台在买家下单时向卖家买断再转售。这类行的 Ingresos por productos 是
+    # 平台付给卖家的净额，佣金、运费、代扣税都是 0（见 report/reventa.py）。
+    df["reventa"] = (df[RV.MODEL_HEADER].map(RV.is_reventa).astype(bool)
+                     if RV.MODEL_HEADER in df.columns else False)
     df["fecha"] = df[V_DATE].map(parse_spanish_date) if V_DATE in df.columns else pd.NaT
     # pandas 2 的 astype(str) 把 NaT 变成字面量 "NaT"，pandas 3 让它保持 NaN。
     # 本文件有 5 处 `ym != "NaT"` 的过滤依赖那个字面量（3613/3669/4492 等），

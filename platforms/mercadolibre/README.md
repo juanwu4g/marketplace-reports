@@ -48,6 +48,53 @@ Per-country facts live in `meli_site.py`; a store's country comes from
 - The machine clock is China time; "today" for the platform is computed in the
   site's timezone (`core/site_time.py`).
 
+## Reventa (MercadoLibre buys from the seller and resells)
+
+MercadoLibre Mexico invites listings into Reventa: at the buyer's click the store
+sells the item to MercadoLibre ("vendido por Mercado Libre"), invoices MercadoLibre
+(CFDI G01) and is paid a net amount. Measured on EWTTO_SM, whose whole store
+switched on 2026-10-26 about 12:10 (download of 2026-11-11; no other store checked
+yet). The sales export says which sale is which (`Modelo de venta`), so a store, a
+listing or a single day can be mixed.
+
+| | direct sale | Reventa sale |
+|---|---|---|
+| `Ingresos por productos` | the buyer's price | the net amount MercadoLibre pays (EWTTO_SM: 74 % of the suggested price) |
+| `Cargo por venta e impuestos`, `Costos de envío` | commission + withheld IVA/ISR, shipping | 0 |
+| unit-price column | the listing price | the seller's suggested price |
+| monthly bill | `Cargo por venta`, `Cargo por envíos` rows | **no row at all** |
+| withholding (Mexico) | IVA/ISR withheld by MercadoPago | none |
+| ads, Full storage, Full collection | billed | billed as before |
+| cancellation / return | commission reversal in the bill | `Anulaciones y reembolsos` = minus the amount, Total 0 |
+
+How the reports treat it (a store-month without Reventa sales gets the same
+workbook, cell for cell, as before — the golden cases prove it):
+
+- **Bill basis** (`bill_report/model._reventa`): the bill cannot carry these sales,
+  so they come from the sales export and enter the same machinery as a billed sale —
+  amount = the net amount, date = the sale date (there is no charge date), SKU from
+  the export row, reversal = the row's `Anulaciones y reembolsos` as a share. They
+  are in ② 商品销售额 and the reversal rows, in ⑦ per SKU (units count for cost), in
+  ⑧ by week, and in the base that store-level charges are allocated on. No
+  commission, shipping, buyer shipping or withholding. ② 备查项 splits Reventa from
+  direct sales and shows the suggested-price total; ⑦ gets 表三 (direct next to
+  Reventa per SKU); ① 五 states the policy; ⑩ a check `reventa` and three open
+  questions.
+- **Order basis**: its P&L already sums the export, so the totals and the bridges
+  hold. Added: the withholding rate is measured on direct sales only
+  (`m["ing_direct"]`; with Reventa in the denominator the `tax_rate` check failed),
+  the same memo split in ②, the comparison at the end of ⑦, a line on ①, an item on
+  ⑩, a check `reventa`.
+- **Known limits.** The export does not date a refund: a Reventa refund is in the
+  month of its sale as of the download; ② 备查项 (bill basis) shows last month's
+  Reventa refunds as of this download so a later refund is seen. The amount is
+  treated as including IVA like every other line — to confirm against one CFDI
+  issued to MercadoLibre. How and when MercadoLibre pays was not verified: the
+  MercadoPago reports of a Reventa store have not been seen (the VM login has no
+  reports permission).
+- `report/reventa.py` and `bill_report/reventa.py` are the same file twice (the
+  bases never import each other; `tests/test_ml_reventa.py` keeps them identical).
+
 ## Forms not downloaded on purpose
 
 - MercadoPago account statement ("Estados de saldos y movimientos"): the

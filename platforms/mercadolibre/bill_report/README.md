@@ -113,6 +113,28 @@ so they go to the sale's SKU and the ⑦ columns tie to ② (`model._outside`).
   cancellation, and a few single orders where MercadoPago withheld less than the
   derivation — which is why the settlement is the primary source.
 
+## Reventa sales (2026-11-11)
+
+A Reventa sale (the sales export's `Modelo de venta` = Reventa: MercadoLibre buys
+the item from the store and resells it) has no bill row — no commission, no
+shipping charge — so the ledger cannot carry it. `model._reventa` takes it from the
+sales export and feeds it to the same machinery as a billed sale:
+
+| | billed (direct) sale | Reventa sale |
+|---|---|---|
+| amount | the bill's `Total de la venta` (buyer's price) | the export's `Ingresos por productos` (net amount MercadoLibre pays) |
+| in the month when | the commission row's charge date is | the sale date is |
+| reversal | commission reversal ÷ commission | `Anulaciones y reembolsos` ÷ the amount, on the sale's date (as of the download) |
+| SKU | mapping tiers | the export row (tier T1) |
+| fees, buyer shipping, withholding | from the bill / settlement | none |
+
+They are part of ② 商品销售额 and of the reversal rows, of ⑦ (units count for cost),
+⑧ and the allocation base. ② 备查项 adds five rows only when the month has Reventa
+sales (`reventa_sales`, `reventa_refund`, `direct_gmv`, `reventa_suggested`,
+`reventa_prev_refund`); ⑦ adds 表三. A Reventa row whose sale the bill also charges
+a commission for stays a billed sale and fails the warn check `reventa`. Limits and
+open questions: `platforms/mercadolibre/README.md` "Reventa".
+
 ## Detalle catalogue (`catalog.py`)
 
 | Detalle | ② line | To SKU |

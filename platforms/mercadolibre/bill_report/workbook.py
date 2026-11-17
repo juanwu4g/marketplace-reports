@@ -16,6 +16,7 @@ from core.report_kit import F, fill, wrap
 from platforms.mercadolibre.bill_report import catalog as C
 from platforms.mercadolibre.bill_report import mapping as M
 from platforms.mercadolibre.bill_report import status as ST
+from platforms.mercadolibre.bill_report import reventa as RV
 
 SHEETS = K.SHEET_NAMES
 PL_SHEET = SHEETS[1]
@@ -38,15 +39,28 @@ def pct(x, dec=1):
     return ("{:.%df}%%" % dec).format(100.0 * x)
 
 
+def has_reventa(S):
+    """Does this store-month have Reventa sales (so ①②⑦⑩ say so)? A store without
+    them gets exactly the workbook it got before Reventa existed."""
+    return bool(S.get("m", {}).get("reventa", {}).get("n"))
+
+
+REVENTA_PL_NOTE = ("；另含 Reventa 销售（平台买断转售，账单没有佣金行）：取自销售报表，按下单日、按平台支付的净额计入"
+                   "（见备查项与①五）")
+
 # ------------------------------------------------------------------ ② rows
 
-def pl_rows(S):
+
+def pl_rows(S, reventa=None):
+    """reventa: say so in the first row's note (None = this store's own answer; the
+    combined workbook passes "any store")."""
     p = S["prof"]
     R = RF.PLRow
+    reventa = has_reventa(S) if reventa is None else reventa
     rows = [
         R("gmv_billed", "商品销售额（本期计费的销售）", "Total de la venta · filas Cargo por venta", "d",
           "佣金行计费日在本月的销售，按账单上的“Total de la venta”（数量×单价，含 %s）；一笔销售一行，"
-          "冲销后重新计费的按次计" % p.vat_name),
+          "冲销后重新计费的按次计" % p.vat_name + (REVENTA_PL_NOTE if reventa else "")),
         R("rev_cancel", "减：发货前取消", "Anulación del cargo por venta", "d",
           "本月计费日的佣金冲销 → 冲销比例 × 订单金额（估算，见①五）；按证据归为发货前取消"),
         R("rev_return", "减：退货退款", "Anulación del cargo por venta", "d", "同上，证据显示已发货/退货"),
@@ -145,10 +159,38 @@ def resid_row(fam, ws, r, ncols, label, cells, label_col=1):
 
 # ------------------------------------------------------------------ ①
 
-def readme_sections(S, ctx):
-    """①'s sections for one store; the combined workbook reuses the policy ones."""
+def reventa_point(S):
+    """One sentence on the month's Reventa sales (① 四, and the summary's 各店要点)."""
+    p, rv = S["prof"], S["m"]["reventa"]
+    dec = p.decimals
+    return ("本月 %d 笔、%s 件是 Reventa（平台买断转售）：平台支付净额 %s，是建议售价合计 %s 的 %s；取消/退款 %s。"
+            "直接销售 %d 笔、买家价 %s。销售报表里最早一笔 Reventa 在 %s%s。" % (
+                rv["n"], fmtm(rv["units"], 0), fmtm(rv["sales"], dec), fmtm(rv["suggested"], dec),
+                pct(rv["sales"] / rv["suggested"]) if rv["suggested"] else "—", fmtm(rv["refund"], dec),
+                rv["n_direct"], fmtm(rv["direct_gmv"], dec), rv["first"] or "—",
+                "，最后一笔直接销售在 %s" % rv["last_direct"] if rv["last_direct"] else ""))
+
+
+REVENTA_POLICY = (
+    "Reventa（平台买断转售）",
+    "被平台选入 Reventa 的刊登，买家下单时由 MercadoLibre 向本店买断、再以平台名义卖给买家（页面显示“vendido por "
+    "Mercado Libre”），本店向平台开票。这类销售在账单里没有任何一行（没有佣金、没有平台运费），所以取自销售报表"
+    "（Ventas）“Modelo de venta ＝ Reventa”的行："
+    "① 金额 ＝ “Ingresos por productos”，即平台付给本店的净额（不是买家价；佣金和运费已体现在这个价格里），"
+    "计入②商品销售额、归到该行的 SKU；② 没有计费日，按下单日归月；③ 取消/退款取该行的“Anulaciones y reembolsos”，"
+    "销售报表不写退款日期，所以归入销售所在月，以出报表时的下载为准（上月销售在之后才退款的部分见②备查项）；"
+    "④ 平台不对这类销售代扣 IVA/ISR，②代扣税金只来自直接销售；⑤ 广告、Full 仓储等店铺级费用照常在账单里，"
+    "按各 SKU 净销售额（直接 ＋ Reventa）分摊；⑥ 商品成本件数照常：件数 − 发货前取消 − 退回后重新上架。"
+    "注意：同一个 SKU 的销售额在两种方式下不是同一个口径（买家价 对 买断净额），费用率、贡献率跨月比较时"
+    "请看②备查项的拆分和⑦表三。金额按含 IVA 处理（与其他行一致），请会计对照一张开给平台的 CFDI 确认。")
+
+
+def readme_sections(S, ctx, reventa=None):
+    """①'s sections for one store; the combined workbook reuses the policy ones
+    (reventa=True there when any store has Reventa sales)."""
     p, m, pl = S["prof"], S["m"], S["m"]["pl"]
     dec = p.decimals
+    reventa = has_reventa(S) if reventa is None else reventa
     fac = [f for f in S["inv_facts"] if f["doc"] == "FAC"]
     cut_lines = []
     for f in sorted(fac, key=lambda f: f["first"] or S["p0"]):
@@ -211,7 +253,7 @@ def readme_sections(S, ctx):
                 S["p1"], m["post_n"], fmtm(-m["post_amount"], dec))),
             ("账单之外", "卖家承担的优惠 %s、平台补贴 %s（已计入营业收入）；平台代扣税金 %s（不计入贡献）。" % (
                 fmtm(pl["seller_discount"], dec), fmtm(pl["platform_subsidy"], dec), fmtm(pl["withheld"], dec))),
-        ] + ([SC.point_line([cost], pl["contrib"] - cost.cogs)] if cost is not None else [])),
+        ] + ([("Reventa", reventa_point(S))] if has_reventa(S) else []) + ([SC.point_line([cost], pl["contrib"] - cost.cogs)] if cost is not None else [])),
         ("五、会计处理（口径）", [
             ("%s" % p.vat_name,
              "与正式报表同一口径：金额按 MercadoLibre 账单原值、含 %s（%s %s）。商品销售额、买家运费、平台费用"
@@ -234,6 +276,7 @@ def readme_sections(S, ctx):
                               "按各商品“件数 × 单价”分摊；随销售归到 SKU。不在销售报表里的销售按 0 计（⑩列出）。"),
             ("销售额", "一笔销售在它的“Cargo por venta”（佣金）行的计费日计入；金额取该行的 Total de la venta"
                        "（＝ 数量 × 单价，已逐行验证）。账单没有单独的销售收入行，佣金行就是销售的凭证。"),
+        ] + ([REVENTA_POLICY] if reventa else []) + [
             ("取消与退款（估算）", "账单不写退款金额，只写佣金冲销（Anulación del cargo por venta）。冲销比例 ＝ 冲销额 ÷ "
                                 "原佣金（按 Cargo que bonifica/anula 找原行；找不到时按同一刊登的佣金率推算）；冲销销售额 "
                                 "＝ 冲销比例 × 订单金额。比例 ≥ 99% 视为全额冲销（件数同时冲回），否则为部分退款（件数不冲回）。"
@@ -321,7 +364,7 @@ def provisional_text(Ss):
 def sheet_pl(wb, fam, S, ctx):
     """② for one store or several (fam.stores; S is the first, for country facts)."""
     p = S["prof"]
-    rows = pl_rows(S)
+    rows = pl_rows(S, any(has_reventa(X) for X in fam.stores))
     sh, r, at, note_col = fam.pl_sheet(
         wb, SHEETS[1], rows, value=lambda X, key: X["m"]["pl"][key],
         title="合并损益表（%s · 账单基准）" % ctx["period_cn"],
@@ -385,6 +428,30 @@ def pl_memo(fam, S):
         ("mp_refund", ("本期冲销对应的 MercadoPago 实际退款（旁证）", "settlement REFUND / collection",
                        lambda X: X["m"]["mp_refund_in"], "与②冲销（估算）对照用；含运费、时间差，不替代账单口径")),
     ]
+    if any(has_reventa(X) for X in fam.stores):
+        rv = lambda k: (lambda X: X["m"]["reventa"][k])
+        dec = p.decimals
+        memo += [
+            ("reventa_sales", ("其中：Reventa 销售（平台支付净额，已含在商品销售额中）",
+                               "Ingresos por productos · Modelo de venta = Reventa", rv("sales"),
+                               fam.per_store(lambda X: "%d 笔、%s 件" % (X["m"]["reventa"]["n"], fmtm(
+                                   X["m"]["reventa"]["units"], 0))) + "。按下单日；不是买家价，是平台向本店买断的金额")),
+            ("reventa_refund", ("其中：Reventa 取消/退款（已含在上面的冲销各行中）",
+                                "Anulaciones y reembolsos · Reventa", rv("refund"),
+                                "销售报表不写退款日期：归入销售所在月，以本次下载时的状态为准")),
+            ("direct_gmv", ("其中：直接销售的计费销售额（买家价）", "Total de la venta · Cargo por venta", rv("direct_gmv"),
+                            "＝ 商品销售额 − Reventa 销售；佣金、运费、代扣税只对这一部分收取")),
+            ("reventa_suggested", ("Reventa 销售的建议售价合计（参考，不是本店收入）",
+                                   "Precio sugerido para reventa × Unidades", rv("suggested"),
+                                   fam.per_store(lambda X: "净额 ÷ 建议售价 ＝ %s" % (
+                                       pct(X["m"]["reventa"]["sales"] / X["m"]["reventa"]["suggested"])
+                                       if X["m"]["reventa"]["suggested"] else "—")) + "。用来和直接销售的买家价比较销量规模")),
+            ("reventa_prev_refund", ("上月 Reventa 销售截至本次下载的取消/退款累计（参考）",
+                                     "Anulaciones y reembolsos · Reventa · mes anterior", rv("prev_refund"),
+                                     fam.per_store(lambda X: "%d 笔" % X["m"]["reventa"]["prev_n"]) +
+                                     "。与上月报表的“Reventa 取消/退款”比较：多出来的是上月报表之后才发生的退款，"
+                                     "没有计入任何月份，金额大时请会计决定是否在本月调整")),
+        ]
     return memo
 
 
@@ -924,6 +991,9 @@ def sheet_sku(wb, fam, S, ctx):
     for vals, unmapped in map_rows(S):
         fam.write_row(ws, r, MAP_COLS, vals, fill_color=K.C_BAD if unmapped else None)
         r += 1
+    if has_reventa(S):
+        r = section_head(ws, r + 1, "表三　直接销售与 Reventa 对比", len(RV.COMPARE_HEAD))
+        RV.write_compare(ws, r, S["rv_compare"][0], S["rv_compare"][1], fam.money)
     ws.freeze_panes = "B6"
 
 
@@ -932,7 +1002,7 @@ def map_rows(S):
     listed = set()
     rows = []
     for ev in S["cohort"]:
-        rows.append((ev, "本月计费（GMV）"))
+        rows.append((ev, "Reventa（销售报表，下单日）" if ev["source"] == "reventa" else "本月计费（GMV）"))
         listed.add(ev["sale_no"])
     for e in S["revs"]:
         if e["in_period"] and e["sale_no"] not in listed and e["sale_no"] in S["sales"]:
@@ -1127,6 +1197,15 @@ def inventory_rows(S):
 
 # ------------------------------------------------------------------ ⑩
 
+REVENTA_OPEN = [
+    ("Reventa：金额是否含 IVA", "销售报表的 Reventa 净额按含 IVA 处理（与其他收入行一致）。请对照一张本店开给 MercadoLibre 的 "
+                              "CFDI（G01 Adquisición de mercancías）确认：发票总额是否等于这里的金额。"),
+    ("Reventa：到账尚未核对", "平台怎样、何时支付 Reventa 的货款，还没有在 MercadoPago 报表里核对过（需要有报表权限的账号下载"
+                            "结算报表）。在那之前，Reventa 的金额只有销售报表一个来源。"),
+    ("Reventa：退款归属月份", "销售报表不写退款日期，Reventa 的取消/退款归入销售所在月、以出报表时的下载为准；之后才发生的退款"
+                            "见②备查项“上月 Reventa 销售…”一行。若希望按退款发生月入账，需要 MercadoPago 结算里的退款行。"),
+]
+
 def sheet_gaps(wb, fam, S, ctx):
     p = S["prof"]
     unm = [s for s in S["cohort"] if S["map"][s["sale_no"]].tier == M.NONE]
@@ -1151,6 +1230,6 @@ def sheet_gaps(wb, fam, S, ctx):
         ("%s" % p.vat_name, "金额含 %s；申报口径（B2B 发票、退货冲减、平台发票进项）交%s会计师确认。" % (
             p.vat_name, p.country_cn)),
         ("店铺级费用分摊", "广告等按净商品销售额分摊是一个可以改的政策；若要按“广告带来的销售”分摊，需要广告报表。"),
-    ]))
+    ] + (REVENTA_OPEN if has_reventa(S) else [])))
     fam.gaps_sheet(wb, SHEETS[9], "数据缺口与待办（%s · 账单基准）" % ctx["period_cn"], ctx["checks"], notes=notes)
 

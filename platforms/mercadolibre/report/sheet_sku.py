@@ -12,6 +12,7 @@ from core.report_family import set_widths
 from core.report_kit import (BOX, C_AMBER, C_BAND, C_CALC, C_GREEN, C_GREY, C_INPUT, C_NAVY,
     C_RED, C_SUB, C_WARN, F, INT, PCT, fill, header_cells, title_rows)
 
+from platforms.mercadolibre.report import reventa as RV
 from platforms.mercadolibre.report import site
 from platforms.mercadolibre.report.catalog import (FEE_BY_ES, RETURN_REASON_ZH, RETURN_RESULT_ZH,
     SHEET_NAMES, SPANISH_MONTHS, STATES_BACK_ON_SALE, STATUS_ZH, V_ORDER_ID, V_SKU, V_STATUS,
@@ -827,4 +828,28 @@ def sheet_sku(wb, stores, ctx):
         ws.cell(row=r, column=1, value=t).font = F(9, False, C_GREY)
         r += 1
 
+    # ---- 表末：直接销售与 Reventa 对比（只在有 Reventa 销售的店铺出现）----
+    for S in stores:
+        if S["m"].get("rv", {}).get("n"):
+            r += 1
+            ws.cell(row=r, column=1, value="直接销售与 Reventa 对比　%s" % S["store"]).font = F(11, True, C_NAVY)
+            table, skipped = reventa_compare(S)
+            r = RV.write_compare(ws, r + 1, table, skipped, site.MNY)
+
     ws.freeze_panes = "A7"
+
+
+def reventa_compare(S):
+    """本月（下单日）销售报表的每一行 → reventa.compare()。组合订单先按 split_packages
+    把母行金额摊到子行。"""
+    D, _n = split_packages(S["ventas"])
+    n = lambda c: num(D, c) if c in D.columns else pd.Series(0.0, index=D.index)
+    units, price = n(V_UNITS), n(site.V_UNIT_PRICE)
+    ded = n(site.V_COMMISSION) + n(site.V_SHIP_COST) + n(site.V_SHIP_INCOME)
+    text = lambda c: (D[c].map(lambda v: "" if pd.isna(v) else str(v).strip()) if c in D.columns
+                      else pd.Series("", index=D.index))
+    rows = [RV.Row(bool(rv), sku, title, u, u * p, inc, 0.0 if rv else d, ref)
+            for rv, sku, title, u, p, inc, d, ref in zip(
+                D["reventa"], text(V_SKU), text(V_TITLE), units, price, n(site.V_REVENUE), ded,
+                n(site.V_REFUND))]
+    return RV.compare(rows, site.ZERO_TOL)

@@ -180,6 +180,14 @@ One row per order line — the backbone of all sales analysis.
   `Anulaciones y reembolsos (MXN)`, `Total (MXN)`, `SKU`,
   `Título de la publicación`, `Estado.1` (buyer state), `Forma de entrega`,
   `Venta por publicidad`
+- **Since 2026-10 (Reventa)** the export has three more facts, for every store:
+  a column `Modelo de venta` (`Venta directa` / `Reventa`); the unit-price column
+  `Precio unitario de venta de la publicación (MXN)` is renamed
+  `Precio unitario para venta directa / Precio sugerido para reventa (MXN)`
+  (readers accept either name); a column `Identificador de envío`. A Reventa row
+  carries the net amount MercadoLibre pays in `Ingresos por productos`, zero in
+  `Cargo por venta e impuestos` and `Costos de envío`, and the seller's suggested
+  price in the unit-price column — see README.md "Reventa".
 
 ### How it is obtained
 
@@ -814,3 +822,4 @@ Seen in the panel but not downloaded. Add sections here as they are built.
 | 2026-10-13 | Every expected report that does not arrive gets a cause code and saved evidence (`download_diag.py`, `_diag/`); a store with reports owed or missing is `partial`; batch exit 2 when no store got data |
 | 2026-10-13 | "Ready but the file did not land" reported apart from "not ready"; `adopted_existing_row` caution when MercadoPago shows no new row; `--no-full-stores` / `stores.no_full` |
 | 2026-10-13 | Ventas, Facturación and Notas de crédito headers located by column names instead of fixed rows |
+| 2026-11-11 | Ventas: `Modelo de venta` read (Reventa); the renamed unit-price header accepted under both names |

@@ -224,6 +224,16 @@ def sheet_gaps(wb, stores, ctx):
                       "%s 为不完整月份（销售报表是滚动窗口导出）。" % "、".join(ctx["partial_months"]),
                       "下月初重新下载完整数据；长期看应按月累积保存指标，才能得到真实趋势。",
                       "本报表未将这些月份计入损益，仅在【%s】作参考。" % SHEET_NAMES[7]))
+    rv_stores = [S for S in stores if S["m"].get("rv", {}).get("n")]
+    if rv_stores:
+        items.append(("中", "Reventa（平台买断转售）的会计处理",
+                      "%s 本月有 Reventa 销售，买断净额合计 %s。这部分是本店卖给 MercadoLibre 的货款（本店向平台开 CFDI），"
+                      "不是卖给买家的零售额；平台不收佣金和配送费，也不代扣 IVA/ISR。"
+                      % ("、".join(S["store"] for S in rv_stores), fmt(sum(S["m"]["rv"]["ing"] for S in rv_stores))),
+                      "请会计确认：① 买断净额是否含 IVA（对照一张开给平台的 CFDI，本报表按含税处理）；"
+                      "② 这部分销售不再有平台代扣，IVA/ISR 需自行申报缴纳；③ 平台怎样、何时支付货款，"
+                      "需用有报表权限的账号下载 MercadoPago 结算报表核对（目前只有销售报表一个来源）。",
+                      "不影响本表的合计与勾稽；影响的是税款现金流（以前被代扣的税现在要自己缴）和跨月比较的口径。"))
     if site.WITHHOLDING:
         items.append(("低", "代扣代缴税金的税务处理",
                       "本期%s被代扣 %s，约为含税售价的 %s。"
